@@ -4,7 +4,8 @@
   "description": "A simple CAP project.",
   "dependencies": {
     "@sap/cds": "^9",
-    "express": "^4"
+    "express": "^4",
+    "react-router-dom": "^7.9.6"
   },
   "devDependencies": {
     "@cap-js/sqlite": "^2"
