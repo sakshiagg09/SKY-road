@@ -19,9 +19,59 @@ module.exports = cds.service.impl(async function () {
     this.on("updateStatus", updateStatus);
     this.on("updateDelivery", updateDelivery);
 })
-const getTrackingDetails = async (req, res) => {
+
+const getTrackingDetails = async (req) => {
+  try {
+    // 1) Get the FO ID (tracking id) from the query
+    const foId = req.query.SELECT.where[2].val; // same as you had before
+
+    // 2) Connect to S/4 via destination "sky_app"
+    const s4 = await cds.connect.to('SKY_APP');
+
+    // 3) Call the S/4 OData entity that returns the fields you listed
+    //    Replace "/YourEntitySet" and "FOID" with your real entity set + key field.
+    const s4Response = await s4.send({
+      method: 'GET',
+      path: '/SearchFOSet',   // e.g. '/Z_FO_LOCSet' or similar
+      query: {
+        $filter: `FOID eq '${foId}'`,
+        $format: 'json'
+      }
+    });
+
+    // 4) Standard SAP GW style: { d: { results: [...] } }
+    const results = s4Response?.d?.results || [];
+
+    // Option A: simply return what S/4 gave you (FOID, LOCATION_ID, etc.)
+    return results;
+
+    // Option B (if later you want to map to different field names):
+    /*
+    return results.map(r => ({
+      FoId: r.FOID,
+      LocationId: r.LOCATION_ID,
+      SourceStop: r.SOURCE_STOP,
+      IntermediateStop: r.INTERMEDIATE_STOP,
+      DestinationStop: r.DESTINATION_STOP,
+      Longitude: r.LONGITUDE,
+      Latitude: r.LATITUDE,
+      LocationName: r.LOCATION_NAME,
+      Street: r.STREET,
+      PostalCode: r.POSTAL_CODE,
+      City: r.CITY,
+      Region: r.REGION,
+      Country: r.COUNTRY
+    }));
+    */
+  } catch (error) {
+    console.error('Error in getTrackingDetails:', error);
+    return { apiResponse: error.message };
+  }
+};
+
+/*const getTrackingDetails = async (req, res) => {
     try {
-        console.log("environment varibales updated:", process.env);
+        
         var gttAPI = process.env.gttURL + '/Shipment?$filter=trackingId eq ' + "'" + req.query.SELECT.where[2].val + "'";
         let res = await axios({
             method: 'GET',
@@ -371,7 +421,7 @@ const updateStatus = async (req, res) => {
             req.error(404, err.message);
         }
     }*/
-}
+/*}
 const updateDelivery = async (req, res) => {
     try {
         // 2) Fetch CSRF token
@@ -430,4 +480,4 @@ const updateDelivery = async (req, res) => {
         }
 
     }
-}
+}*/

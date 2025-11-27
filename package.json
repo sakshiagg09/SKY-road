@@ -21,17 +21,25 @@
   },
   "private": true,
   "cds": {
-  "requires": {
-    "auth": "mocked",
-    "S4HANA": {
-      "kind": "odata-v2",
-      "csrf": true,
-      "csrfInBatch": true,
-      "credentials": {
-        "destination": "S4DEST"
-      }
-    },
-    "destinations": true
+    "requires": {
+      "auth": "mocked",
+      "S4HANA": {
+        "kind": "odata-v2",
+        "csrf": true,
+        "csrfInBatch": true,
+        "credentials": {
+          "destination": "S4DEST"
+        }
+      },
+      "SKY_APP": {
+        "kind": "odata-v2",
+        "csrf": true,
+        "csrfInBatch": true,
+        "credentials": {
+          "destination": "Sky_App"
+        }
+      },
+      "destinations": true
+    }
   }
-}
 }

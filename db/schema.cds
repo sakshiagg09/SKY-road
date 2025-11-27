@@ -1,28 +1,29 @@
 @cds.persistence.skip
 entity shipmentDetails {
-    key ordinalNo           : Int32;
-        shipmentNo          : String;
-        stopId              : Int16;
-        locationId          : String;
-        longitude           : Double;
-        latitude            : Double;
-        locationAltKey      : String;
-        altKey              : String;
-        locationDescription : String;
-        addressDetail       : String;
-        materialLoad        : String;
-        materialUnload      : String;
-        plannedDepTime      : String;
-        timeZone            : String;
-        isDeparted          : Boolean;
-        isArrived           : Boolean;
-        isDelivered         : Boolean;
-        plannedDistance     : Double;
-        plannedDistanceUom  : String;
-        Items               : Composition of many shipmentItems
-                                  on Items.ordinalNo = $self;
-}
 
+    // Use FOID + LOCATION_ID as the key combination
+    key FOID        : String;
+    key LOCATION_ID : String;
+
+    // Stop type flags
+    // If your OData returns 'X' / '' instead of true/false,
+    // switch these to String(1) instead of Boolean.
+    SOURCE_STOP       : Boolean;
+    INTERMEDIATE_STOP : Boolean;
+    DESTINATION_STOP  : Boolean;
+
+    // Geo coordinates
+    LONGITUDE   : Double;
+    LATITUDE    : Double;
+
+    // Location description
+    LOCATION_NAME : String;
+    STREET        : String;
+    POSTAL_CODE   : String;
+    CITY          : String;
+    REGION        : String;
+    COUNTRY       : String;
+}
 @cds.persistence.skip
 entity shipmentItems {
     key itemNo    : String;
