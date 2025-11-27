@@ -1,41 +1,65 @@
 import React from "react";
-import { BottomNavigation, BottomNavigationAction, Paper } from "@mui/material";
-import HomeIcon from "@mui/icons-material/Home";
-import LocalShippingIcon from "@mui/icons-material/LocalShipping";
-import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
+import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
+import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
+import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
+import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined";
 
-export default function BottomBar({ value, setValue }) {
+export default function BottomBar({ activeTab, setActiveTab }) {
   return (
-    <Paper
-      elevation={8}
-      className="bg-sapSurface border-t border-sapBorder fixed bottom-0 left-0 right-0"
-    >
-      <BottomNavigation
-        value={value}
-        onChange={(e, newValue) => setValue(newValue)}
-        className="bg-sapSurface text-sapTextPrimary"
-        showLabels
+    <div className="px-4 pb-6 pt-3">
+      <div
+        className="rounded-full px-10 py-3 flex items-center justify-between"
+        style={{
+          backgroundColor: "#ffffff",
+          boxShadow: "8px 8px 16px #d9dce1, -8px -8px 16px #ffffff",
+          color: "#6b6c6e",
+          fontSize: "12px",
+        }}
       >
-        <BottomNavigationAction
-          label="Home"
-          icon={<HomeIcon />}
-          className="text-sapTextSecondary"
-        />
-        <BottomNavigationAction
-          label="Shipments"
-          icon={<LocalShippingIcon />}
-          className="text-sapTextSecondary"
-        />
-        <BottomNavigationAction
-          label="Scan"
-          icon={<QrCodeScannerIcon />}
-          className="text-sapTextSecondary"
-        />
-      </BottomNavigation>
+        {/* HOME */}
+        <button
+          className="flex flex-col items-center"
+          style={{ color: activeTab === "home" ? "#1976D2" : "#6b6c6e" }}
+          onClick={() => setActiveTab("home")}
+        >
+          <HomeOutlinedIcon sx={{ fontSize: 20 }} />
+          <span>Home</span>
+        </button>
 
-      <div className="text-center py-2 text-[11px] text-sapTextSecondary bg-sapSurface border-t border-sapBorder">
+        {/* TRACK */}
+        <button
+          className="flex flex-col items-center"
+          style={{ color: activeTab === "track" ? "#1976D2" : "#6b6c6e" }}
+          onClick={() => setActiveTab("track")}
+        >
+          <LocalShippingOutlinedIcon sx={{ fontSize: 20 }} />
+          <span>Track</span>
+        </button>
+
+        {/* ALERTS */}
+        <button
+          className="flex flex-col items-center"
+          style={{ color: activeTab === "alerts" ? "#1976D2" : "#6b6c6e" }}
+          onClick={() => setActiveTab("alerts")}
+        >
+          <NotificationsNoneOutlinedIcon sx={{ fontSize: 20 }} />
+          <span>Alerts</span>
+        </button>
+
+        {/* PROFILE */}
+        <button
+          className="flex flex-col items-center"
+          style={{ color: activeTab === "profile" ? "#1976D2" : "#6b6c6e" }}
+          onClick={() => setActiveTab("profile")}
+        >
+          <PersonOutlineOutlinedIcon sx={{ fontSize: 20 }} />
+          <span>Profile</span>
+        </button>
+      </div>
+
+      <div className="mt-2 text-center text-[11px] text-gray-500">
         © NAV IT Consulting
       </div>
-    </Paper>
+    </div>
   );
 }

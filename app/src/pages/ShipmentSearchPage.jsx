@@ -5,9 +5,6 @@ import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined
 import CheckCircleOutlineOutlinedIcon from "@mui/icons-material/CheckCircleOutlineOutlined";
 import LocalMallOutlinedIcon from "@mui/icons-material/LocalMallOutlined";
 import LocalActivityOutlinedIcon from "@mui/icons-material/LocalActivityOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
-import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
-import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined";
 
 export default function ShipmentSearchPage() {
   const [trackingInput, setTrackingInput] = useState("");
@@ -47,16 +44,7 @@ export default function ShipmentSearchPage() {
   ];
 
   return (
-    <div
-      className="flex flex-col min-h-screen w-full"
-      style={{
-        backgroundColor: "#eff0f3",
-        fontFamily: "Inter, sans-serif",
-        margin: 0,
-        padding: 0,
-      }}
-    >
-
+    <div className="w-full">
       {/* HEADER */}
       <div className="text-center mt-4">
         <p className="text-[10px] uppercase tracking-[0.2em] text-gray-500">
@@ -77,8 +65,7 @@ export default function ShipmentSearchPage() {
           className="flex items-center rounded-full px-4 py-3"
           style={{
             backgroundColor: "#ffffff",
-            boxShadow:
-              "8px 8px 16px #d9dce1, -8px -8px 16px #ffffff",
+            boxShadow: "8px 8px 16px #d9dce1, -8px -8px 16px #ffffff",
           }}
         >
           <SearchRoundedIcon sx={{ color: "#6b6c6e", marginRight: 1 }} />
@@ -108,7 +95,7 @@ export default function ShipmentSearchPage() {
       </div>
 
       {/* RECENT SECTION */}
-      <div className="px-4 mt-6 flex-1">
+      <div className="px-4 mt-6 pb-4">
         <div className="flex items-center justify-between mb-1">
           <p
             style={{
@@ -130,7 +117,9 @@ export default function ShipmentSearchPage() {
           </button>
         </div>
 
-        <p style={{ fontSize: "10px", color: "#6b6c6e" }}>Last updated 4h ago</p>
+        <p style={{ fontSize: "10px", color: "#6b6c6e" }}>
+          Last updated 4h ago
+        </p>
 
         <div className="space-y-3 mt-4">
           {recent.map((s) => (
@@ -140,11 +129,9 @@ export default function ShipmentSearchPage() {
               style={{
                 backgroundColor: "#ffffff",
                 borderColor: "#d9dce1",
-                boxShadow:
-                  "4px 4px 10px #d9dce1, -4px -4px 10px #ffffff",
+                boxShadow: "4px 4px 10px #d9dce1, -4px -4px 10px #ffffff",
               }}
             >
-              {/* LEFT SIDE */}
               <div className="flex items-center gap-3">
                 <div
                   className="h-10 w-10 rounded-full flex items-center justify-center"
@@ -169,7 +156,6 @@ export default function ShipmentSearchPage() {
                 </div>
               </div>
 
-              {/* RIGHT SIDE */}
               <div
                 className="text-right"
                 style={{ fontSize: "12px", color: "#6b6c6e" }}
@@ -179,40 +165,6 @@ export default function ShipmentSearchPage() {
               </div>
             </button>
           ))}
-        </div>
-      </div>
-
-      {/* BOTTOM NAV */}
-      <div className="px-4 mb-6 mt-6">
-        <div
-          className="rounded-full px-10 py-3 flex items-center justify-between"
-          style={{
-            backgroundColor: "#ffffff",
-            boxShadow:
-              "8px 8px 16px #d9dce1, -8px -8px 16px #ffffff",
-            color: "#6b6c6e",
-            fontSize: "12px",
-          }}
-        >
-          <div className="flex flex-col items-center" style={{ color: "#1976D2" }}>
-            <HomeOutlinedIcon sx={{ fontSize: 20 }} />
-            <span>Home</span>
-          </div>
-
-          <div className="flex flex-col items-center">
-            <LocalShippingOutlinedIcon sx={{ fontSize: 20 }} />
-            <span>Track</span>
-          </div>
-
-          <div className="flex flex-col items-center">
-            <NotificationsNoneOutlinedIcon sx={{ fontSize: 20 }} />
-            <span>Alerts</span>
-          </div>
-
-          <div className="flex flex-col items-center">
-            <PersonOutlineOutlinedIcon sx={{ fontSize: 20 }} />
-            <span>Profile</span>
-          </div>
         </div>
       </div>
     </div>
