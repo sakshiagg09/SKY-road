@@ -31,8 +31,8 @@ const getTrackingDetails = async (req) => {
     // 3) Call the S/4 OData entity that returns the fields you listed
     //    Replace "/YourEntitySet" and "FOID" with your real entity set + key field.
     const s4Response = await s4.send({
-      method: 'GET',
-      path: `/SearchFOSet?$filter=FOID eq '${foId}'&$format=json`
+    method: "GET",
+    path: `/SearchFOSet('${foId}')`, // adjust entity set later if needed
     });
 
     // 4) Standard SAP GW style: { d: { results: [...] } }
