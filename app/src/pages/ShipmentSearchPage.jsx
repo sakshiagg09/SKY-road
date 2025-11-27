@@ -1,143 +1,152 @@
 import React, { useState } from "react";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import TuneRoundedIcon from "@mui/icons-material/TuneRounded";
+import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
-import CheckCircleOutlineOutlinedIcon from "@mui/icons-material/CheckCircleOutlineOutlined";
-import LocalMallOutlinedIcon from "@mui/icons-material/LocalMallOutlined";
-import LocalActivityOutlinedIcon from "@mui/icons-material/LocalActivityOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
-import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
-import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined";
+
+import logo from "../assets/logo.svg";
 
 export default function ShipmentSearchPage() {
   const [trackingInput, setTrackingInput] = useState("");
-
-  const recent = [
-    {
-      id: "E9436QX",
-      status: "Package processing",
-      date: "09/12",
-      color: "bg-slate-700",
-      icon: <LocalActivityOutlinedIcon fontSize="small" />,
-    },
-    {
-      id: "F1674WQ",
-      status: "On the way",
-      date: "03/12",
-      time: "2:37 AM",
-      color: "bg-blue-500",
-      icon: <LocalShippingOutlinedIcon fontSize="small" />,
-    },
-    {
-      id: "T7952YU",
-      status: "Shipped",
-      date: "29/11",
-      time: "1:04 AM",
-      color: "bg-amber-400",
-      icon: <LocalMallOutlinedIcon fontSize="small" />,
-    },
-    {
-      id: "Q0309AG",
-      status: "Completed",
-      date: "27/10",
-      time: "1:48 AM",
-      color: "bg-emerald-500",
-      icon: <CheckCircleOutlineOutlinedIcon fontSize="small" />,
-    },
-  ];
+  const [recent, setRecent] = useState([]);
 
   const handleSearch = () => {
-    console.log("Search for:", trackingInput);
-    // TODO: call CAP service here
+    const trimmed = trackingInput.trim();
+    if (!trimmed) return;
+
+    const now = new Date();
+    const date = now.toLocaleDateString("en-GB");
+    const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    setRecent([
+      {
+        id: trimmed,
+        status: "Assigned shipment",
+        date,
+        time,
+        color: "#1976D2",
+        icon: <LocalShippingOutlinedIcon fontSize="small" />,
+      },
+    ]);
+  };
+
+  const handleScan = () => {
+    console.log("Open barcode scanner...");
   };
 
   return (
-    <div className="flex flex-col h-full">
-      {/* HEADER */}
-      <div className="mb-5">
-        <p className="text-[10px] uppercase tracking-[0.25em] text-slate-400 text-center">
-          Sky Road Tracking App
+    <div className="w-full flex flex-col items-center pb-6">
+      {/* LOGO */}
+      <div className="mt-8 mb-6 flex justify-center">
+        <img src={logo} alt="App Logo" className="w-28 h-28 object-contain opacity-95" />
+      </div>
+
+      {/* INPUT HEADER */}
+      <div className="w-full px-4 mb-2">
+        <p className="text-[13px] font-semibold" style={{ color: "#071e54" }}>
+          Enter Shipment / FO Number
         </p>
-        <h1 className="mt-2 text-xl font-semibold text-center">
-          Shipment Search
-        </h1>
       </div>
 
       {/* SEARCH BAR */}
-      <div className="flex items-center bg-[#101623] rounded-full px-4 py-2 shadow-sm mb-4">
-        <SearchRoundedIcon className="text-slate-400 mr-2" fontSize="small" />
-        <input
-          className="flex-1 bg-transparent outline-none text-sm placeholder:text-slate-500"
-          placeholder="Track your package"
-          value={trackingInput}
-          onChange={(e) => setTrackingInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-        />
-        <button className="ml-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#1f2937] text-slate-200">
-          <TuneRoundedIcon sx={{ fontSize: 18 }} />
-        </button>
+      <div className="px-4 w-full mt-1">
+        <div
+          className="flex items-center rounded-full px-4 py-3"
+          style={{
+            backgroundColor: "#ffffff",
+            boxShadow: "8px 8px 16px #d9dce1, -8px -8px 16px #ffffff",
+          }}
+        >
+          <SearchRoundedIcon sx={{ color: "#6b6c6e", marginRight: 1 }} />
+
+          <input
+            className="flex-1 bg-transparent outline-none"
+            style={{ color: "#071e54", fontSize: "14px" }}
+            placeholder="Enter Shipment / FO"
+            value={trackingInput}
+            onChange={(e) => setTrackingInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+          />
+
+          {/* IF INPUT EMPTY → SHOW SCANNER ICON */}
+          {trackingInput.length === 0 && (
+            <button
+              onClick={handleScan}
+              className="h-9 w-9 flex items-center justify-center rounded-full"
+              style={{
+                backgroundColor: "#eff0f3",
+                boxShadow:
+                  "inset 3px 3px 6px #d9dce1, inset -3px -3px 6px #ffffff",
+              }}
+            >
+              <QrCodeScannerIcon sx={{ color: "#1976D2", fontSize: 20 }} />
+            </button>
+          )}
+
+          {/* IF INPUT HAS TEXT → SHOW SEARCH BUTTON */}
+          {trackingInput.length > 0 && (
+            <button
+              onClick={handleSearch}
+              className="h-9 px-3 flex items-center justify-center rounded-full text-white font-semibold text-[12px]"
+              style={{
+                background:
+                  "linear-gradient(135deg, #1976D2 0%, #42A5F5 60%, #90CAF9 100%)",
+                boxShadow:
+                  "inset 1px 1px 3px rgba(255,255,255,0.2), inset -2px -2px 4px rgba(0,0,0,0.08)",
+              }}
+            >
+              Search
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* RECENT LIST */}
-      <div className="flex-1 flex flex-col">
-        <div className="flex items-center justify-between mb-1">
-          <p className="text-sm font-medium text-slate-200">Recent</p>
-          <button className="text-xs text-slate-400">See all ▸</button>
-        </div>
-        <p className="text-[10px] text-slate-500 mb-3">
-          Last updated 4h ago
+      {/* RECENT SECTION */}
+      <div className="px-4 w-full mt-8 pb-4">
+        <p className="text-[15px] font-semibold mb-1" style={{ color: "#071e54" }}>
+          Recent
         </p>
 
-        <div className="space-y-2 flex-1">
+        <p className="text-[10px]" style={{ color: "#6b6c6e" }}>
+          {recent.length > 0 ? "Last updated just now" : "No recent shipment yet"}
+        </p>
+
+        <div className="space-y-3 mt-4">
           {recent.map((s) => (
             <button
               key={s.id}
-              className="w-full flex items-center justify-between rounded-2xl bg-[#0b101b] px-3 py-2.5 border border-[#1f2937] text-left"
-              onClick={() => console.log("Open shipment:", s.id)}
+              className="w-full flex items-center justify-between rounded-2xl px-4 py-3 text-left border"
+              style={{
+                backgroundColor: "#ffffff",
+                borderColor: "#d9dce1",
+                boxShadow: "4px 4px 10px #d9dce1, -4px -4px 10px #ffffff",
+              }}
             >
+              {/* Shipment details card */}
               <div className="flex items-center gap-3">
                 <div
-                  className={`h-9 w-9 rounded-full flex items-center justify-center ${s.color}`}
+                  className="h-10 w-10 rounded-full flex items-center justify-center"
+                  style={{ backgroundColor: s.color, color: "white" }}
                 >
                   {s.icon}
                 </div>
-                <div className="flex flex-col">
-                  <span className="text-[13px] font-semibold text-slate-50 tracking-wide">
+
+                <div>
+                  <p className="text-[14px] font-semibold" style={{ color: "#071e54" }}>
                     {s.id}
-                  </span>
-                  <span className="text-[11px] text-slate-400">
+                  </p>
+                  <p className="text-[12px]" style={{ color: "#6b6c6e" }}>
                     {s.status}
-                  </span>
+                  </p>
                 </div>
               </div>
-              <div className="flex flex-col items-end text-[11px] text-slate-400">
-                <span>{s.date}</span>
-                {s.time && <span className="opacity-70">{s.time}</span>}
+
+              <div className="text-right text-[12px]" style={{ color: "#6b6c6e" }}>
+                {s.date}
+                <div className="opacity-70">{s.time}</div>
               </div>
             </button>
           ))}
-        </div>
-
-        {/* BOTTOM NAV */}
-        <div className="mt-4">
-          <div className="rounded-full bg-[#050814] border border-[#1f2937] px-8 py-3 flex items-center justify-between text-slate-400 text-xs">
-            <div className="flex flex-col items-center gap-1 text-slate-100">
-              <HomeOutlinedIcon sx={{ fontSize: 20 }} />
-              <span>Home</span>
-            </div>
-            <div className="flex flex-col items-center gap-1">
-              <LocalShippingOutlinedIcon sx={{ fontSize: 20 }} />
-              <span>Track</span>
-            </div>
-            <div className="flex flex-col items-center gap-1">
-              <NotificationsNoneOutlinedIcon sx={{ fontSize: 20 }} />
-              <span>Alerts</span>
-            </div>
-            <div className="flex flex-col items-center gap-1">
-              <PersonOutlineOutlinedIcon sx={{ fontSize: 20 }} />
-              <span>Profile</span>
-            </div>
-          </div>
         </div>
       </div>
     </div>
