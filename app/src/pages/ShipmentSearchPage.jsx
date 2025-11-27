@@ -9,25 +9,63 @@ import logo from "../assets/logo.svg";
 export default function ShipmentSearchPage() {
   const [trackingInput, setTrackingInput] = useState("");
   const [recent, setRecent] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [apiError, setApiError] = useState("");
 
-  const handleSearch = () => {
+  // 🔹 Call CAP backend (trackingDetails READ handler)
+  async function loadTrackingDetails(trackingId) {
+    // TODO: change <service-name> and field name FOID to match your CDS
+    const res = await fetch(
+    `http://localhost:4004/odata/v4/GTT/trackingDetails?$filter=FOID eq '${trackingId}'`
+  );
+
+    if (!res.ok) {
+      throw new Error("Failed to load tracking details");
+    }
+
+    const data = await res.json();
+    // In CAP v4, this will usually be an array of objects
+    return data;
+  }
+
+  const handleSearch = async () => {
     const trimmed = trackingInput.trim();
     if (!trimmed) return;
 
-    const now = new Date();
-    const date = now.toLocaleDateString("en-GB");
-    const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setLoading(true);
+    setApiError("");
 
-    setRecent([
-      {
-        id: trimmed,
-        status: "Assigned shipment",
-        date,
-        time,
-        color: "#1976D2",
-        icon: <LocalShippingOutlinedIcon fontSize="small" />,
-      },
-    ]);
+    try {
+      const data = await loadTrackingDetails(trimmed);
+      console.log("CAP trackingDetails response:", data);
+
+      const first = Array.isArray(data) ? data[0] : data;
+      if (!first) {
+        setApiError("No shipment found for this ID.");
+        setRecent([]);
+      } else {
+        // Map backend fields → UI (adapt this once your CDS fields are fixed)
+        setRecent([
+          {
+            id: trimmed,
+            status: first.StatusText || "In Transit",   // adjust to your field, e.g. first.FOStatus
+            date: first.PlannedDepDate || new Date().toLocaleDateString("en-GB"),
+            time:
+              first.PlannedDepTime ||
+              new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            color: "#1976D2",
+            icon: <LocalShippingOutlinedIcon fontSize="small" />,
+            raw: first, // keep full object for Track page
+          },
+        ]);
+      }
+    } catch (err) {
+      console.error(err);
+      setApiError("Error while fetching shipment. Please try again.");
+      setRecent([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleScan = () => {
@@ -87,19 +125,28 @@ export default function ShipmentSearchPage() {
           {trackingInput.length > 0 && (
             <button
               onClick={handleSearch}
+              disabled={loading}
               className="h-9 px-3 flex items-center justify-center rounded-full text-white font-semibold text-[12px]"
               style={{
                 background:
                   "linear-gradient(135deg, #1976D2 0%, #42A5F5 60%, #90CAF9 100%)",
                 boxShadow:
                   "inset 1px 1px 3px rgba(255,255,255,0.2), inset -2px -2px 4px rgba(0,0,0,0.08)",
+                opacity: loading ? 0.6 : 1,
               }}
             >
-              Search
+              {loading ? "Loading…" : "Search"}
             </button>
           )}
         </div>
       </div>
+
+      {/* ERROR MESSAGE */}
+      {apiError && (
+        <div className="px-4 w-full mt-3 text-[11px] text-red-600 font-medium">
+          {apiError}
+        </div>
+      )}
 
       {/* RECENT SECTION */}
       <div className="px-4 w-full mt-8 pb-4">
@@ -120,6 +167,10 @@ export default function ShipmentSearchPage() {
                 backgroundColor: "#ffffff",
                 borderColor: "#d9dce1",
                 boxShadow: "4px 4px 10px #d9dce1, -4px -4px 10px #ffffff",
+              }}
+              onClick={() => {
+                console.log("Open shipment details:", s.raw);
+                // later: setSelectedShipment(s.raw); setActiveTab("track");
               }}
             >
               {/* Shipment details card */}

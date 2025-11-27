@@ -12,12 +12,12 @@ module.exports = cds.service.impl(async function () {
         reasonCodes
     } = this.entities;
     this.on('READ', trackingDetails, getTrackingDetails);
-    this.on('READ', trackingItems, getTrackingItems);
-    this.on('READ', unplannedEvents, getunplannedEvents);
-    this.on('READ', reasonCodes, getreasonCodes);
-    this.on('UPDATE', trackingDetails, updateStatus);
-    this.on("updateStatus", updateStatus);
-    this.on("updateDelivery", updateDelivery);
+    // this.on('READ', trackingItems, getTrackingItems);
+    // this.on('READ', unplannedEvents, getunplannedEvents);
+    // this.on('READ', reasonCodes, getreasonCodes);
+    // this.on('UPDATE', trackingDetails, updateStatus);
+    // this.on("updateStatus", updateStatus);
+    // this.on("updateDelivery", updateDelivery);
 })
 
 const getTrackingDetails = async (req) => {
@@ -32,11 +32,7 @@ const getTrackingDetails = async (req) => {
     //    Replace "/YourEntitySet" and "FOID" with your real entity set + key field.
     const s4Response = await s4.send({
       method: 'GET',
-      path: '/SearchFOSet',   // e.g. '/Z_FO_LOCSet' or similar
-      query: {
-        $filter: `FOID eq '${foId}'`,
-        $format: 'json'
-      }
+      path: `/SearchFOSet?$filter=FOID eq '${foId}'&$format=json`
     });
 
     // 4) Standard SAP GW style: { d: { results: [...] } }
