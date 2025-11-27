@@ -15,11 +15,11 @@ export default function ShipmentSearchPage() {
   // 🔹 Call CAP backend (trackingDetails READ handler)
   async function loadTrackingDetails(trackingId) {
     // TODO: change <service-name> and field name FOID to match your CDS'
-  //   const res = await fetch(
-  //   `http://localhost:4004/odata/v4/GTT/trackingDetails?$filter=FOID eq '${trackingId}'`
-  // );
-    const res = await fetch(`http://localhost:4004/odata/v4/gtt/trackingDetails?$filter=FOID eq '${trackingId}'`
-      );
+    //   const res = await fetch(
+    //   `http://localhost:4004/odata/v4/GTT/trackingDetails?$filter=FOID eq '${trackingId}'`
+    // );
+    const res = await fetch(`odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}'`
+    );
     if (!res.ok) {
       throw new Error("Failed to load tracking details");
     }
