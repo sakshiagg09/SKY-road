@@ -3,8 +3,15 @@
   "version": "1.0.0",
   "description": "A simple CAP project.",
   "dependencies": {
+    "@sap-cloud-sdk/connectivity": "^4.1.2",
+    "@sap-cloud-sdk/http-client": "^4.1.2",
+    "@sap-cloud-sdk/resilience": "^4.1.2",
     "@sap/cds": "^9",
-    "express": "^4"
+    "@sap/xssec": "^4.11.2",
+    "dotenv": "^17.2.3",
+    "express": "^4",
+    "passport": "^0.7.0",
+    "sap-cf-axios": "^1.0.2"
   },
   "devDependencies": {
     "@cap-js/sqlite": "^2"
@@ -12,5 +19,19 @@
   "scripts": {
     "start": "cds-serve"
   },
-  "private": true
+  "private": true,
+  "cds": {
+  "requires": {
+    "auth": "mocked",
+    "S4HANA": {
+      "kind": "odata-v2",
+      "csrf": true,
+      "csrfInBatch": true,
+      "credentials": {
+        "destination": "S4DEST"
+      }
+    },
+    "destinations": true
+  }
+}
 }
