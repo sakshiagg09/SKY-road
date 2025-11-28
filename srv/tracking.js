@@ -6,10 +6,7 @@ const { log } = require("console");
 
 module.exports = cds.service.impl(async function () {
     const {
-        trackingDetails,
-        trackingItems,
-        unplannedEvents,
-        reasonCodes
+        trackingDetails
     } = this.entities;
     this.on('READ', trackingDetails, getTrackingDetails);
     // this.on('READ', trackingItems, getTrackingItems);
@@ -21,48 +18,57 @@ module.exports = cds.service.impl(async function () {
 })
 
 const getTrackingDetails = async (req) => {
-  try {
-    // 1) Get the FO ID (tracking id) from the query
-    const foId = req.query.SELECT.where[2].val; // same as you had before
+    try {
+        // 1) Extract FoId from the CAP filter: $filter=FoId eq '6300003009'
+        const foId = req.query.SELECT.where[2].val;
+        console.log('FoId from request:', foId);
 
-    // 2) Connect to S/4 via destination "sky_app"
-    const s4 = await cds.connect.to('SKY_APP');
+        // 2) Connect to SKY_APP (direct URL from package.json)
+        const s4 = await cds.connect.to('SKY_APP');
 
-    // 3) Call the S/4 OData entity that returns the fields you listed
-    //    Replace "/YourEntitySet" and "FOID" with your real entity set + key field.
-    const s4Response = await s4.send({
-    method: "GET",
-    path: `/SearchFOSet('${foId}')`, // adjust entity set later if needed
-    });
+        // 3) Call S/4 EXACTLY like SEGW: /SearchFOSet('<FoId>')
+        const path = `/SearchFOSet('${foId}')?$format=json`;
+        console.log('Calling S/4 path:', path);
 
-    // 4) Standard SAP GW style: { d: { results: [...] } }
-    const results = s4Response?.d?.results || [];
+        const s4Response = await s4.send({
+            method: "GET",
+            path
+        });
 
-    // Option A: simply return what S/4 gave you (FOID, LOCATION_ID, etc.)
-    return results;
+        console.log('Raw S/4 response:', JSON.stringify(s4Response));
 
-    // Option B (if later you want to map to different field names):
-    /*
-    return results.map(r => ({
-      FoId: r.FOID,
-      LocationId: r.LOCATION_ID,
-      SourceStop: r.SOURCE_STOP,
-      IntermediateStop: r.INTERMEDIATE_STOP,
-      DestinationStop: r.DESTINATION_STOP,
-      Longitude: r.LONGITUDE,
-      Latitude: r.LATITUDE,
-      LocationName: r.LOCATION_NAME,
-      Street: r.STREET,
-      PostalCode: r.POSTAL_CODE,
-      City: r.CITY,
-      Region: r.REGION,
-      Country: r.COUNTRY
-    }));
-    */
-  } catch (error) {
-    console.error('Error in getTrackingDetails:', error);
-    return { apiResponse: error.message };
-  }
+        // For "by key" calls, CAP’s odata-v2 client will usually give you
+        // a single object, not an array.
+        const row = Array.isArray(s4Response) ? s4Response[0] : s4Response;
+
+        if (!row) {
+            console.log('No data from S/4 for this FoId');
+            return [];
+        }
+
+        // 4) Map to CDS structure (1 row → array of 1)
+        return [
+            {
+                FoId: row.FoId,          // key
+                FinalInfo: row.FinalInfo,     // JSON string from <d:FinalInfo>...</d:FinalInfo>
+                DirectionsInfo: row.DirectionsInfo,
+                StopInfo: row.StopInfo,
+
+                Country: row.Country,
+                Region: row.Region,
+                City: row.City,
+                PostalCode: row.PostalCode,
+                Street: row.Street,
+                LocName: row.LocName,
+
+                Latitude: row.Latitude != null ? Number(row.Latitude) : null,
+                Longitude: row.Longitude != null ? Number(row.Longitude) : null
+            }
+        ];
+    } catch (error) {
+        console.error('Error in getTrackingDetails:', error);
+        return { apiResponse: error.message };
+    }
 };
 
 /*const getTrackingDetails = async (req, res) => {
