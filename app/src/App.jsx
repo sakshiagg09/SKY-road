@@ -20,31 +20,59 @@ const ProfilePage = () => (
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
+  // selectedShipment will hold the parsed trackingDetails / FinalInfo
+  const [selectedShipment, setSelectedShipment] = useState(null);
+
+  // keep BAR_HEIGHT in sync if you change BottomBar
+  const BAR_HEIGHT = 64;
+  const contentPaddingBottom = BAR_HEIGHT + 70;
 
   const renderPage = () => {
     switch (activeTab) {
       case "home":
-        return <ShipmentSearchPage />;
+        // pass setters so search page can set selected shipment & switch tab
+        return (
+          <ShipmentSearchPage
+            setSelectedShipment={setSelectedShipment}
+            setActiveTab={setActiveTab}
+          />
+        );
       case "track":
-        return <ShipmentDetailsPage />;
+        return (
+          <ShipmentDetailsPage
+            selectedShipment={selectedShipment}
+            setActiveTab={setActiveTab}
+          />
+        );
       case "alerts":
         return <AlertsPage />;
       case "profile":
         return <ProfilePage />;
       default:
-        return <ShipmentSearchPage />;
+        return (
+          <ShipmentSearchPage
+            setSelectedShipment={setSelectedShipment}
+            setActiveTab={setActiveTab}
+          />
+        );
     }
   };
 
   return (
     <div
-      className="min-h-screen flex flex-col"
-      style={{ backgroundColor: "#eff0f3" }}
+      className="min-h-screen"
+      style={{ backgroundColor: "#eff0f3", height: "100vh", display: "flex", flexDirection: "column" }}
     >
-      {/* main content */}
-      <div className="flex-1">{renderPage()}</div>
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          paddingBottom: contentPaddingBottom,
+        }}
+      >
+        {renderPage()}
+      </div>
 
-      {/* bottom bar visible on ALL pages */}
       <BottomBar activeTab={activeTab} setActiveTab={setActiveTab} />
     </div>
   );

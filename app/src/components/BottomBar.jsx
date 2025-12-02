@@ -1,64 +1,95 @@
 import React from "react";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
-import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
-import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
-import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined";
+import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
+import MapOutlinedIcon from "@mui/icons-material/MapOutlined";
+
+const BAR_HEIGHT = 64; // unchanged
 
 export default function BottomBar({ activeTab, setActiveTab }) {
   return (
-    <div className="px-4 pb-6 pt-3">
+    <div>
+      {/* FIXED BOTTOM BAR */}
       <div
-        className="rounded-full px-10 py-3 flex items-center justify-between"
         style={{
-          backgroundColor: "#ffffff",
-          boxShadow: "8px 8px 16px #d9dce1, -8px -8px 16px #ffffff",
+          position: "fixed",
+          left: 16,
+          right: 16,
+          bottom: `calc(32px + env(safe-area-inset-bottom))`,
+          height: BAR_HEIGHT,
+          borderRadius: 9999,
+          zIndex: 50,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingLeft: 32,
+          paddingRight: 32,
+          backgroundColor: "rgba(255,255,255,0.98)",
+          boxShadow:
+            "8px 8px 16px rgba(217,220,225,1), -8px -8px 16px rgba(255,255,255,1)",
           color: "#6b6c6e",
-          fontSize: "12px",
+          fontSize: 12,
+          backdropFilter: "blur(6px)",
+          position: "fixed",
         }}
       >
         {/* HOME */}
         <button
           className="flex flex-col items-center"
-          style={{ color: activeTab === "home" ? "#1976D2" : "#6b6c6e" }}
+          style={{
+            color: activeTab === "home" ? "#1976D2" : "#6b6c6e",
+            width: "33%",
+          }}
           onClick={() => setActiveTab("home")}
         >
           <HomeOutlinedIcon sx={{ fontSize: 20 }} />
-          <span>Home</span>
+          <span style={{ fontSize: 11, marginTop: 2 }}>Home</span>
         </button>
 
-        {/* TRACK */}
-        <button
-          className="flex flex-col items-center"
-          style={{ color: activeTab === "track" ? "#1976D2" : "#6b6c6e" }}
-          onClick={() => setActiveTab("track")}
+        {/* MIDDLE COLUMN (Map + Copyright stacked) */}
+        <div
+          style={{
+            width: "33%",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            marginTop: 12, // slight optical adjustment
+          }}
         >
-          <LocalShippingOutlinedIcon sx={{ fontSize: 20 }} />
-          <span>Track</span>
-        </button>
+          <button
+            className="flex flex-col items-center"
+            style={{ color: activeTab === "track" ? "#1976D2" : "#6b6c6e" }}
+            onClick={() => setActiveTab("track")}
+          >
+            <MapOutlinedIcon sx={{ fontSize: 20 }} />
+            <span style={{ fontSize: 11, marginTop: 2 }}>Map</span>
+          </button>
 
-        {/* ALERTS */}
+          {/* COPYRIGHT INSIDE BAR, BELOW MAP */}
+          <span
+            style={{
+              fontSize: 10,
+              color: "#9aa0ab",
+              marginTop: 0,
+              whiteSpace: "nowrap",
+            }}
+          >
+            © NAV IT Consulting
+          </span>
+        </div>
+
+        {/* REPORT */}
         <button
           className="flex flex-col items-center"
-          style={{ color: activeTab === "alerts" ? "#1976D2" : "#6b6c6e" }}
+          style={{
+            color: activeTab === "alerts" ? "#1976D2" : "#6b6c6e",
+            width: "33%",
+          }}
           onClick={() => setActiveTab("alerts")}
         >
-          <NotificationsNoneOutlinedIcon sx={{ fontSize: 20 }} />
-          <span>Alerts</span>
+          <SummarizeOutlinedIcon sx={{ fontSize: 20 }} />
+          <span style={{ fontSize: 11, marginTop: 2 }}>Report</span>
         </button>
-
-        {/* PROFILE */}
-        <button
-          className="flex flex-col items-center"
-          style={{ color: activeTab === "profile" ? "#1976D2" : "#6b6c6e" }}
-          onClick={() => setActiveTab("profile")}
-        >
-          <PersonOutlineOutlinedIcon sx={{ fontSize: 20 }} />
-          <span>Profile</span>
-        </button>
-      </div>
-
-      <div className="mt-2 text-center text-[11px] text-gray-500">
-        © NAV IT Consulting
       </div>
     </div>
   );

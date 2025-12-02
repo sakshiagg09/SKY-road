@@ -1,35 +1,153 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
-import TuneRoundedIcon from "@mui/icons-material/TuneRounded";
 import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
 
-import logo from "../assets/logo.svg";
+import logo from "../assets/logo.png.png";
+import BarcodeScanner from "../components/BarcodeScanner";
 
-export default function ShipmentSearchPage() {
+/**
+ * Props:
+ *  - setSelectedShipment(fn)
+ *  - setActiveTab(fn)
+ */
+export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }) {
   const [trackingInput, setTrackingInput] = useState("");
   const [recent, setRecent] = useState([]);
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState("");
+  const [showScanner, setShowScanner] = useState(false);
 
-  // 🔹 Call CAP backend (trackingDetails READ handler)
+  // --- Helpers -------------------------------------------------------
+
+  // safe key used to persist icons (do NOT put React elements in storage)
+  const ICON_KEY_DEFAULT = "truck";
+
+  const renderIconForKey = (key) => {
+    // expand here if you add more icon kinds later
+    switch (key) {
+      case "truck":
+      default:
+        return <LocalShippingOutlinedIcon fontSize="small" />;
+    }
+  };
+
+  // load recent from localStorage on mount (and sanitize)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("sr_recent_shipments");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const sanitized = parsed.map((r) => {
+            return {
+              id: r.id,
+              status: r.status,
+              date: r.date,
+              time: r.time,
+              color: r.color || "#1976D2",
+              // NOTE: we do NOT restore r.raw here (we intentionally avoid storing raw API object)
+              raw: null,
+              iconKey: typeof r.iconKey === "string" ? r.iconKey : ICON_KEY_DEFAULT,
+            };
+          });
+          setRecent(sanitized);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load recent from localStorage", e);
+      setRecent([]);
+    }
+  }, []);
+
+  // persist helper — stores a compact, serializable shape (no raw API object)
+  const persistRecent = (list) => {
+    try {
+      const serializable = list.map((r) => ({
+        id: r.id,
+        status: r.status,
+        date: r.date,
+        time: r.time,
+        color: r.color,
+        iconKey: r.iconKey || ICON_KEY_DEFAULT,
+      }));
+      localStorage.setItem("sr_recent_shipments", JSON.stringify(serializable));
+      console.debug("Persisted recent:", serializable);
+    } catch (e) {
+      console.warn("Failed to persist recent", e);
+    }
+  };
+
+  // Helper: parse FinalInfo -> array of stops
+  const parseFinalInfo = (finalInfoValue) => {
+    if (!finalInfoValue) return [];
+    try {
+      if (typeof finalInfoValue === "string") {
+        return JSON.parse(finalInfoValue);
+      } else if (Array.isArray(finalInfoValue)) {
+        return finalInfoValue;
+      } else {
+        return [];
+      }
+    } catch (e) {
+      console.error("Failed to parse FinalInfo:", e, finalInfoValue);
+      return [];
+    }
+  };
+
+  // fetch handler: reads OData response and returns data object
   async function loadTrackingDetails(trackingId) {
-    // TODO: change <service-name> and field name FOID to match your CDS'
-    //   const res = await fetch(
-    //   `http://localhost:4004/odata/v4/GTT/trackingDetails?$filter=FOID eq '${trackingId}'`
-    // );
-    const res = await fetch(`odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}'`
-    );
+    const res = await fetch(`odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}'`);
     if (!res.ok) {
       throw new Error("Failed to load tracking details");
     }
-
     const data = await res.json();
-    // In CAP v4, this will usually be an array of objects
     return data;
   }
 
-  const handleSearch = async () => {
+  // update recent list (dedupe & unshift) — writes to localStorage synchronously so navigation/unmounts won't stop it
+  const addToRecent = (entry) => {
+    try {
+      // read current from storage (robust to other tabs / previous failures)
+      const raw = localStorage.getItem("sr_recent_shipments");
+      let cur = [];
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) cur = parsed;
+        } catch (e) {
+          console.warn("Failed to parse existing sr_recent_shipments", e);
+          cur = [];
+        }
+      }
+
+      // ensure we use compact shape for storage
+      const compactEntry = {
+        id: entry.id,
+        status: entry.status,
+        date: entry.date,
+        time: entry.time,
+        color: entry.color || "#1976D2",
+        iconKey: entry.iconKey || ICON_KEY_DEFAULT,
+      };
+
+      // dedupe by id and unshift
+      const existing = cur.filter((r) => r.id !== compactEntry.id);
+      const next = [compactEntry, ...existing].slice(0, 10);
+
+      // write to storage and update component state (we will re-attach full raw object when opening)
+      localStorage.setItem("sr_recent_shipments", JSON.stringify(next));
+      setRecent(next.map((r) => ({ ...r, raw: null }))); // raw will be null until user opens and we fetch again
+      console.debug("Updated recent list:", next);
+    } catch (e) {
+      console.warn("Failed inside addToRecent", e);
+    }
+  };
+
+  // --- Search / scan flow -------------------------------------------
+
+  // call to fetch and then route to details
+  const handleSearch = async (fromScanner = false) => {
     const trimmed = trackingInput.trim();
     if (!trimmed) return;
 
@@ -40,38 +158,79 @@ export default function ShipmentSearchPage() {
       const data = await loadTrackingDetails(trimmed);
       console.log("CAP trackingDetails response:", data);
 
-      const first = Array.isArray(data) ? data[0] : data;
+      const first = data && Array.isArray(data.value) ? data.value[0] : data;
       if (!first) {
         setApiError("No shipment found for this ID.");
-        setRecent([]);
-      } else {
-        // Map backend fields → UI (adapt this once your CDS fields are fixed)
-        setRecent([
-          {
-            id: trimmed,
-            status: first.StatusText || "In Transit",   // adjust to your field, e.g. first.FOStatus
-            date: first.PlannedDepDate || new Date().toLocaleDateString("en-GB"),
-            time:
-              first.PlannedDepTime ||
-              new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            color: "#1976D2",
-            icon: <LocalShippingOutlinedIcon fontSize="small" />,
-            raw: first, // keep full object for Track page
-          },
-        ]);
+        return;
       }
+
+      // parse FinalInfo string into stops array
+      const stops = parseFinalInfo(first.FinalInfo);
+
+      // prepare a selectable payload for details page
+      const shipmentPayload = {
+        FoId: first.FoId || trimmed,
+        raw: first,
+        stops: stops,
+        latitude: first.Latitude,
+        longitude: first.Longitude,
+      };
+
+      // create recent entry — store compact serializable fields
+      const recentEntry = {
+        id: first.FoId || trimmed,
+        status: first.StatusText || "In Transit",
+        date: first.PlannedDepDate || new Date().toLocaleDateString("en-GB"),
+        time:
+          first.PlannedDepTime ||
+          new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        color: "#1976D2",
+        iconKey: ICON_KEY_DEFAULT,
+        // we intentionally do NOT include `raw` in the persisted entry
+      };
+
+      // add to recent (dedupe & persist immediately)
+      addToRecent(recentEntry);
+
+      // set selected shipment in top-level App state and switch to track page
+      setSelectedShipment(shipmentPayload);
+      setActiveTab("track");
     } catch (err) {
       console.error(err);
       setApiError("Error while fetching shipment. Please try again.");
-      setRecent([]);
+      // preserve recent on error
     } finally {
       setLoading(false);
     }
   };
 
-  const handleScan = () => {
-    console.log("Open barcode scanner...");
+  const handleScanButton = () => {
+    setShowScanner(true);
   };
+
+  const handleScannedCode = (code) => {
+    setTrackingInput(code);
+    setShowScanner(false);
+    setTimeout(() => handleSearch(true), 250);
+  };
+
+  // when tapping a recent entry, navigate to details and keep recent unchanged
+  const openFromRecent = async (s) => {
+    // If we didn't store raw before, re-fetch the tracking details so details page has `raw`
+    try {
+      const data = await loadTrackingDetails(s.id);
+      const first = data && Array.isArray(data.value) ? data.value[0] : data;
+      const stops = parseFinalInfo(first?.FinalInfo);
+      const shipmentPayload = { FoId: first?.FoId || s.id, raw: first, stops };
+      setSelectedShipment(shipmentPayload);
+      setActiveTab("track");
+    } catch (e) {
+      console.error("Failed to open recent item", e);
+      setApiError("Failed to load shipment from recent.");
+    }
+  };
+
+  // --- Render -------------------------------------------------------
 
   return (
     <div className="w-full flex flex-col items-center pb-6">
@@ -81,8 +240,8 @@ export default function ShipmentSearchPage() {
       </div>
 
       {/* INPUT HEADER */}
-      <div className="w-full px-4 mb-2">
-        <p className="text-[13px] font-semibold" style={{ color: "#071e54" }}>
+      <div className="w-full px-4 mb-3 text-center">
+        <p className="text-[18px] font-bold" style={{ color: "#071e54" }}>
           Enter Shipment / FO Number
         </p>
       </div>
@@ -110,12 +269,11 @@ export default function ShipmentSearchPage() {
           {/* IF INPUT EMPTY → SHOW SCANNER ICON */}
           {trackingInput.length === 0 && (
             <button
-              onClick={handleScan}
+              onClick={handleScanButton}
               className="h-9 w-9 flex items-center justify-center rounded-full"
               style={{
                 backgroundColor: "#eff0f3",
-                boxShadow:
-                  "inset 3px 3px 6px #d9dce1, inset -3px -3px 6px #ffffff",
+                boxShadow: "inset 3px 3px 6px #d9dce1, inset -3px -3px 6px #ffffff",
               }}
             >
               <QrCodeScannerIcon sx={{ color: "#1976D2", fontSize: 20 }} />
@@ -125,14 +283,12 @@ export default function ShipmentSearchPage() {
           {/* IF INPUT HAS TEXT → SHOW SEARCH BUTTON */}
           {trackingInput.length > 0 && (
             <button
-              onClick={handleSearch}
+              onClick={() => handleSearch(false)}
               disabled={loading}
               className="h-9 px-3 flex items-center justify-center rounded-full text-white font-semibold text-[12px]"
               style={{
-                background:
-                  "linear-gradient(135deg, #1976D2 0%, #42A5F5 60%, #90CAF9 100%)",
-                boxShadow:
-                  "inset 1px 1px 3px rgba(255,255,255,0.2), inset -2px -2px 4px rgba(0,0,0,0.08)",
+                background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 60%, #90CAF9 100%)",
+                boxShadow: "inset 1px 1px 3px rgba(255,255,255,0.2), inset -2px -2px 4px rgba(0,0,0,0.08)",
                 opacity: loading ? 0.6 : 1,
               }}
             >
@@ -150,8 +306,8 @@ export default function ShipmentSearchPage() {
       )}
 
       {/* RECENT SECTION */}
-      <div className="px-4 w-full mt-8 pb-4">
-        <p className="text-[15px] font-semibold mb-1" style={{ color: "#071e54" }}>
+      <div className="w-full px-4 mt-3 text-center">
+        <p className="text-[18px] font-bold" style={{ color: "#071e54" }}>
           Recent
         </p>
 
@@ -169,10 +325,7 @@ export default function ShipmentSearchPage() {
                 borderColor: "#d9dce1",
                 boxShadow: "4px 4px 10px #d9dce1, -4px -4px 10px #ffffff",
               }}
-              onClick={() => {
-                console.log("Open shipment details:", s.raw);
-                // later: setSelectedShipment(s.raw); setActiveTab("track");
-              }}
+              onClick={() => openFromRecent(s)}
             >
               {/* Shipment details card */}
               <div className="flex items-center gap-3">
@@ -180,7 +333,7 @@ export default function ShipmentSearchPage() {
                   className="h-10 w-10 rounded-full flex items-center justify-center"
                   style={{ backgroundColor: s.color, color: "white" }}
                 >
-                  {s.icon}
+                  {renderIconForKey(s.iconKey)}
                 </div>
 
                 <div>
@@ -201,6 +354,9 @@ export default function ShipmentSearchPage() {
           ))}
         </div>
       </div>
+
+      {/* SCANNER DIALOG */}
+      <BarcodeScanner open={showScanner} onClose={() => setShowScanner(false)} onScan={handleScannedCode} />
     </div>
   );
 }
