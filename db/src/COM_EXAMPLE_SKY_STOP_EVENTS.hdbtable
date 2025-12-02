@@ -1,0 +1,12 @@
+table.schemaName = "";
+table.tableType = COLUMNSTORE;
+
+columns = [
+  { name = "STOPTYPE";   sqlType = "NVARCHAR(4)";   not null = true; },
+  { name = "EVENT_CODE"; sqlType = "NVARCHAR(64)";  not null = true; },
+  { name = "EVENT_LABEL";sqlType = "NVARCHAR(255)"; not null = true; },
+  { name = "SORT_ORDER"; sqlType = "INTEGER";       not null = true; },
+  { name = "ACTIVE";     sqlType = "SMALLINT";      not null = true; defaultValue = "1"; }
+];
+
+primaryKey.pkcolumns = [ "STOPTYPE", "EVENT_CODE" ];

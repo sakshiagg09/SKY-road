@@ -19,41 +19,54 @@ import {
   Box,
 } from "@mui/material";
 
+import MaterialItemList from "../components/MaterialItemList";
+
 /**
- * RouteTimeline
+ * RouteTimeline (JSX)
  * Props:
- *  - selectedShipment: as before (contains stops, raw, FoId)
+ *  - selectedShipment: { stops: Array, raw?, FoId? }
  *  - onAction?: (action: string, stop: object) => void
- *  - eventsUrl?: string  // optional, defaults to "/EventsReportingSet"
- *
- * Put your OData/network calls here (useEffect) to fetch extra stop details, events, etc.
+ *  - eventsUrl?: string
  */
-export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = "/odata/v4/GTT/EventsReportingSet" }) {
-  const BG = "#EFF0F3";
+export default function RouteTimeline({
+  selectedShipment,
+  onAction,
+  eventsUrl = "/odata/v4/GTT/EventsReportingSet",
+}) {
   const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";
   const TEXT_PRIMARY = "#071E54";
   const TEXT_SECONDARY = "#6B6C6E";
-  const ORANGE = "#FB8C00";
   const GREEN = "#2E7D32";
+  const BLUE = "#42A5F5";
 
-  // menu state: anchor element and key of active stop
+  // menu state
   const [anchorEl, setAnchorEl] = useState(null);
   const [activeStopKey, setActiveStopKey] = useState(null);
-  const [sending, setSending] = useState({}); // { [stopKey_action]: true }
+  const [sending, setSending] = useState({});
   const menuOpen = Boolean(anchorEl);
 
-  if (!selectedShipment || !Array.isArray(selectedShipment.stops) || selectedShipment.stops.length === 0) {
+  // items view state
+  const [showItems, setShowItems] = useState(false);
+  const [itemsStop, setItemsStop] = useState(null);
+
+  if (
+    !selectedShipment ||
+    !Array.isArray(selectedShipment.stops) ||
+    selectedShipment.stops.length === 0
+  ) {
     return (
       <div style={{ padding: 12 }}>
-        <Typography variant="body2" sx={{ color: TEXT_SECONDARY }}>No stops available</Typography>
+        <Typography variant="body2" sx={{ color: TEXT_SECONDARY }}>
+          No stops available
+        </Typography>
       </div>
     );
   }
 
-  const { stops = [], raw = {}, FoId } = selectedShipment;
+  const { stops = [], FoId } = selectedShipment;
 
-  // helpers (moved here so timeline is self-contained — implement OData inside this component)
+  // helpers
   const parseSapDateTimeToDate = (dt) => {
     if (dt === null || typeof dt === "undefined") return null;
     const s = String(dt).trim();
@@ -91,42 +104,85 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
   };
 
   const readLoad = (stop) =>
-    stop?.materialLoad ?? stop?.loadQty ?? stop?.load ?? stop?.materialLoadQty ?? 0;
+    stop?.materialLoad ??
+    stop?.loadQty ??
+    stop?.load ??
+    stop?.materialLoadQty ??
+    10;
   const readUnload = (stop) =>
-    stop?.materialUnload ?? stop?.unloadQty ?? stop?.unload ?? stop?.materialUnloadQty ?? 0;
-
-  const getStopMeta = (stop) => {
-    const seq = (stop.stopseqpos || "").toUpperCase();
-    if (seq === "F") {
-      return { label: "Planned Departure", badge: "Departure", color: PRIMARY, icon: "truck" };
-    }
-    if (seq === "L") {
-      return { label: "Planned Arrival", badge: "Arrival", color: ORANGE, icon: "location" };
-    }
-    return { label: "Planned Arrival", badge: "ETA", color: "#42A5F5", icon: "location" };
-  };
+    stop?.materialUnload ??
+    stop?.unloadQty ??
+    stop?.unload ??
+    stop?.materialUnloadQty ??
+    10;
 
   const getMenuOptionsForStop = (stop) => {
     const seq = (stop?.stopseqpos || "").toUpperCase();
     const itemsOpt = { key: "items", label: "Items", Icon: Inventory2OutlinedIcon };
     const arrivalOpt = { key: "arrival", label: "Arrival", Icon: EventAvailableIcon };
-    const departureOpt = { key: "departure", label: "Departure", Icon: LocalShippingIcon };
-    const podOpt = { key: "pod", label: "Proof of Delivery", Icon: AssignmentTurnedInIcon };
+    const podOpt = {
+      key: "pod",
+      label: "Proof of Delivery",
+      Icon: AssignmentTurnedInIcon,
+    };
+    const departureOpt = {
+      key: "departure",
+      label: "Departure",
+      Icon: LocalShippingIcon,
+    };
 
-    if (seq === "F") return [itemsOpt, departureOpt, podOpt];
-    if (seq === "I") return [itemsOpt, arrivalOpt, departureOpt, podOpt];
+    if (seq === "F") return [itemsOpt, departureOpt];
+    if (seq === "I") return [itemsOpt, arrivalOpt, podOpt, departureOpt];
     if (seq === "L") return [itemsOpt, arrivalOpt, podOpt];
     return [itemsOpt, arrivalOpt, departureOpt, podOpt];
   };
 
-  // sort stops by date (small helper)
+  // sort stops by date/time
   const sortedStops = [...stops].sort((a, b) => {
     const ta = parseSapDateTimeToDate(a.dateTime)?.getTime() ?? 0;
     const tb = parseSapDateTimeToDate(b.dateTime)?.getTime() ?? 0;
     return ta - tb;
   });
 
-  const now = Date.now();
+  // derive display load/unload (first two = load, rest = unload)
+  const derivedStops = (() => {
+    const out = [];
+    let totalLoaded = 0;
+    let totalUnloaded = 0;
+
+    for (let i = 0; i < sortedStops.length; i++) {
+      const s = { ...sortedStops[i] };
+      const baseLoad = Number(readLoad(s)) || 0;
+      const baseUnload = Number(readUnload(s)) || 0;
+
+      let displayLoad = 0;
+      let displayUnload = 0;
+
+      if (i <= 1) {
+        displayLoad = baseLoad;
+        displayUnload = 0;
+      } else {
+        if (baseUnload > 0) {
+          displayUnload = baseUnload;
+        } else {
+          const remaining = Math.max(0, totalLoaded - totalUnloaded);
+          displayUnload = remaining;
+        }
+        displayLoad = 0;
+      }
+
+      totalLoaded += displayLoad;
+      totalUnloaded += displayUnload;
+
+      out.push({
+        ...s,
+        displayLoad,
+        displayUnload,
+      });
+    }
+
+    return out;
+  })();
 
   // Menu handlers
   const handleMenuOpen = (event, stopKey) => {
@@ -139,41 +195,31 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
     setActiveStopKey(null);
   };
 
-  // helper to send the EventsReportingSet payload
+  // send EventsReportingSet
   const sendEventReport = async (actionCode, stopId) => {
-    // payload based on your examples
-    const payload = {
-      FoId: FoId,
-      Action: actionCode,
-      StopId: stopId,
-    };
-
+    const payload = { FoId: FoId, Action: actionCode, StopId: stopId };
     const key = `${stopId}_${actionCode}`;
     try {
-      setSending(prev => ({ ...prev, [key]: true }));
+      setSending((prev) => ({ ...prev, [key]: true }));
       const res = await fetch(eventsUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        console.error("EventsReportingSet failed", res.status, text);
-        alert(`Failed to report event (${actionCode}) — server returned ${res.status}`);
+        alert(
+          `Failed to report event (${actionCode}) — server returned ${res.status}`
+        );
         return { ok: false, status: res.status, text };
       }
-
-      // success
       return { ok: true };
     } catch (err) {
-      console.error("EventsReportingSet error", err);
       alert(`Failed to report event (${actionCode}): ${err.message || err}`);
       return { ok: false, error: err };
     } finally {
-      setSending(prev => {
+      setSending((prev) => {
         const copy = { ...prev };
         delete copy[key];
         return copy;
@@ -181,11 +227,10 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
     }
   };
 
-  // central handler for menu actions — now supports arrival/departure POSTs
   const handleAction = async (action) => {
     handleMenuClose();
 
-    const stop = sortedStops.find((s, idx) => {
+    const stop = derivedStops.find((s, idx) => {
       const key = s.stopid || s.locid || String(idx);
       return key === activeStopKey;
     });
@@ -195,51 +240,95 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
       return;
     }
 
+    // ITEMS: switch to MaterialItemList view
+    if (action === "items") {
+      setItemsStop(stop);
+      setShowItems(true);
+      if (typeof onAction === "function") onAction("items", stop);
+      return;
+    }
+
     const stopId = stop.stopid || stop.locid || stop.StopId || String(activeStopKey);
 
-    // only wire arrival/departure to EventsReportingSet now
     if (action === "arrival" || action === "departure") {
-      // map to codes you provided
       const code = action === "arrival" ? "ARRV" : "DEPT";
-
       const key = `${stopId}_${code}`;
-      // avoid double clicks
       if (sending[key]) return;
-
       const result = await sendEventReport(code, stopId);
       if (result.ok) {
-        // success — notify parent so it can refresh status, fetch events etc.
         if (typeof onAction === "function") onAction(action, stop);
         else console.log(`Event ${code} sent for stop ${stopId}`);
       }
       return;
     }
 
-    // for other actions (items, pod) fall back to onAction for now
     if (typeof onAction === "function") onAction(action, stop);
     else console.log("Action:", action, "stop:", stop);
   };
 
-  // --- Timeline render ---
+  // If user clicked "Items" show the item list instead of the timeline
+  if (showItems) {
+    return (
+      <MaterialItemList
+        stop={itemsStop}
+        onBack={() => setShowItems(false)}
+        onConfirm={() => setShowItems(false)}
+      />
+    );
+  }
+
+  // --- render timeline ---
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>Route timeline</p>
-        <p className="text-[11px]" style={{ color: PRIMARY }}>View on map ▸</p>
+        <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>
+          Route timeline
+        </p>
+        <p className="text-[11px]" style={{ color: PRIMARY }}>
+          View on map ▸
+        </p>
       </div>
 
       <div className="mt-2">
-        {sortedStops.map((stop, idx) => {
-          const meta = getStopMeta(stop);
+        {derivedStops.map((stop, idx) => {
+          const totalStops = derivedStops.length;
+
+          const isFirstTwo = idx <= 1;
+          const isLastTwo = idx >= totalStops - 2;
+          const meta = isFirstTwo
+            ? {
+                label: "Actual Reported At",
+                badge:
+                  (stop.stopseqpos || "").toUpperCase() === "F"
+                    ? "Departure"
+                    : "Arrival",
+                color: GREEN,
+                icon:
+                  (stop.stopseqpos || "").toUpperCase() === "F"
+                    ? "truck"
+                    : "location",
+                isCompleted: true,
+              }
+            : {
+                label: "Planned Arrival At",
+                badge: isLastTwo ? "ETA" : "Arrival",
+                color: BLUE,
+                icon: "location",
+                isCompleted: false,
+              };
+
           const plannedDate = parseSapDateTimeToDate(stop.dateTime);
-          const done = plannedDate ? plannedDate.getTime() <= Date.now() : false;
+          const done = meta.isCompleted;
           const address = buildAddress(stop);
           const stopKey = stop.stopid || stop.locid || String(idx);
-          const materialLoad = readLoad(stop) ?? 0;
-          const materialUnload = readUnload(stop) ?? 0;
-          const topTitle = stop.name1 ? `${stop.name1} (${stop.locid || stop.stopid || "-"})` : `${stop.locid || stop.stopid || "-"}`;
           const menuOptions = getMenuOptionsForStop(stop);
           const RIGHT_BOX_WIDTH = 62;
+
+          const materialLoad = Number(stop.displayLoad ?? 0) || 0;
+          const materialUnload = Number(stop.displayUnload ?? 0) || 0;
+
+          const firstLineLabel = meta.label;
+          const secondLineDate = plannedDate ? formatDateTime(plannedDate) : "-";
 
           return (
             <div key={stopKey} className="flex items-start mb-4 min-w-0">
@@ -247,19 +336,36 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
               <div className="flex flex-col items-center mr-3 w-10 flex-shrink-0">
                 <div
                   className="h-9 w-9 rounded-full border-2 flex items-center justify-center"
-                  style={{ borderColor: meta.color, backgroundColor: done ? meta.color : CARD }}
+                  style={{
+                    borderColor: meta.color,
+                    backgroundColor: done ? meta.color : CARD,
+                  }}
                 >
                   {done ? (
-                    <CheckCircleOutlineIcon sx={{ fontSize: 16, color: "#ffffff" }} />
+                    <CheckCircleOutlineIcon
+                      sx={{ fontSize: 16, color: "#ffffff" }}
+                    />
                   ) : meta.icon === "truck" ? (
-                    <LocalShippingIcon sx={{ fontSize: 18, color: meta.color }} />
+                    <LocalShippingIcon
+                      sx={{ fontSize: 18, color: meta.color }}
+                    />
                   ) : (
-                    <LocationOnIcon sx={{ fontSize: 18, color: meta.color }} />
+                    <LocationOnIcon
+                      sx={{ fontSize: 18, color: meta.color }}
+                    />
                   )}
                 </div>
 
-                {idx !== sortedStops.length - 1 && (
-                  <div style={{ width: 2, flex: 1, background: "linear-gradient(to bottom, #e2e8f0, transparent)", marginTop: 8 }} />
+                {idx !== derivedStops.length - 1 && (
+                  <div
+                    style={{
+                      width: 2,
+                      flex: 1,
+                      background:
+                        "linear-gradient(to bottom, #e2e8f0, transparent)",
+                      marginTop: 8,
+                    }}
+                  />
                 )}
               </div>
 
@@ -275,14 +381,45 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
                 }}
               >
                 <div style={{ paddingRight: RIGHT_BOX_WIDTH, minWidth: 0 }}>
-                  <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>{topTitle}</p>
-                  <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY }}>
-                    {meta.label} At: {plannedDate ? formatDateTime(plannedDate) : "-"}
+                  <p
+                    className="text-sm font-semibold"
+                    style={{ color: TEXT_PRIMARY }}
+                  >
+                    {stop.name1
+                      ? `${stop.name1} (${stop.locid || stop.stopid || "-"})`
+                      : `${stop.locid || stop.stopid || "-"}`}
                   </p>
 
-                  <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13 }}>
-                    <div>Material Load : {materialLoad ?? 0} Packages</div>
-                    <div style={{ marginTop: 4 }}>Material Unload : {materialUnload ?? 0} Packages</div>
+                  {/* first line label */}
+                  <p
+                    className="text-[12px] mt-1"
+                    style={{ color: TEXT_SECONDARY }}
+                  >
+                    {firstLineLabel}
+                  </p>
+                  {/* second line date/time */}
+                  <p
+                    className="text-[12px] mt-0"
+                    style={{
+                      color: TEXT_SECONDARY,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {secondLineDate}
+                  </p>
+
+                  <div
+                    style={{
+                      marginTop: 8,
+                      color: TEXT_SECONDARY,
+                      fontSize: 13,
+                    }}
+                  >
+                    {isFirstTwo ? (
+                      <div>Material Load : {materialLoad} Packages</div>
+                    ) : (
+                      <div>Material Unload : {materialUnload} Packages</div>
+                    )}
                   </div>
 
                   {/* Address highlighted */}
@@ -300,10 +437,35 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
                       boxSizing: "border-box",
                     }}
                   >
-                    <LocationOnIcon sx={{ fontSize: 18, color: meta.color, marginTop: "2px", flexShrink: 0 }} />
+                    <LocationOnIcon
+                      sx={{
+                        fontSize: 18,
+                        color: meta.color,
+                        marginTop: "2px",
+                        flexShrink: 0,
+                      }}
+                    />
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <Typography variant="caption" sx={{ color: TEXT_SECONDARY, display: "block" }}>Address</Typography>
-                      <Typography variant="body2" sx={{ color: TEXT_PRIMARY, fontWeight: 600, fontSize: 13, whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere" }}>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: TEXT_SECONDARY,
+                          display: "block",
+                        }}
+                      >
+                        Address
+                      </Typography>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          color: TEXT_PRIMARY,
+                          fontWeight: 600,
+                          fontSize: 13,
+                          whiteSpace: "normal",
+                          wordBreak: "break-word",
+                          overflowWrap: "anywhere",
+                        }}
+                      >
                         {address}
                       </Typography>
                     </div>
@@ -311,20 +473,56 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
                 </div>
 
                 {/* absolute right box */}
-                <div style={{ position: "absolute", top: 12, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, pointerEvents: "none" }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 12,
+                    right: 12,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-end",
+                    gap: 8,
+                    pointerEvents: "none",
+                  }}
+                >
                   <div style={{ pointerEvents: "auto" }}>
-                    <span className="px-2 py-1 rounded-full text-[10px] font-semibold" style={{ backgroundColor: `${meta.color}15`, color: meta.color, display: "inline-block" }}>{meta.badge}</span>
+                    <span
+                      className="px-2 py-1 rounded-full text-[10px] font-semibold"
+                      style={{
+                        backgroundColor: `${meta.color}15`,
+                        color: meta.color,
+                        display: "inline-block",
+                      }}
+                    >
+                      {meta.badge}
+                    </span>
                   </div>
                   <div style={{ pointerEvents: "auto" }}>
                     <IconButton
                       size="small"
                       onClick={(e) => handleMenuOpen(e, stopKey)}
-                      aria-controls={menuOpen && activeStopKey === stopKey ? `stop-menu-${stopKey}` : undefined}
+                      aria-controls={
+                        menuOpen && activeStopKey === stopKey
+                          ? `stop-menu-${stopKey}`
+                          : undefined
+                      }
                       aria-haspopup="true"
-                      aria-expanded={menuOpen && activeStopKey === stopKey ? "true" : undefined}
-                      sx={{ bgcolor: "#fafafa", borderRadius: 1, padding: 0.5, "&:hover": { bgcolor: "#f0f0f0" }, boxShadow: "0 1px 3px rgba(16,24,40,0.06)" }}
+                      aria-expanded={
+                        menuOpen && activeStopKey === stopKey
+                          ? "true"
+                          : undefined
+                      }
+                      sx={{
+                        bgcolor: "#fafafa",
+                        borderRadius: 1,
+                        padding: 0.5,
+                        "&:hover": { bgcolor: "#f0f0f0" },
+                        boxShadow: "0 1px 3px rgba(16,24,40,0.06)",
+                      }}
                     >
-                      <MoreVertIcon sx={{ fontSize: 18, color: "#6b6c6e" }} />
+                      <MoreVertIcon
+                        sx={{ fontSize: 18, color: "#6b6c6e" }}
+                      />
                     </IconButton>
                   </div>
                 </div>
@@ -344,20 +542,56 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
                     p: 0.5,
                     borderRadius: 2,
                     boxShadow: "0 8px 24px rgba(16,24,40,0.12)",
-                    "& .MuiMenuItem-root": { py: 0.6, px: 1.5, borderRadius: 1, "&:hover": { bgcolor: "#f5f7fb" } }
-                  }
+                    "& .MuiMenuItem-root": {
+                      py: 0.6,
+                      px: 1.5,
+                      borderRadius: 1,
+                      "&:hover": { bgcolor: "#f5f7fb" },
+                    },
+                  },
                 }}
               >
-                <Box sx={{ px: 1.25, py: 0.75, display: "flex", alignItems: "center", gap: 1 }}>
-                  <Chip label={meta.badge} size="small" sx={{ backgroundColor: `${meta.color}20`, color: meta.color, fontWeight: 600, height: 26, borderRadius: 1 }} />
-                  <Typography variant="body2" sx={{ color: TEXT_SECONDARY, fontSize: 13 }}>Actions</Typography>
+                <Box
+                  sx={{
+                    px: 1.25,
+                    py: 0.75,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                  }}
+                >
+                  <Chip
+                    label={meta.badge}
+                    size="small"
+                    sx={{
+                      backgroundColor: `${meta.color}20`,
+                      color: meta.color,
+                      fontWeight: 600,
+                      height: 26,
+                      borderRadius: 1,
+                    }}
+                  />
+                  <Typography
+                    variant="body2"
+                    sx={{ color: TEXT_SECONDARY, fontSize: 13 }}
+                  >
+                    Actions
+                  </Typography>
                 </Box>
                 <Divider sx={{ my: 0.5 }} />
 
                 {menuOptions.map((opt) => {
                   const Icon = opt.Icon;
                   const key = `${stopKey}_${opt.key}`;
-                  const isSending = (opt.key === "arrival" || opt.key === "departure") && Boolean(sending[`${stopKey}_${opt.key === "arrival" ? "ARRV" : "DEPT"}`]);
+                  const isSending =
+                    (opt.key === "arrival" || opt.key === "departure") &&
+                    Boolean(
+                      sending[
+                        `${stopKey}_${
+                          opt.key === "arrival" ? "ARRV" : "DEPT"
+                        }`
+                      ]
+                    );
 
                   return (
                     <MenuItem
@@ -369,8 +603,31 @@ export default function RouteTimeline({ selectedShipment, onAction, eventsUrl = 
                         <Icon fontSize="small" sx={{ color: PRIMARY }} />
                       </ListItemIcon>
                       <ListItemText
-                        primary={<Typography variant="body2" sx={{ fontWeight: 600 }}>{opt.label}</Typography>}
-                        secondary={isSending ? <Typography variant="caption" sx={{ color: TEXT_SECONDARY }}>Sending…</Typography> : (opt.key === "pod" ? <Typography variant="caption" sx={{ color: TEXT_SECONDARY }}>Record POD</Typography> : null)}
+                        primary={
+                          <Typography
+                            variant="body2"
+                            sx={{ fontWeight: 600 }}
+                          >
+                            {opt.label}
+                          </Typography>
+                        }
+                        secondary={
+                          isSending ? (
+                            <Typography
+                              variant="caption"
+                              sx={{ color: TEXT_SECONDARY }}
+                            >
+                              Sending…
+                            </Typography>
+                          ) : opt.key === "pod" ? (
+                            <Typography
+                              variant="caption"
+                              sx={{ color: TEXT_SECONDARY }}
+                            >
+                              Record POD
+                            </Typography>
+                          ) : null
+                        }
                       />
                     </MenuItem>
                   );

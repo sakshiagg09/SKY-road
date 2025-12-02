@@ -37,25 +37,26 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   const { FoId, stops = [], raw = {} } = selectedShipment;
 
   // compute simple KPIs here (kept small).
-  const sortedStops = Array.isArray(stops) ? [...stops].sort((a, b) => {
-    const ta = new Date(a.dateTime || 0).getTime() || 0;
-    const tb = new Date(b.dateTime || 0).getTime() || 0;
-    return ta - tb;
-  }) : [];
+  const sortedStops = Array.isArray(stops)
+    ? [...stops].sort((a, b) => {
+        const ta = new Date(a.dateTime || 0).getTime() || 0;
+        const tb = new Date(b.dateTime || 0).getTime() || 0;
+        return ta - tb;
+      })
+    : [];
 
   const firstStop = sortedStops[0];
   const lastStop = sortedStops[sortedStops.length - 1];
-  const origin = firstStop ? `${firstStop.name1 || firstStop.locid || ""}${firstStop.city1 ? `, ${firstStop.city1}` : ""}${firstStop.country ? `, ${firstStop.country}` : ""}` : "-";
-  const destination = lastStop ? `${lastStop.name1 || lastStop.locid || ""}${lastStop.city1 ? `, ${lastStop.city1}` : ""}${lastStop.country ? `, ${lastStop.country}` : ""}` : "-";
-  const eta = lastStop ? (new Date(lastStop.dateTime).toLocaleString("en-GB")) : "-";
-  const statusText = raw?.StatusText || "In Transit";
+  const origin = firstStop
+    ? `${firstStop.name1 || firstStop.locid || ""}${firstStop.city1 ? `, ${firstStop.city1}` : ""}${firstStop.country ? `, ${firstStop.country}` : ""}`
+    : "-";
+  const destination = lastStop
+    ? `${lastStop.name1 || lastStop.locid || ""}${lastStop.city1 ? `, ${lastStop.city1}` : ""}${lastStop.country ? `, ${lastStop.country}` : ""}`
+    : "-";
+  const eta = lastStop ? new Date(lastStop.dateTime).toLocaleString("en-GB") : "-";
 
-  const now = Date.now();
-  const completedCount = sortedStops.reduce((acc, s) => {
-    const t = new Date(s.dateTime || 0).getTime() || 0;
-    return acc + (t && t <= now ? 1 : 0);
-  }, 0);
-  const progress = Math.min(100, Math.round((completedCount / Math.max(1, sortedStops.length)) * 100));
+  // progress forced to 60% as requested
+  const progress = 60;
 
   return (
     <div
@@ -81,23 +82,17 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         }}
       >
         <div className="flex items-start justify-between mb-3">
-          <div>
-            <p className="text-xs font-medium mb-1" style={{ color: TEXT_SECONDARY }}>
-              Current status
-            </p>
-            <p className="font-semibold" style={{ fontSize: 16, color: TEXT_PRIMARY }}>
-              {statusText}
-            </p>
-          </div>
+          {/* left side removed per request (no "Current status" text) */}
 
+          {/* Right-side badge always shows In Transit */}
           <span
             className="px-3 py-1 rounded-full text-[11px] font-semibold"
             style={{
-              backgroundColor: statusText === "Completed" ? "rgba(46,125,50,0.08)" : "rgba(25,118,210,0.08)",
-              color: statusText === "Completed" ? GREEN : PRIMARY,
+              backgroundColor: "rgba(25,118,210,0.08)",
+              color: PRIMARY,
             }}
           >
-            {statusText === "Completed" ? "Delivered" : "In Transit"}
+            In Transit
           </span>
         </div>
 
