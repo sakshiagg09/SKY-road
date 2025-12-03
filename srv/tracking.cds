@@ -2,12 +2,14 @@ using shipmentDetails from '../db/schema';
 using reasonCode from '../db/schema';
 using Items from '../db/schema';
 using unplannedEvent from '../db/schema';
+using eventsReporting from '../db/schema';
 
 service GTT {
     entity trackingDetails as projection on shipmentDetails;
     entity trackingItems as projection on Items;
     entity reasonCodes as projection on reasonCode;
     entity unplannedEvents as projection on unplannedEvent;
+    entity EventsReportingSet as projection on eventsReporting;
     action updateStatus(altKey : String,
                         locationAltKey : String,
                         stopId : String,
