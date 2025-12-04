@@ -8,7 +8,7 @@
     "@sap-cloud-sdk/http-client": "^4.1.2",
     "@sap-cloud-sdk/resilience": "^4.1.2",
     "@sap/cds": "^9",
-    "@sap/xssec": "^4.11.2",
+    "@sap/xssec": "^4",
     "dotenv": "^17.2.3",
     "express": "^4",
     "passport": "^0.7.0",
@@ -41,7 +41,10 @@
           "password": "BTPApps@12345"
         }
       },
-      "destinations": true
+      "destinations": true,
+      "[production]": {
+        "auth": "xsuaa"
+      }
     }
   }
 }

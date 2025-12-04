@@ -27,6 +27,11 @@ modules:
       memory: 512M
     requires:
       - name: sky-road-hdi-container
+  - name: sky-road-srv
+    type: nodejs
+    path: gen/srv
+    requires:
+      - name: sky-road-auth
 
 resources:
   # --------------------------
@@ -37,3 +42,21 @@ resources:
     parameters:
       service: hana
       service-plan: hdi-shared
+  - name: sky-road-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+      config:
+        xsappname: sky-road-${org}-${space}
+        tenant-mode: dedicated
+description: "A simple CAP project."
+parameters:
+  enable-parallel-deployments: true
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm ci
+        - npx cds build --production
