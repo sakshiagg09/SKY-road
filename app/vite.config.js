@@ -12,10 +12,6 @@ export default defineConfig({
       '/odata': {
         target: 'http://localhost:4004',
         changeOrigin: true,
-      },
-      '/catalog': {
-        target: 'http://localhost:4004',
-        changeOrigin: true,
       }
     }
   }

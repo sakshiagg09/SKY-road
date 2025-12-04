@@ -259,7 +259,7 @@ export default function RouteTimeline({
       return;
     }
 
-    const stopId = stop.stopid || stop.locid || stop.StopId || String(activeStopKey);
+    const stopId = stop.locid;
 
     if (action === "arrival" || action === "departure") {
       const code = action === "arrival" ? "ARRV" : "DEPT";
@@ -309,25 +309,25 @@ export default function RouteTimeline({
 
           const meta = isFirstTwo
             ? {
-                label: "Actual Reported At",
-                badge:
-                  (stop.stopseqpos || "").toUpperCase() === "F"
-                    ? "Departure"
-                    : "Arrival",
-                color: GREEN,
-                icon:
-                  (stop.stopseqpos || "").toUpperCase() === "F"
-                    ? "truck"
-                    : "location",
-                isCompleted: true,
-              }
+              label: "Actual Reported At",
+              badge:
+                (stop.stopseqpos || "").toUpperCase() === "F"
+                  ? "Departure"
+                  : "Arrival",
+              color: GREEN,
+              icon:
+                (stop.stopseqpos || "").toUpperCase() === "F"
+                  ? "truck"
+                  : "location",
+              isCompleted: true,
+            }
             : {
-                label: "Planned Arrival At",
-                badge: isLastTwo ? "ETA" : "Arrival",
-                color: BLUE,
-                icon: "location",
-                isCompleted: false,
-              };
+              label: "Planned Arrival At",
+              badge: isLastTwo ? "ETA" : "Arrival",
+              color: BLUE,
+              icon: "location",
+              isCompleted: false,
+            };
 
           // ------- DATE CALCULATIONS WITH REALISTIC FALLBACKS --------
           // Planned comes from dateTime (your current data)
@@ -704,9 +704,8 @@ export default function RouteTimeline({
                     (opt.key === "arrival" || opt.key === "departure") &&
                     Boolean(
                       sending[
-                        `${stopKey}_${
-                          opt.key === "arrival" ? "ARRV" : "DEPT"
-                        }`
+                      `${stopKey}_${opt.key === "arrival" ? "ARRV" : "DEPT"
+                      }`
                       ]
                     );
 
