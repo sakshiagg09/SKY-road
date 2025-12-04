@@ -1,0 +1,29 @@
+{
+  "xsappname": "sky-road",
+  "tenant-mode": "dedicated",
+  "description": "XSUAA security for sky-road CAP application",
+  "scopes": [
+    {
+      "name": "$XSAPPNAME.User",
+      "description": "Basic access to sky-road application"
+    }
+  ],
+  "role-templates": [
+    {
+      "name": "User",
+      "description": "Default user role",
+      "scope-references": [
+        "$XSAPPNAME.User"
+      ]
+    }
+  ],
+  "role-collections": [
+    {
+      "name": "SkyRoad-User",
+      "description": "Users allowed to access sky-road",
+      "role-template-references": [
+        "$XSAPPNAME.User"
+      ]
+    }
+  ]
+}

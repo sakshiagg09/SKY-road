@@ -32,7 +32,7 @@ import MaterialItemList from "../components/MaterialItemList";
 export default function RouteTimeline({
   selectedShipment,
   onAction,
-  eventsUrl = "/odata/v4/GTT/EventsReportingSet",
+  eventsUrl = "/odata/v4/GTT/eventReporting",
 }) {
   const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";

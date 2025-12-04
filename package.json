@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "description": "A simple CAP project.",
   "dependencies": {
+    "@cap-js/hana": "^2",
     "@sap-cloud-sdk/connectivity": "^4.2.0",
     "@sap-cloud-sdk/core": "^1.54.2",
-    "@sap-cloud-sdk/http-client": "^4.1.2",
+    "@sap-cloud-sdk/http-client": "^4.2.0",
     "@sap-cloud-sdk/resilience": "^4.1.2",
     "@sap/cds": "^9",
-    "@sap/xssec": "^4.11.2",
+    "@sap/xssec": "^4",
     "dotenv": "^17.2.3",
     "express": "^4",
     "passport": "^0.7.0",
@@ -16,7 +17,8 @@
     "sap-cf-axios": "^1.0.2"
   },
   "devDependencies": {
-    "@cap-js/sqlite": "^2"
+    "@cap-js/sqlite": "^2",
+    "@sap/cds-dk": "^9.5.0"
   },
   "scripts": {
     "start": "cds-serve"
@@ -24,24 +26,17 @@
   "private": true,
   "cds": {
     "requires": {
-      "auth": "mocked",
-      "S4HANA": {
-        "kind": "odata-v2",
-        "csrf": true,
-        "csrfInBatch": true,
-        "credentials": {
-          "destination": "S4DEST"
-        }
-      },
+      "auth": "xsuaa",
       "SKY_APP": {
         "kind": "odata-v2",
         "credentials": {
-          "url": "http://103.152.79.22:8002/sap/opu/odata/SAP/ZSKY_SRV",
-          "username": "BTP_APP01",
-          "password": "BTPApps@12345"
+          "destination": "Sky_App"
         }
       },
-      "destinations": true
+      "destinations": true,
+      "[production]": {
+        "auth": "xsuaa"
+      }
     }
   }
 }
