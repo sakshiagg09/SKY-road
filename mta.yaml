@@ -1,62 +1,106 @@
+_schema-version: "3.2"
 ID: sky-road
-_schema-version: "3.1"
 version: 1.0.0
 
-modules:
-  # --------------------------
-  # 1. DB Deployment Module
-  # --------------------------
-  - name: sky-road-db
-    type: hdb
-    path: db
-    parameters:
-      memory: 512M
-      disk-quota: 512M
-    requires:
-      - name: sky-road-hdi-container
-
-  # --------------------------
-  # 2. Node.js CAP Service
-  # --------------------------
-  - name: sky-road-srv
-    type: nodejs
-    path: srv
-    build-parameters:
-      builder: npm
-    parameters:
-      memory: 512M
-    requires:
-      - name: sky-road-hdi-container
-  - name: sky-road-srv
-    type: nodejs
-    path: gen/srv
-    requires:
-      - name: sky-road-auth
-
-resources:
-  # --------------------------
-  # HDI Container
-  # --------------------------
-  - name: sky-road-hdi-container
-    type: com.sap.xs.hdi-container
-    parameters:
-      service: hana
-      service-plan: hdi-shared
-  - name: sky-road-auth
-    type: org.cloudfoundry.managed-service
-    parameters:
-      service: xsuaa
-      service-plan: application
-      path: ./xs-security.json
-      config:
-        xsappname: sky-road-${org}-${space}
-        tenant-mode: dedicated
-description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true
+
 build-parameters:
   before-all:
     - builder: custom
       commands:
         - npm ci
         - npx cds build --production
+
+modules:
+  # -------------------------
+  # CAP Service (Node.js)
+  # -------------------------
+  - name: sky-road-srv
+    type: nodejs
+    path: gen/srv
+    parameters:
+      buildpack: nodejs_buildpack
+    provides:
+      - name: srv-api
+        properties:
+          url: ${default-url}
+    requires:
+      - name: sky-road-db
+      - name: sky-road-uaa
+      - name: sky-road-destination
+      - name: sky-road-connectivity
+
+  # -------------------------
+  # HDI Deployer for CAP DB
+  # -------------------------
+  - name: sky-road-db-deployer
+    type: hdb
+    path: gen/db
+    parameters:
+      buildpack: nodejs_buildpack
+    requires:
+      - name: sky-road-db
+
+  # -------------------------
+  # Application Router (your folder: app/router)
+  # -------------------------
+  - name: sky-road-router
+    type: approuter.nodejs
+    path: approuter
+    parameters:
+      buildpack: nodejs_buildpack
+      memory: 128M
+      disk-quota: 256M
+      instances: 1
+    requires:
+      - name: sky-road-uaa
+      - name: sky-road-destination
+      - name: sky-road-connectivity
+      - name: srv-api
+        group: destinations
+        properties:
+          name: srv-api
+          url: ~{url}
+          forwardAuthToken: true
+
+resources:
+  # -------------------------
+  # HANA HDI Container
+  # -------------------------
+  - name: sky-road-db
+    type: com.sap.xs.hdi-container
+    parameters:
+      service: hana
+      service-plan: hdi-shared
+
+  # -------------------------
+  # XSUAA
+  # -------------------------
+  - name: sky-road-uaa
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+
+  # -------------------------
+  # Destination service (EXISTING instance in your space)
+  # IMPORTANT: change service-name to your existing instance name
+  # -------------------------
+  - name: sky-road-destination
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+
+  # -------------------------
+  # Connectivity service (optional)
+  # If you don't use On-Prem/Cloud Connector, you can remove this resource
+  # and also remove it from all "requires" above.
+  # -------------------------
+  - name: sky-road-connectivity
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: connectivity
+      service-plan: lite

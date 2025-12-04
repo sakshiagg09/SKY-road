@@ -6,30 +6,31 @@ using eventsReporting from '../db/schema';
 
 service GTT {
     entity trackingDetails as projection on shipmentDetails;
-    entity trackingItems as projection on Items;
-    entity reasonCodes as projection on reasonCode;
+    entity trackingItems   as projection on Items;
+    entity reasonCodes     as projection on reasonCode;
     entity unplannedEvents as projection on unplannedEvent;
-    entity EventsReportingSet as projection on eventsReporting;
-    action updateStatus(altKey : String,
-                        locationAltKey : String,
-                        stopId : String,
-                        eventName : String,
-                        eventTime : String,
-                        timeZone  : String,
-                        reasonCode : String,
-                        eventLong : Double,
-                        eventLat : Double,
-                        quantity : Decimal(15, 3),
-                        signature : String,
-                        podImage : String) returns {
+    entity eventReporting  as projection on eventsReporting;
+
+    action updateStatus(altKey: String,
+                        locationAltKey: String,
+                        stopId: String,
+                        eventName: String,
+                        eventTime: String,
+                        timeZone: String,
+                        reasonCode: String,
+                        eventLong: Double,
+                        eventLat: Double,
+                        quantity: Decimal(15, 3),
+                        signature: String,
+                        podImage: String) returns {
         status : String
     };
 
-    action updateDelivery(FoId : String,
-                          LocationId : String,
-                          ItemNo : String,
-                          ProductId : String,
-                          ActQty : String) returns {
+    action updateDelivery(FoId: String,
+                          LocationId: String,
+                          ItemNo: String,
+                          ProductId: String,
+                          ActQty: String) returns {
         status : String
     }
 }

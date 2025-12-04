@@ -1,8 +1,0 @@
-{
-  "file": "COM_EXAMPLE_SKY_STOP_EVENTS.data.csv",
-  "table": "COM_EXAMPLE_SKY_STOP_EVENTS",
-  "importColumns": ["STOPTYPE","EVENT_CODE","EVENT_LABEL","SORT_ORDER","ACTIVE"],
-  "format": "CSV",
-  "parseHeader": true,
-  "importMode": "REPLACE"
-}
