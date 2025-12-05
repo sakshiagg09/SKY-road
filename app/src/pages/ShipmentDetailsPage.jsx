@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useCallback } from "react";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import LocalMallOutlinedIcon from "@mui/icons-material/LocalMallOutlined";
@@ -10,7 +10,7 @@ import RouteTimeline from "./RouteTimeline";
 /**
  * Props:
  *  - selectedShipment
- *  - onAction?: (action: string, stop: object) => void
+ *  - onAction?: (action: string, payload: any) => void
  */
 export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   const BG = "#EFF0F3";
@@ -18,7 +18,9 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   const PRIMARY = "#1976D2";
   const TEXT_PRIMARY = "#071E54";
   const TEXT_SECONDARY = "#6B6C6E";
-  const GREEN = "#2E7D32";
+
+  // progress stored here — RouteTimeline will update via onAction("progress", percent)
+  const [progress, setProgress] = useState(60);
 
   if (!selectedShipment) {
     return (
@@ -36,27 +38,37 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
 
   const { FoId, stops = [], raw = {} } = selectedShipment;
 
-  // compute simple KPIs here (kept small).
-  const sortedStops = Array.isArray(stops)
+  const stopsCount = Array.isArray(stops) ? stops.length : 0;
+
+  // derive origin/destination from available stops dynamically
+  const sortedStopsForHeader = Array.isArray(stops)
     ? [...stops].sort((a, b) => {
-        const ta = new Date(a.dateTime || 0).getTime() || 0;
-        const tb = new Date(b.dateTime || 0).getTime() || 0;
+        const ta = new Date(a.dateTime || a.dateTimeString || 0).getTime() || 0;
+        const tb = new Date(b.dateTime || b.dateTimeString || 0).getTime() || 0;
         return ta - tb;
       })
     : [];
 
-  const firstStop = sortedStops[0];
-  const lastStop = sortedStops[sortedStops.length - 1];
+  const firstStop = sortedStopsForHeader[0];
+  const lastStop = sortedStopsForHeader[sortedStopsForHeader.length - 1];
   const origin = firstStop
-    ? `${firstStop.name1 || firstStop.locid || ""}${firstStop.city1 ? `, ${firstStop.city1}` : ""}${firstStop.country ? `, ${firstStop.country}` : ""}`
+    ? `${firstStop.name || firstStop.name1 || firstStop.locId || firstStop.locid || ""}${firstStop.city ? `, ${firstStop.city}` : ""}${firstStop.country ? `, ${firstStop.country}` : ""}`
     : "-";
   const destination = lastStop
-    ? `${lastStop.name1 || lastStop.locid || ""}${lastStop.city1 ? `, ${lastStop.city1}` : ""}${lastStop.country ? `, ${lastStop.country}` : ""}`
+    ? `${lastStop.name || lastStop.name1 || lastStop.locId || lastStop.locid || ""}${lastStop.city ? `, ${lastStop.city}` : ""}${lastStop.country ? `, ${lastStop.country}` : ""}`
     : "-";
-  const eta = lastStop ? new Date(lastStop.dateTime).toLocaleString("en-GB") : "-";
+  const eta = lastStop ? new Date(lastStop.dateTime || lastStop.dateTimeString || lastStop.plannedDateTime).toLocaleString("en-GB", { timeZone: "Asia/Kolkata" }) : "-";
 
-  // progress forced to 60% as requested
-  const progress = 60;
+  // Handler to receive callbacks from RouteTimeline
+  const handleChildAction = useCallback(
+    (action, payload) => {
+      if (action === "progress" && typeof payload === "number") {
+        setProgress(payload);
+      }
+      if (typeof onAction === "function") onAction(action, payload);
+    },
+    [onAction]
+  );
 
   return (
     <div
@@ -82,9 +94,6 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         }}
       >
         <div className="flex items-start justify-between mb-3">
-          {/* left side removed per request (no "Current status" text) */}
-
-          {/* Right-side badge always shows In Transit */}
           <span
             className="px-3 py-1 rounded-full text-[11px] font-semibold"
             style={{
@@ -135,7 +144,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         <div className="flex flex-wrap items-center justify-between mt-1 text-[11px] gap-2">
           <div className="flex items-center gap-1.5">
             <RouteOutlinedIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            <span style={{ color: TEXT_SECONDARY }}>{sortedStops.length > 1 ? `${sortedStops.length - 1} legs` : "1 leg"}</span>
+            <span style={{ color: TEXT_SECONDARY }}>{stopsCount > 1 ? `${Math.max(0, stopsCount - 1)} legs` : "1 leg"}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <ScaleOutlinedIcon sx={{ fontSize: 16, color: PRIMARY }} />
@@ -152,9 +161,12 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         </div>
       </div>
 
-      {/* TIMELINE SECTION (moved to separate component) */}
+      {/* TIMELINE SECTION */}
       <div className="mt-2">
-        <RouteTimeline selectedShipment={selectedShipment} onAction={onAction} />
+        <RouteTimeline
+          selectedShipment={selectedShipment}
+          onAction={handleChildAction}
+        />
       </div>
     </div>
   );
