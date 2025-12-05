@@ -65,7 +65,7 @@ export default function PodFlowDialog({
   onClose,
   onSubmit,
   // 🔁 set to your real OData endpoint
-  eventsUrl = "/odata/v4/GTT/podReporting",
+  eventsUrl = "/odata/v4/GTT/updatesPOD",
 }) {
   // step: question -> items (when discrepancy) -> editItem -> signature
   const [step, setStep] = useState("question"); // 'question' | 'items' | 'editItem' | 'signature'
@@ -91,14 +91,80 @@ export default function PodFlowDialog({
     }
   }, [open]);
 
-  const stopTitle = stop?.name1 || stop?.locid || stop?.stopid || "Selected Stop";
-  const stopIdValue = String(stop?.stopid || stop?.locid || stop?.StopId || stop?.LocId || "");
+  // If stop is a WRAPPER (has FinalInfo), parse stops from it.
+  // If stop is already a STOP object, this will just end up empty.
+  const parsedStops = React.useMemo(() => {
+    const raw = stop?.FinalInfo;
+    if (!raw) return [];
+
+    try {
+      // raw may be a JSON string or an array already
+      const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      // Some backends double-encode JSON; try a second pass
+      try {
+        if (typeof raw === "string") {
+          const cleaned = raw.trim();
+          const unquoted = (cleaned.startsWith('"') && cleaned.endsWith('"'))
+            ? cleaned.slice(1, -1).replace(/\\"/g, '"')
+            : cleaned;
+          const arr2 = JSON.parse(unquoted);
+          return Array.isArray(arr2) ? arr2 : [];
+        }
+      } catch {
+        // ignore
+      }
+      return [];
+    }
+  }, [stop]);
+
+  // Choose a good stop from FinalInfo for POD/no-discrepancy:
+  // Prefer the LAST customer stop (often the POD stop), else last stop overall.
+  const stopFromFinalInfo = React.useMemo(() => {
+    if (!parsedStops.length) return null;
+    const rev = [...parsedStops].reverse();
+    const lastCustomer = rev.find(
+      (s) => (s?.typeLoc ?? "").toString().toUpperCase().includes("CUST") || (s?.typeLoc ?? "").toString().toUpperCase() === "CUSTOMER"
+    );
+    return lastCustomer || parsedStops[parsedStops.length - 1];
+  }, [parsedStops]);
+
+  // Choose the effective stop:
+  // 1) if `stop` already looks like a stop (has stopid/locid/etc) => use it
+  // 2) else use derived stop from FinalInfo
+  const effectiveStop =
+    (stop?.stopid || stop?.locid || stop?.stopId || stop?.locId || stop?.StopId || stop?.LocId)
+      ? stop
+      : stopFromFinalInfo;
+
+  // FoId can come from prop OR wrapper
+  const effectiveFoId = String(foId || stop?.FoId || "");
+
+  // stop title based on effectiveStop
+  const stopTitle =
+    effectiveStop?.name1 || effectiveStop?.locid || effectiveStop?.stopid || "Selected Stop";
+
+  // IMPORTANT:
+  // Your backend example for StopId uses the numeric-looking location id (e.g. "0000000001"),
+  // which matches `locid` on your FinalInfo stops. So we prefer locid first.
+  const stopIdValue = String(
+    effectiveStop?.locid ||
+    effectiveStop?.locId ||
+    effectiveStop?.LOCID ||
+    effectiveStop?.stopid ||
+    effectiveStop?.stopId ||
+    effectiveStop?.STOPID ||
+    effectiveStop?.LocId ||
+    effectiveStop?.StopId ||
+    ""
+  );
 
   // -----------------------------
   // Payload builders (exact shapes)
   // -----------------------------
   const buildNoDiscrepancyPayload = () => ({
-    FoId: String(foId || ""),
+    FoId: effectiveFoId,
     Discrepency: "",
     StopId: stopIdValue,
   });
@@ -126,9 +192,9 @@ export default function PodFlowDialog({
     }));
 
     return {
-      FoId: String(foId || ""),
+      FoId: effectiveFoId,
       Discrepency: "X",
-      Items: JSON.stringify(mapped), // IMPORTANT: Items is a STRING
+      Items: JSON.stringify(mapped),
     };
   };
 
@@ -198,9 +264,6 @@ export default function PodFlowDialog({
 
       setSubmitting(true);
       if (!payload.FoId) throw new Error("Missing FoId.");
-
-      // for no discrepancy backend expects StopId, ensure it exists
-      if (!hasDiscrepancy && !payload.StopId) throw new Error("Missing StopId.");
 
       await postToOData(payload);
       closeDialog();
@@ -295,7 +358,7 @@ export default function PodFlowDialog({
               FREIGHT ORDER ID
             </Typography>
             <Typography sx={{ fontSize: 13, color: TEXT_PRIMARY, fontWeight: 700 }}>
-              {foId || "Not Selected"}
+              {effectiveFoId || "Not Selected"}
             </Typography>
           </Box>
         </Box>

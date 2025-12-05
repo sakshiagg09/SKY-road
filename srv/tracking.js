@@ -60,7 +60,7 @@ async function s4Post(url, payload) {
 }
 
 module.exports = cds.service.impl(function () {
-  const { trackingDetails, eventReporting } = this.entities;
+  const { trackingDetails, eventReporting, updatesPOD } = this.entities;
 
   this.on("READ", trackingDetails, async (req) => {
     const foId = req.query.SELECT.where?.[2]?.val;
@@ -72,5 +72,9 @@ module.exports = cds.service.impl(function () {
   this.on("CREATE", eventReporting, async (req) => {
     // IMPORTANT: use your real entity set name
     return await s4Post("/EventsReportingSet ", req.data);
+  });
+  this.on("CREATE", updatesPOD, async (req) => {
+    // IMPORTANT: use your real entity set name
+    return await s4Post("/ProofOfDeliverySet ", req.data);
   });
 });
