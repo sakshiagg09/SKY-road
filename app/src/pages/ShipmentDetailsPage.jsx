@@ -19,7 +19,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   const TEXT_PRIMARY = "#071E54";
   const TEXT_SECONDARY = "#6B6C6E";
 
-  // progress stored here — RouteTimeline will update via onAction("progress", percent)
+  // progress is set from RouteTimeline via onAction("progress", percent)
   const [progress, setProgress] = useState(60);
 
   if (!selectedShipment) {
