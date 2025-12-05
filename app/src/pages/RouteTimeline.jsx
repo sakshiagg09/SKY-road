@@ -22,13 +22,8 @@ import {
 import MaterialItemList from "../components/MaterialItemList";
 
 /**
- * RouteTimeline — enforces strict per-stop sequence + sequential reporting across stops.
- * UI retained from your original component.
- *
- * Props:
- *  - selectedShipment
- *  - onAction (action, payload)
- *  - eventsUrl (POST endpoint)
+ * RouteTimeline — updated badge logic to prefer runtime reportedMap state
+ * and otherwise fall back to stop.eventRaw / sequence.
  */
 export default function RouteTimeline({
   selectedShipment,
@@ -42,13 +37,13 @@ export default function RouteTimeline({
   const GREEN = "#2E7D32";
   const BLUE = "#42A5F5";
 
-  // UI/menu state
+  // menu state
   const [anchorEl, setAnchorEl] = useState(null);
   const [activeStopKey, setActiveStopKey] = useState(null);
-  const menuOpen = Boolean(anchorEl);
   const [sending, setSending] = useState({});
+  const menuOpen = Boolean(anchorEl);
 
-  // Items view
+  // items view
   const [showItems, setShowItems] = useState(false);
   const [itemsStop, setItemsStop] = useState(null);
   const [itemsLoading, setItemsLoading] = useState(false);
@@ -65,7 +60,7 @@ export default function RouteTimeline({
 
   const { stops: rawStops = [], FoId } = selectedShipment;
 
-  // helpers
+  // ----------------- helpers -----------------
   const parseSapDateTimeToDate = (dt) => {
     if (dt === null || typeof dt === "undefined") return null;
     const s = String(dt).trim();
@@ -106,29 +101,30 @@ export default function RouteTimeline({
     return parts.join(", ") || "-";
   };
 
-  // normalize stops
-  const stops = useMemo(() => {
-    return rawStops.map((s, idx) => ({
-      idx,
-      stopid: s.stopId ?? s.stopid ?? String(idx),
-      locid: s.locId ?? s.locid ?? "",
-      stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "").toString().toUpperCase(),
-      dateTime: parseSapDateTimeToDate(s.dateTime ?? s.dateTimeString ?? s.dateTime),
-      name1: s.name1 ?? s.name ?? "",
-      street: s.street ?? "",
-      postCode1: s.postCode1 ?? s.postCode ?? "",
-      city1: s.city1 ?? s.city ?? "",
-      region: s.region ?? "",
-      country: s.country ?? "",
-      typeLoc: (s.typeLoc ?? s.typeLoc ?? s.locationType ?? "").toString(),
-      eventRaw: (s.event ?? s.Event ?? "") || "",
-      materialLoad: Number(s.materialLoad ?? s.materialLoadQty ?? s.loadQty ?? s.load ?? 0) || 0,
-      materialUnload: Number(s.materialUnload ?? s.materialUnloadQty ?? s.unloadQty ?? s.unload ?? 0) || 0,
-    }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawStops]);
+  // normalize stops to stable fields
+  const stops = useMemo(
+    () =>
+      rawStops.map((s, idx) => ({
+        idx,
+        stopid: s.stopId ?? s.stopid ?? String(idx),
+        locid: s.locId ?? s.locid ?? "",
+        stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "").toString().toUpperCase(),
+        dateTime: parseSapDateTimeToDate(s.dateTime ?? s.dateTimeString ?? s.dateTime),
+        name1: s.name1 ?? s.name ?? "",
+        street: s.street ?? "",
+        postCode1: s.postCode1 ?? s.postCode ?? "",
+        city1: s.city1 ?? s.city ?? "",
+        region: s.region ?? "",
+        country: s.country ?? "",
+        typeLoc: (s.typeLoc ?? s.typeLoc ?? s.locationType ?? "").toString(),
+        eventRaw: (s.event ?? s.Event ?? "") || "",
+        materialLoad: Number(s.materialLoad ?? s.materialLoadQty ?? s.loadQty ?? s.load ?? 0) || 0,
+        materialUnload: Number(s.materialUnload ?? s.materialUnloadQty ?? s.unloadQty ?? s.unload ?? 0) || 0,
+      })),
+    [rawStops]
+  );
 
-  // display load/unload (first two load, rest unload) — keep same behaviour
+  // derive display load/unload (first two = load, rest = unload)
   const derivedStops = useMemo(() => {
     const out = [];
     let totalLoaded = 0;
@@ -155,7 +151,7 @@ export default function RouteTimeline({
     return out;
   }, [stops]);
 
-  // reportedMap seeded from stop.event
+  // reportedMap seeded from stop.event (FinalInfo.event)
   // shape: { stopKey: { arrival: true, departure: true, pod: true, items: true } }
   const [reportedMap, setReportedMap] = useState(() => {
     const m = {};
@@ -167,12 +163,13 @@ export default function RouteTimeline({
       if (ev.includes("DEPART")) m[key].departure = true;
       else if (ev.includes("ARRIV")) m[key].arrival = true;
       else if (ev.includes("POD")) m[key].pod = true;
+      else if (ev.includes("DEPARTURE")) m[key].departure = true;
       else m[key].departure = true;
     });
     return m;
   });
 
-  // completed stops count = stops that have arrival OR departure reported
+  // completedCount and progress
   const completedCount = useMemo(
     () =>
       derivedStops.reduce((acc, s) => {
@@ -189,7 +186,7 @@ export default function RouteTimeline({
     if (typeof onAction === "function") onAction("progress", progressPercent);
   }, [progressPercent, onAction]);
 
-  // next pending index across stops (first stop without arrival/departure)
+  // nextPendingIndex = first stop missing arrival or departure
   const nextPendingIndex = useMemo(() => {
     for (let i = 0; i < derivedStops.length; i++) {
       const s = derivedStops[i];
@@ -200,7 +197,7 @@ export default function RouteTimeline({
     return derivedStops.length;
   }, [derivedStops, reportedMap]);
 
-  // helpers: map server event -> action key
+  // map server Event -> action key
   const mapServerEventToActionKey = (ev) => {
     if (!ev) return null;
     const e = String(ev).toUpperCase();
@@ -210,22 +207,20 @@ export default function RouteTimeline({
     return null;
   };
 
-  // define allowed sequence per stop (items always first)
+  // allowed sequence per stop (exact per your request)
   const allowedSequenceForStop = (stop) => {
     const seq = (stop.stopseqpos || "").toUpperCase();
     const typeLoc = (stop.typeLoc || "").toString().toLowerCase();
     if (seq === "F") return ["items", "departure"];
     if (seq === "I") {
-      // if shipper: no POD
       if (typeLoc === "shipper") return ["items", "arrival", "departure"];
       return ["items", "arrival", "pod", "departure"];
     }
-    if (seq === "L") return ["items", "pod", "departure"];
-    // fallback: items, arrival, departure
+    if (seq === "L") return ["items", "arrival", "pod"];
     return ["items", "arrival", "pod", "departure"];
   };
 
-  // send event to server and update reportedMap using server response (Event)
+  // POST event and update reportedMap based on server response Event
   const sendEventReport = async (networkActionCode, stop) => {
     const stopKey = stop.stopid || stop.locid || String(stop.idx);
     const payload = { FoId: FoId ?? selectedShipment.FoId, Action: networkActionCode, StopId: stop.locid || stop.stopid || "" };
@@ -252,7 +247,6 @@ export default function RouteTimeline({
         copy[stopKey] = { ...(copy[stopKey] || {}) };
         if (mapped) copy[stopKey][mapped] = true;
         else {
-          // fallback from networkActionCode
           if (networkActionCode === "ARRV") copy[stopKey].arrival = true;
           else if (networkActionCode === "DEPT") copy[stopKey].departure = true;
           else if (networkActionCode === "POD") copy[stopKey].pod = true;
@@ -274,7 +268,7 @@ export default function RouteTimeline({
     }
   };
 
-  // fetch Items (items always visible)
+  // fetch items
   const fetchItemsForStop = async (stop) => {
     setItemsStop(stop);
     setShowItems(true);
@@ -284,39 +278,36 @@ export default function RouteTimeline({
       if (!loc || !FoId) return;
       const url = `/sap/opu/odata/SAP/ZSKY_SRV/ItemsSet(Location='${encodeURIComponent(loc)}',FoId='${encodeURIComponent(FoId ?? selectedShipment.FoId)}')`;
       const res = await fetch(url);
-      if (!res.ok) { setItemsStop((s)=>({ ...s, items: [] })); return; }
-      const json = await res.json().catch(()=>null);
+      if (!res.ok) { setItemsStop((s) => ({ ...s, items: [] })); return; }
+      const json = await res.json().catch(() => null);
       const items = Array.isArray(json?.value) ? json.value : Array.isArray(json?.d?.results) ? json.d.results : Array.isArray(json?.results) ? json.results : Array.isArray(json) ? json : [];
       setItemsStop((s) => ({ ...s, items }));
       const key = stop.stopid || stop.locid || String(stop.idx);
       setReportedMap((prev) => ({ ...prev, [key]: { ...(prev[key] || {}), items: true } }));
     } catch (e) {
       console.warn("Failed to fetch items", e);
-      setItemsStop((s)=>({ ...s, items: [] }));
+      setItemsStop((s) => ({ ...s, items: [] }));
     } finally {
       setItemsLoading(false);
     }
   };
 
-  // menu open/close
   const handleMenuOpen = (event, stopKey) => { setAnchorEl(event.currentTarget); setActiveStopKey(stopKey); };
   const handleMenuClose = () => { setAnchorEl(null); setActiveStopKey(null); };
 
-  // compute and enforce sequence: only the next unreported action (besides items) is shown
   const handleAction = async (actionKey) => {
     handleMenuClose();
     const stop = derivedStops.find((s) => (s.stopid || s.locid || String(s.idx)) === activeStopKey);
     if (!stop) return;
     const stopIndex = derivedStops.findIndex((s) => (s.stopid || s.locid || String(s.idx)) === activeStopKey);
 
-    // items: always allowed
     if (actionKey === "items") {
       await fetchItemsForStop(stop);
       if (typeof onAction === "function") onAction("items", stop);
       return;
     }
 
-    // only allow non-items on either nextPendingIndex (start of stop) OR recentlyStartedIndex (continue same stop)
+    // cross-stop rule
     const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
     const allowedToAct = (stopIndex === nextPendingIndex) || (stopIndex === recentlyStartedIndex);
     if (!allowedToAct) {
@@ -324,19 +315,22 @@ export default function RouteTimeline({
       return;
     }
 
-    // within stop enforce per-stop order: find allowedSequence and detect next unreported action
+    // per-stop sequence enforcement
     const seq = allowedSequenceForStop(stop);
     const key = stop.stopid || stop.locid || String(stop.idx);
     const reported = reportedMap[key] || {};
-    // find first sequence action not reported (skip 'items' for this check because items can be independent)
-    const findNext = seq.find((a) => !reported[a]);
-    // If the user clicked an action that's not the next unreported (and not 'items'), block it
-    if (actionKey !== "items" && findNext && actionKey !== findNext) {
-      alert("Please follow the event sequence for this stop. Report the next event first.");
+    const actionIndex = seq.indexOf(actionKey);
+    if (actionIndex === -1) {
+      alert("Action not available for this stop.");
+      return;
+    }
+    const priorActions = seq.slice(1, actionIndex); // skip 'items'
+    const priorAllReported = priorActions.every((pa) => Boolean(reported[pa]));
+    if (!priorAllReported) {
+      alert("Please follow the event sequence for this stop. Report earlier events first.");
       return;
     }
 
-    // send events: map action to network code
     if (actionKey === "pod") {
       const r = await sendEventReport("POD", stop);
       if (r.ok && typeof onAction === "function") onAction("pod", { stop, response: r.body });
@@ -352,8 +346,15 @@ export default function RouteTimeline({
     if (typeof onAction === "function") onAction(actionKey, stop);
   };
 
-  // badge priority
+  // ---- badge logic: PREFER runtime reportedMap state ----
   const badgeForStop = (stop) => {
+    const key = stop.stopid || stop.locid || String(stop.idx);
+    const r = reportedMap[key] || {};
+    if (r.departure) return "Departure";
+    if (r.arrival) return "Arrival";
+    if (r.pod) return "POD";
+
+    // fallback to original FinalInfo.event if present
     const ev = (stop.eventRaw ?? "").toString().trim().toUpperCase();
     if (ev) {
       if (ev.includes("DEPART")) return "Departure";
@@ -361,6 +362,8 @@ export default function RouteTimeline({
       if (ev.includes("POD")) return "POD";
       return ev;
     }
+
+    // sequence fallback
     if ((stop.stopseqpos || "").toUpperCase() === "F") return "Departure";
     if ((stop.stopseqpos || "").toUpperCase() === "I") return "Arrival";
     const idx = stop.idx;
@@ -368,7 +371,6 @@ export default function RouteTimeline({
     return "Arrival";
   };
 
-  // items view
   if (showItems) {
     return (
       <MaterialItemList
@@ -380,7 +382,7 @@ export default function RouteTimeline({
     );
   }
 
-  // render timeline UI (unchanged appearance)
+  // ----------------- render timeline UI (keeps original appearance) -----------------
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -396,32 +398,18 @@ export default function RouteTimeline({
           const color = isCompleted ? GREEN : BLUE;
           const badge = badgeForStop(stop);
 
-          // allowed sequence for this stop
           const seq = allowedSequenceForStop(stop);
-          // compute next unreported action for this stop (includes 'items' but items are always visible)
-          const nextUnreported = seq.find((a) => !reported[a]);
+          const allowPod = seq.includes("pod");
 
-          // build menu options:
-          // - Items always visible
-          // - non-items: only include the nextUnreported (so one-by-one at this stop)
-          const allowPod = !((stop.typeLoc || "").toString().toLowerCase() === "shipper" && (stop.stopseqpos || "").toUpperCase() === "I");
-
+          // build menu: items always; show all remaining unreported actions
           const menuOptions = [{ key: "items", label: "Items", Icon: Inventory2OutlinedIcon }];
-          if (nextUnreported && nextUnreported !== "items") {
-            // only include if it's allowed in this stop definition (and pod allowed)
-            if (nextUnreported === "pod" && !allowPod) {
-              // skip
-            } else {
-              if (nextUnreported === "arrival") menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
-              else if (nextUnreported === "departure") menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
-              else if (nextUnreported === "pod") menuOptions.push({ key: "pod", label: "Proof of Delivery", Icon: AssignmentTurnedInIcon });
-            }
-          }
+          if (seq.includes("arrival") && !reported.arrival) menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
+          if (seq.includes("pod") && !reported.pod && allowPod) menuOptions.push({ key: "pod", label: "Proof of Delivery", Icon: AssignmentTurnedInIcon });
+          if (seq.includes("departure") && !reported.departure) menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
 
-          // cross-stop enabling: allowed to act if this stop is nextPendingIndex or recentlyStartedIndex
+          // cross-stop enabling
           const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
-          const isNextPending = idx === nextPendingIndex;
-          const isRecentlyStarted = idx === recentlyStartedIndex;
+          const allowedStopToAct = (idx === nextPendingIndex) || (idx === recentlyStartedIndex);
 
           const plannedDate = stop.dateTime;
           let actualDate = null;
@@ -494,7 +482,7 @@ export default function RouteTimeline({
                   </Box>
                 </div>
 
-                {/* absolute right box */}
+                {/* badge + menu */}
                 <div style={{ position: "absolute", top: 12, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, pointerEvents: "none" }}>
                   <div style={{ pointerEvents: "auto" }}>
                     <span className="px-2 py-1 rounded-full text-[10px] font-semibold" style={{ backgroundColor: `${color}15`, color, display: "inline-block" }}>{badge}</span>
@@ -507,7 +495,6 @@ export default function RouteTimeline({
                 </div>
               </div>
 
-              {/* menu */}
               <Menu
                 id={`stop-menu-${key}`}
                 anchorEl={anchorEl}
@@ -536,18 +523,26 @@ export default function RouteTimeline({
                   const codeForNetwork = opt.key === "arrival" ? "ARRV" : opt.key === "departure" ? "DEPT" : opt.key === "pod" ? "POD" : null;
                   const isSending = Boolean(sending[`${key}_${codeForNetwork ?? opt.key}`]);
 
-                  // enable rule:
+                  // NEW enable rule:
                   // - Items always enabled
-                  // - Non-items enabled only when this stop is nextPendingIndex or recentlyStartedIndex
-                  const recentlyStartedIndex2 = Math.max(0, nextPendingIndex - 1);
-                  const enabled = opt.key === "items" ? true : (idx === nextPendingIndex) || (idx === recentlyStartedIndex2);
+                  // - Non-items enabled when:
+                  //    a) this stop is allowed to act (nextPendingIndex or recentlyStartedIndex)
+                  //    AND
+                  //    b) all prior non-items actions in the sequence are already reported
+                  const reportedForStop = reportedMap[key] || {};
+                  const seqForStop = allowedSequenceForStop(stop);
+                  const idxOfThisAction = seqForStop.indexOf(opt.key);
+                  const priorActions = seqForStop.slice(1, Math.max(1, idxOfThisAction)); // actions before this one, skip 'items'
+                  const priorAllReported = priorActions.every((pa) => Boolean(reportedForStop[pa]));
+                  const allowedStop = (idx === nextPendingIndex) || (idx === Math.max(0, nextPendingIndex - 1));
+                  const enabled = opt.key === "items" ? true : (allowedStop && priorAllReported);
 
                   return (
                     <MenuItem
                       key={opt.key}
                       onClick={() => {
                         if (!enabled) {
-                          alert("Please report stops in order. This action is not yet available.");
+                          alert("Please follow the reporting sequence. This action is not yet available.");
                           return;
                         }
                         handleAction(opt.key);
