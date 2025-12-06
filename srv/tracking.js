@@ -2,6 +2,36 @@
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 
+const { UPSERT } = cds.ql;
+
+// Robust extraction of $filter values from CAP query AST
+function getFilterVal(req, prop) {
+  const where = req?.query?.SELECT?.where;
+  if (!Array.isArray(where)) return undefined;
+  for (let i = 0; i < where.length; i++) {
+    const t = where[i];
+    // Common CAP pattern: {ref:['FoId']}, '=', {val:'...'}
+    if (t && typeof t === 'object' && Array.isArray(t.ref) && t.ref[0] === prop) {
+      if (where[i + 1] === '=' && where[i + 2] && typeof where[i + 2] === 'object' && 'val' in where[i + 2]) {
+        return where[i + 2].val;
+      }
+      // Some templates use indexes (legacy)
+      if (where[i + 2] && typeof where[i + 2] === 'object' && 'val' in where[i + 2]) {
+        return where[i + 2].val;
+      }
+    }
+  }
+  return undefined;
+}
+
+function normalizeV2(data) {
+  // OData V2 may return { d: { results: [...] } } or { d: {...} }
+  const d = data?.d ?? data;
+  if (Array.isArray(d?.results)) return d.results;
+  if (d && typeof d === 'object') return [d];
+  return [];
+}
+
 const DESTINATION = "Sky_App";
 
 const cookieFromSetCookie = (setCookie) => {
@@ -61,32 +91,64 @@ async function s4Post(url, payload) {
 }
 
 module.exports = cds.service.impl(function () {
-  const { trackingDetails, eventReporting, updatesPOD,shipmentItems } = this.entities;
+  const { trackingDetails, eventReporting, updatesPOD, shipmentItems } = this.entities;
+
+  // DB tables (persistent)
+  const {
+    Shipments,
+    ShipmentStops,
+    StopEvents,
+    Items
+  } = cds.entities('sky.db');
 
   this.on("READ", trackingDetails, async (req) => {
-    const foId = req.query.SELECT.where?.[2]?.val;
+    const tx = cds.tx(req);
+
+    const foId = getFilterVal(req, 'FoId') ?? req.query.SELECT.where?.[2]?.val;
+    if (!foId) return [];
+
     const data = await s4Get(`/SearchFOSet('${foId}')?$format=json`);
-    const row = data?.results?.[0] ?? data;
-    return row ? [{ FoId: row.FoId, FinalInfo: row.FinalInfo }] : [];
+    const rows = normalizeV2(data);
+    const row = rows[0];
+    if (!row) return [];
+
+    // Persist to HANA (UPSERT by key FoId)
+    await tx.run(
+      UPSERT.into(Shipments).entries({
+        FoId: row.FoId,
+        FinalInfo: row.FinalInfo ?? null,
+        DirectionsInfo: row.DirectionsInfo ?? null,
+        StopInfo: row.StopInfo ?? null,
+      })
+    );
+
+    // Return to UI
+    return [{
+      FoId: row.FoId,
+      FinalInfo: row.FinalInfo,
+      DirectionsInfo: row.DirectionsInfo,
+      StopInfo: row.StopInfo,
+    }];
   });   
 
   this.on("READ", shipmentItems, async (req) => {
-    // Support both key read and $filter read
-     const foId = req.query.SELECT.where?.[2]?.val;
-     const location = req.query.SELECT.where?.[6]?.val;
+    const tx = cds.tx(req);
 
-    // Build SEGW-style path:
-    // /sap/opu/odata/SAP/ZSKY_SRV/ItemsSet(Location='1000000000',FoId='6300003009')?$format=json
+    // Read FoId & Location from $filter (CAP query AST)
+    const foId = getFilterVal(req, 'FoId') ?? req.query.SELECT.where?.[2]?.val;
+    const location = getFilterVal(req, 'Location') ?? req.query.SELECT.where?.[6]?.val;
+
+    if (!foId || !location) return [];
+
     const path =
       `/ItemsSet?$filter=FoId eq '${foId}'` +
       ` and Location eq '${location}'&$format=json`;
-    const d = await s4Get(path);
 
-    // OData v2: { results: [...] } or single entity
-    const rows = Array.isArray(d?.results) ? d.results : d ? [d] : [];
+    const v2 = await s4Get(path);
+    const rows = normalizeV2(v2);
 
-    // Map to CAP entity Items (fields we defined in schema)
-    return rows.map((r) => ({
+    // Map remote payload -> DB/service shape
+    const items = rows.map((r) => ({
       FoId: r.FoId,
       Location: r.Location,
       PackageId: r.PackageId,
@@ -98,14 +160,21 @@ module.exports = cds.service.impl(function () {
       GrossWeight: r.GrossWeight,
       GrossWeightUom: r.GrossWeightUom,
     }));
+
+    // Persist to HANA (UPSERT by composite key FoId+Location+PackageId)
+    if (items.length) {
+      await tx.run(UPSERT.into(Items).entries(items));
+    }
+
+    return items;
   });
 
   this.on("CREATE", eventReporting, async (req) => {
     // IMPORTANT: use your real entity set name
-    return await s4Post("/EventsReportingSet ", req.data);
+    return await s4Post("/EventsReportingSet", req.data);
   });
   this.on("CREATE", updatesPOD, async (req) => {
     // IMPORTANT: use your real entity set name
-    return await s4Post("/ProofOfDeliverySet ", req.data);
+    return await s4Post("/ProofOfDeliverySet", req.data);
   });
 });
