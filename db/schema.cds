@@ -44,17 +44,18 @@ entity shipmentItems {
 
 @cds.persistence.skip
 entity Items {
-    key itemNo     : String;
-        FoId       : String;
-        locationId : String;
-        dispQty    : Int16;
-        rcvQty     : Int16;
-        productId  : String;
-        itemDesc   : String;
-        uom        : String;
-        category   : String;
-        isEdited   : Boolean;
+    key FoId           : String;
+    key Location       : String;
+        PackageId      : String;
+        ItemDescr      : String;
+        ItemCat        : String;
+        Type           : String;
+        Quantity       : Decimal(15, 3);
+        QuantityUom    : String;
+        GrossWeight    : Decimal(15, 3);
+        GrossWeightUom : String;
 }
+
 
 @cds.persistence.skip
 entity unplannedEvent {

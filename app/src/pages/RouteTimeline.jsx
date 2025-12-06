@@ -269,28 +269,52 @@ export default function RouteTimeline({
   };
 
   // fetch items
-  const fetchItemsForStop = async (stop) => {
-    setItemsStop(stop);
-    setShowItems(true);
-    setItemsLoading(true);
-    try {
-      const loc = stop.locid || stop.stopid || "";
-      if (!loc || !FoId) return;
-      const url = `/sap/opu/odata/SAP/ZSKY_SRV/ItemsSet(Location='${encodeURIComponent(loc)}',FoId='${encodeURIComponent(FoId ?? selectedShipment.FoId)}')`;
-      const res = await fetch(url);
-      if (!res.ok) { setItemsStop((s) => ({ ...s, items: [] })); return; }
-      const json = await res.json().catch(() => null);
-      const items = Array.isArray(json?.value) ? json.value : Array.isArray(json?.d?.results) ? json.d.results : Array.isArray(json?.results) ? json.results : Array.isArray(json) ? json : [];
-      setItemsStop((s) => ({ ...s, items }));
-      const key = stop.stopid || stop.locid || String(stop.idx);
-      setReportedMap((prev) => ({ ...prev, [key]: { ...(prev[key] || {}), items: true } }));
-    } catch (e) {
-      console.warn("Failed to fetch items", e);
+ const fetchItemsForStop = async (stop) => {
+  setItemsStop(stop);
+  setShowItems(true);
+  setItemsLoading(true);
+
+  try {
+    const loc = stop.locid || stop.stopid || "";
+    const foId = selectedShipment.FoId;
+
+    if (!loc || !foId) {
+      console.warn("Missing loc or FoId for items call", { loc, foId });
       setItemsStop((s) => ({ ...s, items: [] }));
-    } finally {
-      setItemsLoading(false);
+      return;
     }
-  };
+
+    // ✅ Call CAP OData, same style as trackingDetails
+    const url =
+      `/odata/v4/GTT/shipmentItems` +
+      `?$filter=FoId eq '${foId}'` +
+      ` and Location eq '${loc}'`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error("shipmentItems call failed", res.status, res.statusText);
+      setItemsStop((s) => ({ ...s, items: [] }));
+      return;
+    }
+
+    const json = await res.json().catch(() => null);
+    const items = Array.isArray(json?.value) ? json.value : [];
+
+    setItemsStop((s) => ({ ...s, items }));
+
+    const key = stop.stopid || stop.locid || String(stop.idx);
+    setReportedMap((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] || {}), items: true },
+    }));
+  } catch (e) {
+    console.warn("Failed to fetch items", e);
+    setItemsStop((s) => ({ ...s, items: [] }));
+  } finally {
+    setItemsLoading(false);
+  }
+};
+
 
   const handleMenuOpen = (event, stopKey) => { setAnchorEl(event.currentTarget); setActiveStopKey(stopKey); };
   const handleMenuClose = () => { setAnchorEl(null); setActiveStopKey(null); };

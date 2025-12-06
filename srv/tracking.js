@@ -1,3 +1,4 @@
+//srv/tracking.js
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 
@@ -60,13 +61,43 @@ async function s4Post(url, payload) {
 }
 
 module.exports = cds.service.impl(function () {
-  const { trackingDetails, eventReporting, updatesPOD } = this.entities;
+  const { trackingDetails, eventReporting, updatesPOD,shipmentItems } = this.entities;
 
   this.on("READ", trackingDetails, async (req) => {
     const foId = req.query.SELECT.where?.[2]?.val;
     const data = await s4Get(`/SearchFOSet('${foId}')?$format=json`);
     const row = data?.results?.[0] ?? data;
     return row ? [{ FoId: row.FoId, FinalInfo: row.FinalInfo }] : [];
+  });   
+
+  this.on("READ", shipmentItems, async (req) => {
+    // Support both key read and $filter read
+     const foId = req.query.SELECT.where?.[2]?.val;
+     const location = req.query.SELECT.where?.[6]?.val;
+
+    // Build SEGW-style path:
+    // /sap/opu/odata/SAP/ZSKY_SRV/ItemsSet(Location='1000000000',FoId='6300003009')?$format=json
+    const path =
+      `/ItemsSet?$filter=FoId eq '${foId}'` +
+      ` and Location eq '${location}'&$format=json`;
+    const d = await s4Get(path);
+
+    // OData v2: { results: [...] } or single entity
+    const rows = Array.isArray(d?.results) ? d.results : d ? [d] : [];
+
+    // Map to CAP entity Items (fields we defined in schema)
+    return rows.map((r) => ({
+      FoId: r.FoId,
+      Location: r.Location,
+      PackageId: r.PackageId,
+      ItemDescr: r.ItemDescr,
+      ItemCat: r.ItemCat,
+      Type: r.Type,
+      Quantity: r.Quantity,
+      QuantityUom: r.QuantityUom,
+      GrossWeight: r.GrossWeight,
+      GrossWeightUom: r.GrossWeightUom,
+    }));
   });
 
   this.on("CREATE", eventReporting, async (req) => {
