@@ -8,11 +8,15 @@ export default defineConfig({
     port: 5173,          // optional: Vite default port
     open: true,          // optional: auto-open browser
     proxy: {
-      // Forward all API calls to CAP backend
       '/odata': {
+        target: 'http://localhost:5001',
+        changeOrigin: true,
+      },
+      // Forward all API calls to CAP backend
+     /* '/odata': {
         target: 'http://localhost:4004',
         changeOrigin: true,
-      }
+      }*/
     }
   }
 })

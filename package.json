@@ -36,6 +36,9 @@
       "destinations": true,
       "[production]": {
         "auth": "xsuaa"
+      },
+      "[development]": {
+        "auth": "mocked"
       }
     }
   }

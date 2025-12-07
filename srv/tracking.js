@@ -90,7 +90,10 @@ async function s4Post(url, payload) {
   return res.data?.d ?? res.data;
 }
 
-module.exports = cds.service.impl(function () {
+module.exports = cds.service.impl(async function () {
+  // Open DB service once so the pool is ready before first request
+  const db = await cds.connect.to('db');
+  const run = (...args) => db.run(...args);
   const { trackingDetails, eventReporting, updatesPOD, shipmentItems } = this.entities;
 
   // DB tables (persistent)
@@ -101,9 +104,14 @@ module.exports = cds.service.impl(function () {
     Items
   } = cds.entities('sky.db');
 
-  this.on("READ", trackingDetails, async (req) => {
-    const tx = cds.tx(req);
+  const safeRun = (stmt, context) => {
+    // Fire-and-forget; do not block OData response on DB
+    run(stmt).catch((err) => {
+      console.warn(`DB persistence skipped (${context}):`, err.message || err);
+    });
+  };
 
+  this.on("READ", trackingDetails, async (req) => {
     const foId = getFilterVal(req, 'FoId') ?? req.query.SELECT.where?.[2]?.val;
     if (!foId) return [];
 
@@ -113,13 +121,14 @@ module.exports = cds.service.impl(function () {
     if (!row) return [];
 
     // Persist to HANA (UPSERT by key FoId)
-    await tx.run(
+    safeRun(
       UPSERT.into(Shipments).entries({
         FoId: row.FoId,
         FinalInfo: row.FinalInfo ?? null,
         DirectionsInfo: row.DirectionsInfo ?? null,
         StopInfo: row.StopInfo ?? null,
-      })
+      }),
+      'Shipments'
     );
 
     // Return to UI
@@ -132,8 +141,6 @@ module.exports = cds.service.impl(function () {
   });   
 
   this.on("READ", shipmentItems, async (req) => {
-    const tx = cds.tx(req);
-
     // Read FoId & Location from $filter (CAP query AST)
     const foId = getFilterVal(req, 'FoId') ?? req.query.SELECT.where?.[2]?.val;
     const location = getFilterVal(req, 'Location') ?? req.query.SELECT.where?.[6]?.val;
@@ -163,7 +170,7 @@ module.exports = cds.service.impl(function () {
 
     // Persist to HANA (UPSERT by composite key FoId+Location+PackageId)
     if (items.length) {
-      await tx.run(UPSERT.into(Items).entries(items));
+      safeRun(UPSERT.into(Items).entries(items), 'Items');
     }
 
     return items;
