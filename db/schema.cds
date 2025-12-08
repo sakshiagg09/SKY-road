@@ -70,7 +70,7 @@ entity StopEvents : managed {
         StopId      : String(20);
 
         Event       : String(20); // ARRIVAL / DEPARTURE / POD etc.
-        Action      : String(10); // ARRV / DEPT / POD (optional normalized code)
+        Action      : String(10); // (optional norARRV / DEPT / POD malized code)
         EventTime   : Timestamp; // convert from 20251126230000 -> Timestamp
         TimeZone    : String(10);
 

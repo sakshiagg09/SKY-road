@@ -4,7 +4,6 @@ import ShipmentSearchPage from "./pages/ShipmentSearchPage";
 import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
 import BottomBar from "./components/BottomBar";
 import ReportEventDialog from "./components/ReportEventDialog";
-import PodFlowDialog from "./components/PodFlowDialog";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
@@ -13,10 +12,6 @@ export default function App() {
   // Report Event dialog control (global)
   const [reportOpen, setReportOpen] = useState(false);
   const [reportMode, setReportMode] = useState("unplanned"); // or "planned"
-
-  // POD flow control (global)
-  const [podOpen, setPodOpen] = useState(false);
-  const [podStop, setPodStop] = useState(null);
 
   const BAR_HEIGHT = 64;
   const contentPaddingBottom = BAR_HEIGHT + 70;
@@ -30,17 +25,11 @@ export default function App() {
     setReportOpen(false);
   };
 
-  // This receives actions from RouteTimeline (items, arrival, departure, pod,…)
-  const handleTimelineAction = (action, stop) => {
-    if (action === "pod") {
-      // open POD flow for this stop
-      setPodStop(stop);
-      setPodOpen(true);
-      return;
-    }
-
-    // For now, just log others – you can add more global behaviours later
-    console.log("Timeline action:", action, stop);
+  // This receives actions from ShipmentDetailsPage/RouteTimeline
+  // (items, arrival, departure, pod, progress, …)
+  const handleTimelineAction = (action, payload) => {
+    console.log("Timeline action:", action, payload);
+    // POD flow is now fully handled inside ShipmentDetailsPage (PodFlowDialog there)
   };
 
   const renderPage = () => {
@@ -126,18 +115,6 @@ export default function App() {
         open={reportOpen}
         mode={reportMode}
         onClose={handleCloseReport}
-      />
-
-      {/* Global POD Flow dialog (opens when user selects POD on a stop) */}
-      <PodFlowDialog
-        open={podOpen}
-        stop={podStop}
-        foId={selectedShipment?.FoId}
-        onClose={() => setPodOpen(false)}
-        onSubmit={(payload) => {
-          console.log("POD submitted:", payload);
-          setPodOpen(false);
-        }}
       />
     </div>
   );

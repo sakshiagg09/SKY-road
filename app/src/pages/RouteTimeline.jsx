@@ -22,8 +22,10 @@ import {
 import MaterialItemList from "../components/MaterialItemList";
 
 /**
- * RouteTimeline — updated badge logic to prefer runtime reportedMap state
- * and otherwise fall back to stop.eventRaw / sequence.
+ * RouteTimeline — UI same as before, logic updated:
+ * - Events enabled strictly one-by-one
+ * - A step is marked done ONLY based on backend Event
+ * - For last stop (stopseqpos = 'L'): Items -> Arrival -> POD (no Departure)
  */
 export default function RouteTimeline({
   selectedShipment,
@@ -48,7 +50,11 @@ export default function RouteTimeline({
   const [itemsStop, setItemsStop] = useState(null);
   const [itemsLoading, setItemsLoading] = useState(false);
 
-  if (!selectedShipment || !Array.isArray(selectedShipment.stops) || selectedShipment.stops.length === 0) {
+  if (
+    !selectedShipment ||
+    !Array.isArray(selectedShipment.stops) ||
+    selectedShipment.stops.length === 0
+  ) {
     return (
       <div style={{ padding: 12 }}>
         <Typography variant="body2" sx={{ color: TEXT_SECONDARY }}>
@@ -81,7 +87,10 @@ export default function RouteTimeline({
   const formatDateTime = (d) => {
     if (!d) return "-";
     const date = d.toLocaleDateString("en-GB");
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const time = d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
     return `${date}, ${time}`;
   };
 
@@ -94,11 +103,42 @@ export default function RouteTimeline({
     if (!s) return "-";
     const parts = [];
     if (s.street) parts.push(s.street);
-    const cityLine = [s.postCode1 ?? s.postCode, s.city1 ?? s.city].filter(Boolean).join(" ");
+    const cityLine = [s.postCode1 ?? s.postCode, s.city1 ?? s.city]
+      .filter(Boolean)
+      .join(" ");
     if (cityLine) parts.push(cityLine);
     const regionCountry = [s.region, s.country].filter(Boolean).join(", ");
     if (regionCountry) parts.push(regionCountry);
     return parts.join(", ") || "-";
+  };
+
+  const getStopKey = (s) => s.stopid || s.locid || String(s.idx);
+
+  // allowed sequence per stop
+  const allowedSequenceForStop = (stop) => {
+    const seq = (stop.stopseqpos || "").toUpperCase();
+    const typeLoc = (stop.typeLoc || "").toString().toLowerCase();
+    if (seq === "F") return ["items", "departure"];
+    if (seq === "I") {
+      if (typeLoc === "shipper") return ["items", "arrival", "departure"];
+      return ["items", "arrival", "pod", "departure"];
+    }
+    if (seq === "L") return ["items", "arrival", "pod"]; // LAST stop: POD is final
+    return ["items", "arrival", "pod", "departure"];
+  };
+
+  // compute flags for all actions up to lastKey (arrival/pod/departure)
+  const computeFlagsUpTo = (seq, lastKey) => {
+    const idx = seq.indexOf(lastKey);
+    if (idx === -1) return {};
+    const flags = {};
+    for (let i = 1; i <= idx; i++) {
+      const k = seq[i];
+      if (k && k !== "items") {
+        flags[k] = true;
+      }
+    }
+    return flags;
   };
 
   // normalize stops to stable fields
@@ -108,8 +148,12 @@ export default function RouteTimeline({
         idx,
         stopid: s.stopId ?? s.stopid ?? String(idx),
         locid: s.locId ?? s.locid ?? "",
-        stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "").toString().toUpperCase(),
-        dateTime: parseSapDateTimeToDate(s.dateTime ?? s.dateTimeString ?? s.dateTime),
+        stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "")
+          .toString()
+          .toUpperCase(),
+        dateTime: parseSapDateTimeToDate(
+          s.dateTime ?? s.dateTimeString ?? s.dateTime
+        ),
         name1: s.name1 ?? s.name ?? "",
         street: s.street ?? "",
         postCode1: s.postCode1 ?? s.postCode ?? "",
@@ -118,8 +162,22 @@ export default function RouteTimeline({
         country: s.country ?? "",
         typeLoc: (s.typeLoc ?? s.typeLoc ?? s.locationType ?? "").toString(),
         eventRaw: (s.event ?? s.Event ?? "") || "",
-        materialLoad: Number(s.materialLoad ?? s.materialLoadQty ?? s.loadQty ?? s.load ?? 0) || 0,
-        materialUnload: Number(s.materialUnload ?? s.materialUnloadQty ?? s.unloadQty ?? s.unload ?? 0) || 0,
+        materialLoad:
+          Number(
+            s.materialLoad ??
+              s.materialLoadQty ??
+              s.loadQty ??
+              s.load ??
+              0
+          ) || 0,
+        materialUnload:
+          Number(
+            s.materialUnload ??
+              s.materialUnloadQty ??
+              s.unloadQty ??
+              s.unload ??
+              0
+          ) || 0,
       })),
     [rawStops]
   );
@@ -129,7 +187,9 @@ export default function RouteTimeline({
     const out = [];
     let totalLoaded = 0;
     let totalUnloaded = 0;
-    const sorted = [...stops].sort((a, b) => (a.dateTime?.getTime() ?? 0) - (b.dateTime?.getTime() ?? 0));
+    const sorted = [...stops].sort(
+      (a, b) => (a.dateTime?.getTime() ?? 0) - (b.dateTime?.getTime() ?? 0)
+    );
     for (let i = 0; i < sorted.length; i++) {
       const s = { ...sorted[i] };
       const baseLoad = Number(s.materialLoad) || 0;
@@ -151,36 +211,47 @@ export default function RouteTimeline({
     return out;
   }, [stops]);
 
-  // reportedMap seeded from stop.event (FinalInfo.event)
+  // reportedMap seeded from FinalInfo.event
   // shape: { stopKey: { arrival: true, departure: true, pod: true, items: true } }
   const [reportedMap, setReportedMap] = useState(() => {
     const m = {};
     derivedStops.forEach((s) => {
-      const key = s.stopid || s.locid || String(s.idx);
+      const key = getStopKey(s);
       const ev = (s.eventRaw ?? "").toString().trim().toUpperCase();
       if (!ev) return;
-      m[key] = m[key] || {};
-      if (ev.includes("DEPART")) m[key].departure = true;
-      else if (ev.includes("ARRIV")) m[key].arrival = true;
-      else if (ev.includes("POD")) m[key].pod = true;
-      else if (ev.includes("DEPARTURE")) m[key].departure = true;
-      else m[key].departure = true;
+
+      const seq = allowedSequenceForStop(s);
+      let flags = {};
+
+      if (ev.includes("DEPART")) {
+        flags = computeFlagsUpTo(seq, "departure");
+      } else if (ev.includes("POD")) {
+        flags = computeFlagsUpTo(seq, "pod");
+      } else if (ev.includes("ARRIV")) {
+        flags = computeFlagsUpTo(seq, "arrival");
+      }
+
+      if (Object.keys(flags).length) {
+        m[key] = { ...(m[key] || {}), ...flags };
+      }
     });
     return m;
   });
 
-  // completedCount and progress
+  // completedCount and progress (arrival OR departure closes a stop)
   const completedCount = useMemo(
     () =>
       derivedStops.reduce((acc, s) => {
-        const key = s.stopid || s.locid || String(s.idx);
+        const key = getStopKey(s);
         const r = reportedMap[key] || {};
-        return acc + ((r.arrival || r.departure) ? 1 : 0);
+        return acc + (r.arrival || r.departure ? 1 : 0);
       }, 0),
     [derivedStops, reportedMap]
   );
 
-  const progressPercent = Math.round((completedCount / Math.max(1, derivedStops.length)) * 100);
+  const progressPercent = Math.round(
+    (completedCount / Math.max(1, derivedStops.length)) * 100
+  );
 
   useEffect(() => {
     if (typeof onAction === "function") onAction("progress", progressPercent);
@@ -190,14 +261,14 @@ export default function RouteTimeline({
   const nextPendingIndex = useMemo(() => {
     for (let i = 0; i < derivedStops.length; i++) {
       const s = derivedStops[i];
-      const key = s.stopid || s.locid || String(s.idx);
+      const key = getStopKey(s);
       const r = reportedMap[key] || {};
       if (!(r.arrival || r.departure)) return i;
     }
     return derivedStops.length;
   }, [derivedStops, reportedMap]);
 
-  // map server Event -> action key
+  // map server Event string -> action key
   const mapServerEventToActionKey = (ev) => {
     if (!ev) return null;
     const e = String(ev).toUpperCase();
@@ -207,55 +278,61 @@ export default function RouteTimeline({
     return null;
   };
 
-  // allowed sequence per stop (exact per your request)
-  const allowedSequenceForStop = (stop) => {
-    const seq = (stop.stopseqpos || "").toUpperCase();
-    const typeLoc = (stop.typeLoc || "").toString().toLowerCase();
-    if (seq === "F") return ["items", "departure"];
-    if (seq === "I") {
-      if (typeLoc === "shipper") return ["items", "arrival", "departure"];
-      return ["items", "arrival", "pod", "departure"];
-    }
-    if (seq === "L") return ["items", "arrival", "pod"];
-    return ["items", "arrival", "pod", "departure"];
-  };
-
-  // POST event and update reportedMap based on server response Event
+  // POST event and update reportedMap ONLY when backend returns a valid Event
   const sendEventReport = async (networkActionCode, stop) => {
-    const stopKey = stop.stopid || stop.locid || String(stop.idx);
-    const payload = { FoId: FoId ?? selectedShipment.FoId, Action: networkActionCode, StopId: stop.locid || stop.stopid || "" };
+    const stopKey = getStopKey(stop);
+    const payload = {
+      FoId: FoId ?? selectedShipment.FoId,
+      Action: networkActionCode,
+      StopId: stop.locid || stop.stopid || "",
+    };
     const sendKey = `${stopKey}_${networkActionCode}`;
+
     try {
       setSending((p) => ({ ...p, [sendKey]: true }));
+
       const res = await fetch(eventsUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        alert(`Failed to report event — server returned ${res.status}: ${txt}`);
+        alert(
+          `Failed to report event — server returned ${res.status}: ${txt}`
+        );
         return { ok: false };
       }
+
       let body = null;
-      try { body = await res.json(); } catch (e) { body = null; }
-      const serverEvent = body && (body.Event ?? body.event) ? String(body.Event ?? body.event) : null;
+      try {
+        body = await res.json();
+      } catch (e) {
+        body = null;
+      }
+
+      const serverEvent =
+        body && (body.Event ?? body.event)
+          ? String(body.Event ?? body.event)
+          : null;
       const mapped = mapServerEventToActionKey(serverEvent);
 
+      if (!mapped) {
+        alert("Backend did not return a valid Event. Cannot move to next step.");
+        return { ok: false, body };
+      }
+
+      // mark all steps up to mapped event
       setReportedMap((prev) => {
         const copy = { ...prev };
-        copy[stopKey] = { ...(copy[stopKey] || {}) };
-        if (mapped) copy[stopKey][mapped] = true;
-        else {
-          if (networkActionCode === "ARRV") copy[stopKey].arrival = true;
-          else if (networkActionCode === "DEPT") copy[stopKey].departure = true;
-          else if (networkActionCode === "POD") copy[stopKey].pod = true;
-          else copy[stopKey][networkActionCode.toLowerCase()] = true;
-        }
+        const seq = allowedSequenceForStop(stop);
+        const flags = computeFlagsUpTo(seq, mapped);
+        copy[stopKey] = { ...(copy[stopKey] || {}), ...flags };
         return copy;
       });
 
-      return { ok: true, body };
+      return { ok: true, body, mapped };
     } catch (err) {
       alert(`Failed to report event: ${err.message || err}`);
       return { ok: false, error: err };
@@ -268,62 +345,75 @@ export default function RouteTimeline({
     }
   };
 
-  // fetch items
- const fetchItemsForStop = async (stop) => {
-  setItemsStop(stop);
-  setShowItems(true);
-  setItemsLoading(true);
+  // mark items as done when list successfully fetched
+  const fetchItemsForStop = async (stop) => {
+    setItemsStop(stop);
+    setShowItems(true);
+    setItemsLoading(true);
 
-  try {
-    const loc = stop.locid || stop.stopid || "";
-    const foId = selectedShipment.FoId;
+    try {
+      const loc = stop.locid || stop.stopid || "";
+      const foId = selectedShipment.FoId;
 
-    if (!loc || !foId) {
-      console.warn("Missing loc or FoId for items call", { loc, foId });
+      if (!loc || !foId) {
+        console.warn("Missing loc or FoId for items call", { loc, foId });
+        setItemsStop((s) => ({ ...s, items: [] }));
+        return;
+      }
+
+      const url =
+        `/odata/v4/GTT/shipmentItems` +
+        `?$filter=FoId eq '${foId}'` +
+        ` and Location eq '${loc}'`;
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.error(
+          "shipmentItems call failed",
+          res.status,
+          res.statusText
+        );
+        setItemsStop((s) => ({ ...s, items: [] }));
+        return;
+      }
+
+      const json = await res.json().catch(() => null);
+      const items = Array.isArray(json?.value) ? json.value : [];
+
+      setItemsStop((s) => ({ ...s, items }));
+
+      const key = getStopKey(stop);
+      setReportedMap((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] || {}), items: true },
+      }));
+    } catch (e) {
+      console.warn("Failed to fetch items", e);
       setItemsStop((s) => ({ ...s, items: [] }));
-      return;
+    } finally {
+      setItemsLoading(false);
     }
+  };
 
-    // ✅ Call CAP OData, same style as trackingDetails
-    const url =
-      `/odata/v4/GTT/shipmentItems` +
-      `?$filter=FoId eq '${foId}'` +
-      ` and Location eq '${loc}'`;
-
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.error("shipmentItems call failed", res.status, res.statusText);
-      setItemsStop((s) => ({ ...s, items: [] }));
-      return;
-    }
-
-    const json = await res.json().catch(() => null);
-    const items = Array.isArray(json?.value) ? json.value : [];
-
-    setItemsStop((s) => ({ ...s, items }));
-
-    const key = stop.stopid || stop.locid || String(stop.idx);
-    setReportedMap((prev) => ({
-      ...prev,
-      [key]: { ...(prev[key] || {}), items: true },
-    }));
-  } catch (e) {
-    console.warn("Failed to fetch items", e);
-    setItemsStop((s) => ({ ...s, items: [] }));
-  } finally {
-    setItemsLoading(false);
-  }
-};
-
-
-  const handleMenuOpen = (event, stopKey) => { setAnchorEl(event.currentTarget); setActiveStopKey(stopKey); };
-  const handleMenuClose = () => { setAnchorEl(null); setActiveStopKey(null); };
+  const handleMenuOpen = (event, stopKey) => {
+    setAnchorEl(event.currentTarget);
+    setActiveStopKey(stopKey);
+  };
+  const handleMenuClose = () => {
+    setAnchorEl(null);
+    setActiveStopKey(null);
+  };
 
   const handleAction = async (actionKey) => {
     handleMenuClose();
-    const stop = derivedStops.find((s) => (s.stopid || s.locid || String(s.idx)) === activeStopKey);
+    const stop = derivedStops.find(
+      (s) => getStopKey(s) === activeStopKey
+    );
     if (!stop) return;
-    const stopIndex = derivedStops.findIndex((s) => (s.stopid || s.locid || String(s.idx)) === activeStopKey);
+
+    const stopIndex = derivedStops.findIndex(
+      (s) => getStopKey(s) === activeStopKey
+    );
 
     if (actionKey === "items") {
       await fetchItemsForStop(stop);
@@ -331,17 +421,29 @@ export default function RouteTimeline({
       return;
     }
 
-    // cross-stop rule
-    const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
-    const allowedToAct = (stopIndex === nextPendingIndex) || (stopIndex === recentlyStartedIndex);
-    if (!allowedToAct) {
-      alert("Please report stops in order. Please report the next stop first.");
+    // POD also goes through backend so next step only opens on success
+    if (actionKey === "pod") {
+      const r = await sendEventReport("POD", stop);
+      if (r.ok && typeof onAction === "function") {
+        onAction("pod", { stop, response: r.body });
+      }
       return;
     }
 
-    // per-stop sequence enforcement
+    // cross-stop rule (same as before)
+    const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
+    const allowedToAct =
+      stopIndex === nextPendingIndex || stopIndex === recentlyStartedIndex;
+    if (!allowedToAct) {
+      alert(
+        "Please report stops in order. Please report the next stop first."
+      );
+      return;
+    }
+
+    // per-stop sequence enforcement (strict one-by-one)
     const seq = allowedSequenceForStop(stop);
-    const key = stop.stopid || stop.locid || String(stop.idx);
+    const key = getStopKey(stop);
     const reported = reportedMap[key] || {};
     const actionIndex = seq.indexOf(actionKey);
     if (actionIndex === -1) {
@@ -351,32 +453,31 @@ export default function RouteTimeline({
     const priorActions = seq.slice(1, actionIndex); // skip 'items'
     const priorAllReported = priorActions.every((pa) => Boolean(reported[pa]));
     if (!priorAllReported) {
-      alert("Please follow the event sequence for this stop. Report earlier events first.");
+      alert(
+        "Please follow the event sequence for this stop. Report earlier events first."
+      );
       return;
     }
 
-    if (actionKey === "pod") {
-      const r = await sendEventReport("POD", stop);
-      if (r.ok && typeof onAction === "function") onAction("pod", { stop, response: r.body });
-      return;
-    }
     if (actionKey === "arrival" || actionKey === "departure") {
       const code = actionKey === "arrival" ? "ARRV" : "DEPT";
       const r = await sendEventReport(code, stop);
-      if (r.ok && typeof onAction === "function") onAction(actionKey, { stop, response: r.body });
+      if (r.ok && typeof onAction === "function") {
+        onAction(actionKey, { stop, response: r.body });
+      }
       return;
     }
 
     if (typeof onAction === "function") onAction(actionKey, stop);
   };
 
-  // ---- badge logic: PREFER runtime reportedMap state ----
+  // ---- badge logic: prefer runtime reportedMap state ----
   const badgeForStop = (stop) => {
-    const key = stop.stopid || stop.locid || String(stop.idx);
+    const key = getStopKey(stop);
     const r = reportedMap[key] || {};
     if (r.departure) return "Departure";
-    if (r.arrival) return "Arrival";
     if (r.pod) return "POD";
+    if (r.arrival) return "Arrival";
 
     // fallback to original FinalInfo.event if present
     const ev = (stop.eventRaw ?? "").toString().trim().toUpperCase();
@@ -406,17 +507,21 @@ export default function RouteTimeline({
     );
   }
 
-  // ----------------- render timeline UI (keeps original appearance) -----------------
+  // ----------------- render timeline UI (same styling) -----------------
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>Route timeline</p>
-        <p className="text-[11px]" style={{ color: PRIMARY }}>View on map ▸</p>
+        <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>
+          Route timeline
+        </p>
+        <p className="text-[11px]" style={{ color: PRIMARY }}>
+          View on map ▸
+        </p>
       </div>
 
       <div className="mt-2">
         {derivedStops.map((stop, idx) => {
-          const key = stop.stopid || stop.locid || String(stop.idx);
+          const key = getStopKey(stop);
           const reported = reportedMap[key] || {};
           const isCompleted = Boolean(reported.arrival || reported.departure);
           const color = isCompleted ? GREEN : BLUE;
@@ -425,21 +530,41 @@ export default function RouteTimeline({
           const seq = allowedSequenceForStop(stop);
           const allowPod = seq.includes("pod");
 
-          // build menu: items always; show all remaining unreported actions
-          const menuOptions = [{ key: "items", label: "Items", Icon: Inventory2OutlinedIcon }];
-          if (seq.includes("arrival") && !reported.arrival) menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
-          if (seq.includes("pod") && !reported.pod && allowPod) menuOptions.push({ key: "pod", label: "Proof of Delivery", Icon: AssignmentTurnedInIcon });
-          if (seq.includes("departure") && !reported.departure) menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
+          // build menu: items always; show remaining unreported actions
+          const menuOptions = [
+            { key: "items", label: "Items", Icon: Inventory2OutlinedIcon },
+          ];
+          if (seq.includes("arrival") && !reported.arrival)
+            menuOptions.push({
+              key: "arrival",
+              label: "Arrival",
+              Icon: EventAvailableIcon,
+            });
+          if (seq.includes("pod") && !reported.pod && allowPod)
+            menuOptions.push({
+              key: "pod",
+              label: "Proof of Delivery",
+              Icon: AssignmentTurnedInIcon,
+            });
+          if (seq.includes("departure") && !reported.departure)
+            menuOptions.push({
+              key: "departure",
+              label: "Departure",
+              Icon: LocalShippingIcon,
+            });
 
           // cross-stop enabling
           const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
-          const allowedStopToAct = (idx === nextPendingIndex) || (idx === recentlyStartedIndex);
+          const allowedStopToAct =
+            idx === nextPendingIndex || idx === recentlyStartedIndex;
 
           const plannedDate = stop.dateTime;
           let actualDate = null;
           let etaDate = null;
-          if ((idx <= 1) && !actualDate && plannedDate) actualDate = addMinutes(plannedDate, (idx + 1) * 5);
-          if ((idx >= derivedStops.length - 2) && !etaDate && plannedDate) etaDate = addMinutes(plannedDate, (idx + 1) * 10);
+          if (idx <= 1 && !actualDate && plannedDate)
+            actualDate = addMinutes(plannedDate, (idx + 1) * 5);
+          if (idx >= derivedStops.length - 2 && !etaDate && plannedDate)
+            etaDate = addMinutes(plannedDate, (idx + 1) * 10);
           const plannedText = formatDateTime(plannedDate);
           const actualText = formatDateTime(actualDate);
           const etaText = formatDateTime(etaDate);
@@ -447,59 +572,209 @@ export default function RouteTimeline({
           return (
             <div key={key} className="flex items-start mb-4 min-w-0">
               <div className="flex flex-col items-center mr-3 w-10 flex-shrink-0">
-                <div className="h-9 w-9 rounded-full border-2 flex items-center justify-center" style={{ borderColor: color, backgroundColor: isCompleted ? color : CARD }}>
+                <div
+                  className="h-9 w-9 rounded-full border-2 flex items-center justify-center"
+                  style={{
+                    borderColor: color,
+                    backgroundColor: isCompleted ? color : CARD,
+                  }}
+                >
                   {isCompleted ? (
-                    <CheckCircleOutlineIcon sx={{ fontSize: 16, color: "#ffffff" }} />
-                  ) : (stop.stopseqpos === "F" ? (
+                    <CheckCircleOutlineIcon
+                      sx={{ fontSize: 16, color: "#ffffff" }}
+                    />
+                  ) : stop.stopseqpos === "F" ? (
                     <LocalShippingIcon sx={{ fontSize: 18, color }} />
                   ) : (
                     <LocationOnIcon sx={{ fontSize: 18, color }} />
-                  ))}
+                  )}
                 </div>
 
                 {idx !== derivedStops.length - 1 && (
-                  <div style={{ width: 2, flex: 1, background: "linear-gradient(to bottom, #e2e8f0, transparent)", marginTop: 8 }} />
+                  <div
+                    style={{
+                      width: 2,
+                      flex: 1,
+                      background:
+                        "linear-gradient(to bottom, #e2e8f0, transparent)",
+                      marginTop: 8,
+                    }}
+                  />
                 )}
               </div>
 
-              <div className="flex-1 rounded-2xl p-4 border min-w-0" style={{ backgroundColor: CARD, borderColor: "#dde3ec", boxShadow: "4px 4px 14px #d9dde6, -4px -4px 14px #ffffff", position: "relative", overflow: "visible" }}>
+              <div
+                className="flex-1 rounded-2xl p-4 border min-w-0"
+                style={{
+                  backgroundColor: CARD,
+                  borderColor: "#dde3ec",
+                  boxShadow:
+                    "4px 4px 14px #d9dde6, -4px -4px 14px #ffffff",
+                  position: "relative",
+                  overflow: "visible",
+                }}
+              >
                 <div style={{ paddingRight: 72, minWidth: 0 }}>
-                  <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>
-                    {stop.name1 ? `${stop.name1} (${stop.locid || stop.stopid || "-"})` : `${stop.locid || stop.stopid || "-"}`}
+                  <p
+                    className="text-sm font-semibold"
+                    style={{ color: TEXT_PRIMARY }}
+                  >
+                    {stop.name1
+                      ? `${stop.name1} (${stop.locid || stop.stopid || "-"})`
+                      : `${stop.locid || stop.stopid || "-"}`}
                   </p>
 
                   {idx <= 1 ? (
                     <>
-                      <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY }}>Actual Reported At</p>
-                      <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>{actualText}</p>
+                      <p
+                        className="text-[12px] mt-1"
+                        style={{ color: TEXT_SECONDARY }}
+                      >
+                        Actual Reported At
+                      </p>
+                      <p
+                        className="text-[12px] mt-0"
+                        style={{
+                          color: TEXT_SECONDARY,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {actualText}
+                      </p>
 
-                      <p className="text-[12px] mt-2" style={{ color: TEXT_SECONDARY }}>Planned Arrival</p>
-                      <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>{plannedText}</p>
+                      <p
+                        className="text-[12px] mt-2"
+                        style={{ color: TEXT_SECONDARY }}
+                      >
+                        Planned Arrival
+                      </p>
+                      <p
+                        className="text-[12px] mt-0"
+                        style={{
+                          color: TEXT_SECONDARY,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {plannedText}
+                      </p>
                     </>
-                  ) : (idx >= derivedStops.length - 2) ? (
+                  ) : idx >= derivedStops.length - 2 ? (
                     <>
-                      <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY }}>Planned Arrival</p>
-                      <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>{plannedText}</p>
+                      <p
+                        className="text-[12px] mt-1"
+                        style={{ color: TEXT_SECONDARY }}
+                      >
+                        Planned Arrival
+                      </p>
+                      <p
+                        className="text-[12px] mt-0"
+                        style={{
+                          color: TEXT_SECONDARY,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {plannedText}
+                      </p>
 
-                      <p className="text-[12px] mt-2" style={{ color: TEXT_SECONDARY }}>Estimated Arrival</p>
-                      <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>{etaText}</p>
+                      <p
+                        className="text-[12px] mt-2"
+                        style={{ color: TEXT_SECONDARY }}
+                      >
+                        Estimated Arrival
+                      </p>
+                      <p
+                        className="text-[12px] mt-0"
+                        style={{
+                          color: TEXT_SECONDARY,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {etaText}
+                      </p>
                     </>
                   ) : (
                     <>
-                      <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY }}>Planned Arrival</p>
-                      <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>{plannedText}</p>
+                      <p
+                        className="text-[12px] mt-1"
+                        style={{ color: TEXT_SECONDARY }}
+                      >
+                        Planned Arrival
+                      </p>
+                      <p
+                        className="text-[12px] mt-0"
+                        style={{
+                          color: TEXT_SECONDARY,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {plannedText}
+                      </p>
                     </>
                   )}
 
-                  <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13 }}>
-                    {idx <= 1 ? <div>Material Load : {stop.displayLoad ?? stop.materialLoad} Packages</div> : <div>Material Unload : {stop.displayUnload ?? stop.materialUnload} Packages</div>}
+                  <div
+                    style={{
+                      marginTop: 8,
+                      color: TEXT_SECONDARY,
+                      fontSize: 13,
+                    }}
+                  >
+                    {idx <= 1 ? (
+                      <div>
+                        Material Load :{" "}
+                        {stop.displayLoad ?? stop.materialLoad} Packages
+                      </div>
+                    ) : (
+                      <div>
+                        Material Unload :{" "}
+                        {stop.displayUnload ?? stop.materialUnload} Packages
+                      </div>
+                    )}
                   </div>
 
-                  <Box className="mt-3" sx={{ display: "flex", alignItems: "flex-start", gap: 1, backgroundColor: "#eaf4ff", borderRadius: 1.5, padding: "10px 12px", borderLeft: `4px solid ${color}`, width: "100%", boxSizing: "border-box" }}>
-                    <LocationOnIcon sx={{ fontSize: 18, color, marginTop: "2px", flexShrink: 0 }} />
+                  <Box
+                    className="mt-3"
+                    sx={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 1,
+                      backgroundColor: "#eaf4ff",
+                      borderRadius: 1.5,
+                      padding: "10px 12px",
+                      borderLeft: `4px solid ${color}`,
+                      width: "100%",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    <LocationOnIcon
+                      sx={{
+                        fontSize: 18,
+                        color,
+                        marginTop: "2px",
+                        flexShrink: 0,
+                      }}
+                    />
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <Typography variant="caption" sx={{ color: TEXT_SECONDARY, display: "block" }}>Address</Typography>
-                      <Typography variant="body2" sx={{ color: TEXT_PRIMARY, fontWeight: 600, fontSize: 13, whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere" }}>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: TEXT_SECONDARY,
+                          display: "block",
+                        }}
+                      >
+                        Address
+                      </Typography>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          color: TEXT_PRIMARY,
+                          fontWeight: 600,
+                          fontSize: 13,
+                          whiteSpace: "normal",
+                          wordBreak: "break-word",
+                          overflowWrap: "anywhere",
+                        }}
+                      >
                         {buildAddress(stop)}
                       </Typography>
                     </div>
@@ -507,13 +782,44 @@ export default function RouteTimeline({
                 </div>
 
                 {/* badge + menu */}
-                <div style={{ position: "absolute", top: 12, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, pointerEvents: "none" }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 12,
+                    right: 12,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-end",
+                    gap: 8,
+                    pointerEvents: "none",
+                  }}
+                >
                   <div style={{ pointerEvents: "auto" }}>
-                    <span className="px-2 py-1 rounded-full text-[10px] font-semibold" style={{ backgroundColor: `${color}15`, color, display: "inline-block" }}>{badge}</span>
+                    <span
+                      className="px-2 py-1 rounded-full text-[10px] font-semibold"
+                      style={{
+                        backgroundColor: `${color}15`,
+                        color,
+                        display: "inline-block",
+                      }}
+                    >
+                      {badge}
+                    </span>
                   </div>
                   <div style={{ pointerEvents: "auto" }}>
-                    <IconButton size="small" onClick={(e) => handleMenuOpen(e, key)} sx={{ bgcolor: "#fafafa", borderRadius: 1, padding: 0.5, "&:hover": { bgcolor: "#f0f0f0" } }}>
-                      <MoreVertIcon sx={{ fontSize: 18, color: "#6b6c6e" }} />
+                    <IconButton
+                      size="small"
+                      onClick={(e) => handleMenuOpen(e, key)}
+                      sx={{
+                        bgcolor: "#fafafa",
+                        borderRadius: 1,
+                        padding: 0.5,
+                        "&:hover": { bgcolor: "#f0f0f0" },
+                      }}
+                    >
+                      <MoreVertIcon
+                        sx={{ fontSize: 18, color: "#6b6c6e" }}
+                      />
                     </IconButton>
                   </div>
                 </div>
@@ -524,49 +830,98 @@ export default function RouteTimeline({
                 anchorEl={anchorEl}
                 open={menuOpen && activeStopKey === key}
                 onClose={handleMenuClose}
-                anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-                transformOrigin={{ vertical: "top", horizontal: "right" }}
+                anchorOrigin={{
+                  vertical: "bottom",
+                  horizontal: "right",
+                }}
+                transformOrigin={{
+                  vertical: "top",
+                  horizontal: "right",
+                }}
                 PaperProps={{
                   sx: {
                     minWidth: 160,
                     p: 0.5,
                     borderRadius: 2,
                     boxShadow: "0 8px 24px rgba(16,24,40,0.12)",
-                    "& .MuiMenuItem-root": { py: 0.6, px: 1.5, borderRadius: 1, "&:hover": { bgcolor: "#f5f7fb" } },
+                    "& .MuiMenuItem-root": {
+                      py: 0.6,
+                      px: 1.5,
+                      borderRadius: 1,
+                      "&:hover": { bgcolor: "#f5f7fb" },
+                    },
                   },
                 }}
               >
-                <Box sx={{ px: 1.25, py: 0.75, display: "flex", alignItems: "center", gap: 1 }}>
-                  <Chip label={badge} size="small" sx={{ backgroundColor: `${color}20`, color, fontWeight: 600, height: 26, borderRadius: 1 }} />
-                  <Typography variant="body2" sx={{ color: TEXT_SECONDARY, fontSize: 13 }}>Actions</Typography>
+                <Box
+                  sx={{
+                    px: 1.25,
+                    py: 0.75,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                  }}
+                >
+                  <Chip
+                    label={badge}
+                    size="small"
+                    sx={{
+                      backgroundColor: `${color}20`,
+                      color,
+                      fontWeight: 600,
+                      height: 26,
+                      borderRadius: 1,
+                    }}
+                  />
+                  <Typography
+                    variant="body2"
+                    sx={{ color: TEXT_SECONDARY, fontSize: 13 }}
+                  >
+                    Actions
+                  </Typography>
                 </Box>
                 <Divider sx={{ my: 0.5 }} />
 
                 {menuOptions.map((opt) => {
                   const Icon = opt.Icon;
-                  const codeForNetwork = opt.key === "arrival" ? "ARRV" : opt.key === "departure" ? "DEPT" : opt.key === "pod" ? "POD" : null;
-                  const isSending = Boolean(sending[`${key}_${codeForNetwork ?? opt.key}`]);
+                  const codeForNetwork =
+                    opt.key === "arrival"
+                      ? "ARRV"
+                      : opt.key === "departure"
+                      ? "DEPT"
+                      : opt.key === "pod"
+                      ? "POD"
+                      : null;
+                  const isSending = Boolean(
+                    sending[`${key}_${codeForNetwork ?? opt.key}`]
+                  );
 
-                  // NEW enable rule:
-                  // - Items always enabled
-                  // - Non-items enabled when:
-                  //    a) this stop is allowed to act (nextPendingIndex or recentlyStartedIndex)
-                  //    AND
-                  //    b) all prior non-items actions in the sequence are already reported
                   const reportedForStop = reportedMap[key] || {};
                   const seqForStop = allowedSequenceForStop(stop);
                   const idxOfThisAction = seqForStop.indexOf(opt.key);
-                  const priorActions = seqForStop.slice(1, Math.max(1, idxOfThisAction)); // actions before this one, skip 'items'
-                  const priorAllReported = priorActions.every((pa) => Boolean(reportedForStop[pa]));
-                  const allowedStop = (idx === nextPendingIndex) || (idx === Math.max(0, nextPendingIndex - 1));
-                  const enabled = opt.key === "items" ? true : (allowedStop && priorAllReported);
+                  const priorActions = seqForStop.slice(
+                    1,
+                    Math.max(1, idxOfThisAction)
+                  ); // actions before this one, skip 'items'
+                  const priorAllReported = priorActions.every((pa) =>
+                    Boolean(reportedForStop[pa])
+                  );
+                  const allowedStop =
+                    idx === nextPendingIndex ||
+                    idx === Math.max(0, nextPendingIndex - 1);
+                  const enabled =
+                    opt.key === "items"
+                      ? true
+                      : allowedStop && priorAllReported;
 
                   return (
                     <MenuItem
                       key={opt.key}
                       onClick={() => {
                         if (!enabled) {
-                          alert("Please follow the reporting sequence. This action is not yet available.");
+                          alert(
+                            "Please follow the reporting sequence. This action is not yet available."
+                          );
                           return;
                         }
                         handleAction(opt.key);
@@ -577,8 +932,31 @@ export default function RouteTimeline({
                         <Icon fontSize="small" sx={{ color: PRIMARY }} />
                       </ListItemIcon>
                       <ListItemText
-                        primary={<Typography variant="body2" sx={{ fontWeight: 600 }}>{opt.label}</Typography>}
-                        secondary={isSending ? <Typography variant="caption" sx={{ color: TEXT_SECONDARY }}>Sending…</Typography> : opt.key === "pod" ? <Typography variant="caption" sx={{ color: TEXT_SECONDARY }}>Record POD</Typography> : null}
+                        primary={
+                          <Typography
+                            variant="body2"
+                            sx={{ fontWeight: 600 }}
+                          >
+                            {opt.label}
+                          </Typography>
+                        }
+                        secondary={
+                          isSending ? (
+                            <Typography
+                              variant="caption"
+                              sx={{ color: TEXT_SECONDARY }}
+                            >
+                              Sending…
+                            </Typography>
+                          ) : opt.key === "pod" ? (
+                            <Typography
+                              variant="caption"
+                              sx={{ color: TEXT_SECONDARY }}
+                            >
+                              Record POD
+                            </Typography>
+                          ) : null
+                        }
                       />
                     </MenuItem>
                   );

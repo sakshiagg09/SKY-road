@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +34,7 @@ const TEXT_SECONDARY = "#6B6C6E";
 const BG = "#EFF0F3";
 const CARD = "#FFFFFF";
 
-// Hard-coded items (like SKY 1.0) — replace later with OData result
+// Hard-coded items (like SKY 1.0) — replace later with real OData result if needed
 const INITIAL_ITEMS = [
   {
     // for now id acts as item_id fallback
@@ -44,7 +44,6 @@ const INITIAL_ITEMS = [
     productId: "PACK_TRUCK",
     qty: 1,
     uom: "EA",
-    // optional per-item stop override if needed
     stop_id: "0000000050",
   },
   {
@@ -64,7 +63,7 @@ export default function PodFlowDialog({
   foId,
   onClose,
   onSubmit,
-  // 🔁 set to your real OData endpoint
+  // 🔁 set to your real CAP OData endpoint for ProofOfDeliverySet
   eventsUrl = "/odata/v4/GTT/updatesPOD",
 }) {
   // step: question -> items (when discrepancy) -> editItem -> signature
@@ -78,7 +77,7 @@ export default function PodFlowDialog({
   const [submitting, setSubmitting] = useState(false);
 
   // reset when dialog closes
-  React.useEffect(() => {
+  useEffect(() => {
     if (!open) {
       setStep("question");
       setItems(INITIAL_ITEMS);
@@ -93,7 +92,7 @@ export default function PodFlowDialog({
 
   // If stop is a WRAPPER (has FinalInfo), parse stops from it.
   // If stop is already a STOP object, this will just end up empty.
-  const parsedStops = React.useMemo(() => {
+  const parsedStops = useMemo(() => {
     const raw = stop?.FinalInfo;
     if (!raw) return [];
 
@@ -106,9 +105,10 @@ export default function PodFlowDialog({
       try {
         if (typeof raw === "string") {
           const cleaned = raw.trim();
-          const unquoted = (cleaned.startsWith('"') && cleaned.endsWith('"'))
-            ? cleaned.slice(1, -1).replace(/\\"/g, '"')
-            : cleaned;
+          const unquoted =
+            cleaned.startsWith('"') && cleaned.endsWith('"')
+              ? cleaned.slice(1, -1).replace(/\\"/g, '"')
+              : cleaned;
           const arr2 = JSON.parse(unquoted);
           return Array.isArray(arr2) ? arr2 : [];
         }
@@ -121,11 +121,16 @@ export default function PodFlowDialog({
 
   // Choose a good stop from FinalInfo for POD/no-discrepancy:
   // Prefer the LAST customer stop (often the POD stop), else last stop overall.
-  const stopFromFinalInfo = React.useMemo(() => {
+  const stopFromFinalInfo = useMemo(() => {
     if (!parsedStops.length) return null;
     const rev = [...parsedStops].reverse();
     const lastCustomer = rev.find(
-      (s) => (s?.typeLoc ?? "").toString().toUpperCase().includes("CUST") || (s?.typeLoc ?? "").toString().toUpperCase() === "CUSTOMER"
+      (s) =>
+        (s?.typeLoc ?? "")
+          .toString()
+          .toUpperCase()
+          .includes("CUST") ||
+        (s?.typeLoc ?? "").toString().toUpperCase() === "CUSTOMER"
     );
     return lastCustomer || parsedStops[parsedStops.length - 1];
   }, [parsedStops]);
@@ -134,7 +139,12 @@ export default function PodFlowDialog({
   // 1) if `stop` already looks like a stop (has stopid/locid/etc) => use it
   // 2) else use derived stop from FinalInfo
   const effectiveStop =
-    (stop?.stopid || stop?.locid || stop?.stopId || stop?.locId || stop?.StopId || stop?.LocId)
+    stop?.stopid ||
+    stop?.locid ||
+    stop?.stopId ||
+    stop?.locId ||
+    stop?.StopId ||
+    stop?.LocId
       ? stop
       : stopFromFinalInfo;
 
@@ -143,45 +153,62 @@ export default function PodFlowDialog({
 
   // stop title based on effectiveStop
   const stopTitle =
-    effectiveStop?.name1 || effectiveStop?.locid || effectiveStop?.stopid || "Selected Stop";
+    effectiveStop?.name1 ||
+    effectiveStop?.locid ||
+    effectiveStop?.stopid ||
+    "Selected Stop";
 
   // IMPORTANT:
   // Your backend example for StopId uses the numeric-looking location id (e.g. "0000000001"),
   // which matches `locid` on your FinalInfo stops. So we prefer locid first.
   const stopIdValue = String(
     effectiveStop?.locid ||
-    effectiveStop?.locId ||
-    effectiveStop?.LOCID ||
-    effectiveStop?.stopid ||
-    effectiveStop?.stopId ||
-    effectiveStop?.STOPID ||
-    effectiveStop?.LocId ||
-    effectiveStop?.StopId ||
-    ""
+      effectiveStop?.locId ||
+      effectiveStop?.LOCID ||
+      effectiveStop?.stopid ||
+      effectiveStop?.stopId ||
+      effectiveStop?.STOPID ||
+      effectiveStop?.LocId ||
+      effectiveStop?.StopId ||
+      ""
   );
 
   // -----------------------------
-  // Payload builders (exact shapes)
+  // Payload builders (exact shapes you gave)
   // -----------------------------
+  // No discrepancy:
+  // {
+  //   "FoId": "6300003009",
+  //   "Discrepency": "",
+  //   "StopId": "0000000001"
+  // }
   const buildNoDiscrepancyPayload = () => ({
     FoId: effectiveFoId,
     Discrepency: "",
     StopId: stopIdValue,
   });
 
+  // Discrepancy:
+  // {
+  //   "FoId":"6300003009",
+  //   "Discrepency":"X",
+  //   "Items":"[{\"item_id\":\"0000000020\",\"stop_id\":\"0000000050\",\"ActQty\":\"1\",\"ActQtyUom\":\"EA\"}, ... ]"
+  // }
   const buildDiscrepancyPayload = () => {
     // Prefer sending ONLY changed lines (discrepancy lines)
     const changed = (items || []).filter((it) => {
-      const base = (baselineItems || []).find((b) => String(b.id) === String(it.id));
+      const base = (baselineItems || []).find(
+        (b) => String(b.id) === String(it.id)
+      );
       if (!base) return true;
       return Number(base.qty) !== Number(it.qty);
     });
 
     if (changed.length === 0) {
-      // if they said discrepancy but didn’t change anything, you can either:
-      // 1) send all items, or 2) block submit
-      // Here we block submit to keep payload meaningful.
-      throw new Error("You marked discrepancy but no item quantity was changed.");
+      // if they said discrepancy but didn’t change anything, we block submit
+      throw new Error(
+        "You marked discrepancy but no item quantity was changed."
+      );
     }
 
     const mapped = changed.map((it) => ({
@@ -193,7 +220,7 @@ export default function PodFlowDialog({
 
     return {
       FoId: effectiveFoId,
-      Discrepency: "X",
+      Discrepency: "X", // 👈 capital X as requested
       Items: JSON.stringify(mapped),
     };
   };
@@ -232,7 +259,9 @@ export default function PodFlowDialog({
 
   const handleEditSave = () => {
     if (!editingItem) return;
-    setItems((prev) => prev.map((i) => (String(i.id) === String(editingItem.id) ? editingItem : i)));
+    setItems((prev) =>
+      prev.map((i) => (String(i.id) === String(editingItem.id) ? editingItem : i))
+    );
     setStep("items"); // go back to items view
   };
 
@@ -247,7 +276,10 @@ export default function PodFlowDialog({
   const handleFileAdd = (event) => {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
-    setAttachments((prev) => [...prev, ...files.map((f) => ({ name: f.name, size: f.size }))]);
+    setAttachments((prev) => [
+      ...prev,
+      ...files.map((f) => ({ name: f.name, size: f.size })),
+    ]);
   };
 
   const handleRemoveAttachment = (idx) => {
@@ -255,9 +287,12 @@ export default function PodFlowDialog({
   };
 
   // ✅ Single submit that posts correct payload based on discrepancy flag
+  // This is the ONLY place where POD call is triggered.
   const handleSubmitPod = async () => {
     try {
-      const payload = hasDiscrepancy ? buildDiscrepancyPayload() : buildNoDiscrepancyPayload();
+      const payload = hasDiscrepancy
+        ? buildDiscrepancyPayload()
+        : buildNoDiscrepancyPayload();
 
       // optional: notify parent with the exact payload you are sending
       if (typeof onSubmit === "function") onSubmit(payload);
@@ -292,11 +327,18 @@ export default function PodFlowDialog({
           inset: 0,
           opacity: 0.07,
           backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.4'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
-        }}
+      }}
       />
 
       <Box sx={{ position: "relative", zIndex: 1 }}>
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            mb: 2,
+          }}
+        >
           <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
             <HelpOutlineIcon sx={{ color: "#fff", fontSize: 28 }} />
             <Box>
@@ -354,10 +396,14 @@ export default function PodFlowDialog({
             <LocalShippingIcon sx={{ fontSize: 18, color: PRIMARY }} />
           </Box>
           <Box>
-            <Typography sx={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>
+            <Typography
+              sx={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}
+            >
               FREIGHT ORDER ID
             </Typography>
-            <Typography sx={{ fontSize: 13, color: TEXT_PRIMARY, fontWeight: 700 }}>
+            <Typography
+              sx={{ fontSize: 13, color: TEXT_PRIMARY, fontWeight: 700 }}
+            >
               {effectiveFoId || "Not Selected"}
             </Typography>
           </Box>
@@ -371,7 +417,15 @@ export default function PodFlowDialog({
     <>
       {renderHeader("Item Discrepancy Check")}
 
-      <DialogContent sx={{ px: 4, py: 4, bgcolor: BG, flex: 1, overflowY: "auto" }}>
+      <DialogContent
+        sx={{
+          px: 4,
+          py: 4,
+          bgcolor: BG,
+          flex: 1,
+          overflowY: "auto",
+        }}
+      >
         <Box
           sx={{
             maxWidth: 420,
@@ -395,12 +449,22 @@ export default function PodFlowDialog({
             {stopTitle}
           </Typography>
 
-          <Typography sx={{ fontSize: 16, fontWeight: 700, color: TEXT_PRIMARY, mb: 2 }}>
+          <Typography
+            sx={{
+              fontSize: 16,
+              fontWeight: 700,
+              color: TEXT_PRIMARY,
+              mb: 2,
+            }}
+          >
             Any missing / damaged material in this shipment leg?
           </Typography>
 
-          <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, mb: 3 }}>
-            Choose <strong>Yes</strong> to adjust quantities, or <strong>No</strong> to continue to POD.
+          <Typography
+            sx={{ fontSize: 13, color: TEXT_SECONDARY, mb: 3 }}
+          >
+            Choose <strong>Yes</strong> to adjust quantities, or{" "}
+            <strong>No</strong> to continue to POD.
           </Typography>
 
           <Box sx={{ display: "flex", gap: 2, justifyContent: "center" }}>
@@ -437,8 +501,17 @@ export default function PodFlowDialog({
         </Box>
       </DialogContent>
 
-      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
-        <Button onClick={closeDialog} sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}>
+      <DialogActions
+        sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}
+      >
+        <Button
+          onClick={closeDialog}
+          sx={{
+            textTransform: "none",
+            color: TEXT_SECONDARY,
+            fontWeight: 500,
+          }}
+        >
           Cancel
         </Button>
       </DialogActions>
@@ -455,7 +528,6 @@ export default function PodFlowDialog({
         <MaterialItemList
           stop={{ ...(stop || {}), items }}
           loading={false}
-          // if your MaterialItemList supports these, great; if not, they’ll be ignored safely
           items={items}
           onItemsChange={setItems}
           onBack={() => {
@@ -467,11 +539,26 @@ export default function PodFlowDialog({
 
         {/* If MaterialItemList is view-only, this built-in editor lets you adjust qty */}
         <Box sx={{ px: 3, pb: 3, pt: 1.5 }}>
-          <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2, mb: 1 }}>
+          <Typography
+            sx={{
+              fontSize: 12,
+              color: TEXT_SECONDARY,
+              textTransform: "uppercase",
+              letterSpacing: 1.2,
+              mb: 1,
+            }}
+          >
             Adjust quantities (for payload)
           </Typography>
 
-          <Box sx={{ bgcolor: CARD, borderRadius: 3, overflow: "hidden", boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
+          <Box
+            sx={{
+              bgcolor: CARD,
+              borderRadius: 3,
+              overflow: "hidden",
+              boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
+            }}
+          >
             <List disablePadding>
               {items.map((item, index) => (
                 <React.Fragment key={item.id}>
@@ -486,7 +573,15 @@ export default function PodFlowDialog({
                       "&:hover": { backgroundColor: "#F7F8FC" },
                     }}
                   >
-                    <Box sx={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 0.5 }}>
+                    <Box
+                      sx={{
+                        width: "100%",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        mb: 0.5,
+                      }}
+                    >
                       <Typography
                         sx={{
                           fontSize: 13,
@@ -498,17 +593,39 @@ export default function PodFlowDialog({
                       >
                         {item.description}
                       </Typography>
-                      <Typography sx={{ fontSize: 11, fontWeight: 600, color: TEXT_SECONDARY }}>
+                      <Typography
+                        sx={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: TEXT_SECONDARY,
+                        }}
+                      >
                         {item.productId}
                       </Typography>
                     </Box>
 
-                    <Typography sx={{ fontSize: 13, fontWeight: 600, color: TEXT_PRIMARY }}>
+                    <Typography
+                      sx={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: TEXT_PRIMARY,
+                      }}
+                    >
                       {item.category}
                     </Typography>
 
-                    <Box sx={{ mt: 0.5, display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
-                      <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>
+                    <Box
+                      sx={{
+                        mt: 0.5,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        width: "100%",
+                        alignItems: "center",
+                      }}
+                    >
+                      <Typography
+                        sx={{ fontSize: 12, color: TEXT_SECONDARY }}
+                      >
                         Qty:{" "}
                         <strong>
                           {item.qty} {item.uom}
@@ -518,7 +635,9 @@ export default function PodFlowDialog({
                       <Chip
                         size="small"
                         label="Edit"
-                        icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
+                        icon={
+                          <EditOutlinedIcon sx={{ fontSize: 14 }} />
+                        }
                         sx={{
                           fontSize: 11,
                           bgcolor: "rgba(25,118,210,0.06)",
@@ -529,7 +648,11 @@ export default function PodFlowDialog({
                     </Box>
                   </ListItemButton>
 
-                  {index !== items.length - 1 && <Divider sx={{ mx: 3, borderColor: "#E3E6EE" }} />}
+                  {index !== items.length - 1 && (
+                    <Divider
+                      sx={{ mx: 3, borderColor: "#E3E6EE" }}
+                    />
+                  )}
                 </React.Fragment>
               ))}
             </List>
@@ -537,14 +660,27 @@ export default function PodFlowDialog({
         </Box>
       </Box>
 
-      <DialogActions sx={{ px: 3, py: 2.5, bgcolor: BG, display: "flex", justifyContent: "space-between", flexShrink: 0 }}>
+      <DialogActions
+        sx={{
+          px: 3,
+          py: 2.5,
+          bgcolor: BG,
+          display: "flex",
+          justifyContent: "space-between",
+          flexShrink: 0,
+        }}
+      >
         <Button
           onClick={() => {
             setHasDiscrepancy(false);
             setStep("question");
           }}
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}
+          sx={{
+            textTransform: "none",
+            color: TEXT_SECONDARY,
+            fontWeight: 500,
+          }}
         >
           Back
         </Button>
@@ -572,36 +708,95 @@ export default function PodFlowDialog({
     <>
       {renderHeader("Edit Item Quantity")}
 
-      <DialogContent sx={{ px: 4, py: 4, bgcolor: BG, flex: 1, overflowY: "auto" }}>
-        <Box sx={{ backgroundColor: CARD, borderRadius: 3, p: 3, boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
-          <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2, mb: 1 }}>
+      <DialogContent
+        sx={{
+          px: 4,
+          py: 4,
+          bgcolor: BG,
+          flex: 1,
+          overflowY: "auto",
+        }}
+      >
+        <Box
+          sx={{
+            backgroundColor: CARD,
+            borderRadius: 3,
+            p: 3,
+            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
+          }}
+        >
+          <Typography
+            sx={{
+              fontSize: 12,
+              color: TEXT_SECONDARY,
+              textTransform: "uppercase",
+              letterSpacing: 1.2,
+              mb: 1,
+            }}
+          >
             Item Description
           </Typography>
-          <Typography sx={{ fontSize: 15, fontWeight: 600, color: TEXT_PRIMARY, mb: 2 }}>
+          <Typography
+            sx={{
+              fontSize: 15,
+              fontWeight: 600,
+              color: TEXT_PRIMARY,
+              mb: 2,
+            }}
+          >
             {editingItem?.description}
           </Typography>
 
           <Box sx={{ display: "grid", gap: 2, mb: 2 }}>
-            <TextField label="Product ID" value={editingItem?.productId || ""} disabled size="small" fullWidth />
-            <TextField label="Category" value={editingItem?.category || ""} disabled size="small" fullWidth />
+            <TextField
+              label="Product ID"
+              value={editingItem?.productId || ""}
+              disabled
+              size="small"
+              fullWidth
+            />
+            <TextField
+              label="Category"
+              value={editingItem?.category || ""}
+              disabled
+              size="small"
+              fullWidth
+            />
             <TextField
               label="Quantity"
               type="number"
               size="small"
               fullWidth
               value={editingItem?.qty ?? ""}
-              onChange={(e) => handleEditChange("qty", Number(e.target.value) || 0)}
+              onChange={(e) =>
+                handleEditChange(
+                  "qty",
+                  Number(e.target.value) || 0
+                )
+              }
             />
-            <TextField label="UOM" size="small" fullWidth value={editingItem?.uom || ""} disabled />
+            <TextField
+              label="UOM"
+              size="small"
+              fullWidth
+              value={editingItem?.uom || ""}
+              disabled
+            />
           </Box>
         </Box>
       </DialogContent>
 
-      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
+      <DialogActions
+        sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}
+      >
         <Button
           onClick={() => setStep("items")}
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}
+          sx={{
+            textTransform: "none",
+            color: TEXT_SECONDARY,
+            fontWeight: 500,
+          }}
         >
           Back
         </Button>
@@ -609,7 +804,13 @@ export default function PodFlowDialog({
           onClick={handleEditSave}
           variant="contained"
           endIcon={<CheckIcon />}
-          sx={{ textTransform: "none", fontWeight: 600, borderRadius: 2, bgcolor: PRIMARY, "&:hover": { bgcolor: PRIMARY_DARK } }}
+          sx={{
+            textTransform: "none",
+            fontWeight: 600,
+            borderRadius: 2,
+            bgcolor: PRIMARY,
+            "&:hover": { bgcolor: PRIMARY_DARK },
+          }}
         >
           Save Item
         </Button>
@@ -617,17 +818,38 @@ export default function PodFlowDialog({
     </>
   );
 
-  // STEP 4 – SIGNATURE & ATTACHMENTS + SUBMIT (posts correct payload)
+  // STEP 4 – SIGNATURE & ATTACHMENTS + SUBMIT
   const renderStepSignature = () => (
     <>
       {renderHeader("Capture Proof of Delivery")}
 
-      <DialogContent sx={{ px: 4, py: 4, bgcolor: BG, flex: 1, overflowY: "auto" }}>
-        <Box sx={{ mb: 2.5, display: "flex", alignItems: "center", gap: 1 }}>
+      <DialogContent
+        sx={{
+          px: 4,
+          py: 4,
+          bgcolor: BG,
+          flex: 1,
+          overflowY: "auto",
+        }}
+      >
+        <Box
+          sx={{
+            mb: 2.5,
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+          }}
+        >
           <Chip
-            label={hasDiscrepancy ? "Discrepancy Reported" : "No Item Discrepancy"}
+            label={
+              hasDiscrepancy
+                ? "Discrepancy Reported"
+                : "No Item Discrepancy"
+            }
             sx={{
-              bgcolor: hasDiscrepancy ? "rgba(245, 158, 11, 0.15)" : "rgba(16, 185, 129, 0.12)",
+              bgcolor: hasDiscrepancy
+                ? "rgba(245, 158, 11, 0.15)"
+                : "rgba(16, 185, 129, 0.12)",
               color: hasDiscrepancy ? "#B45309" : "#047857",
               fontWeight: 600,
             }}
@@ -635,8 +857,24 @@ export default function PodFlowDialog({
         </Box>
 
         {/* SIGNATURE CARD */}
-        <Box sx={{ backgroundColor: CARD, borderRadius: 3, p: 3, mb: 3, boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
-          <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2, mb: 1 }}>
+        <Box
+          sx={{
+            backgroundColor: CARD,
+            borderRadius: 3,
+            p: 3,
+            mb: 3,
+            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
+          }}
+        >
+          <Typography
+            sx={{
+              fontSize: 12,
+              color: TEXT_SECONDARY,
+              textTransform: "uppercase",
+              letterSpacing: 1.2,
+              mb: 1,
+            }}
+          >
             Signature
           </Typography>
 
@@ -658,15 +896,34 @@ export default function PodFlowDialog({
             Tap here to capture signature (placeholder)
           </Box>
 
-          <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5 }}>
-            <Button size="small" onClick={() => setSignature("")} sx={{ textTransform: "none", fontSize: 12, color: TEXT_SECONDARY }}>
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 1.5,
+            }}
+          >
+            <Button
+              size="small"
+              onClick={() => setSignature("")}
+              sx={{
+                textTransform: "none",
+                fontSize: 12,
+                color: TEXT_SECONDARY,
+              }}
+            >
               Clear
             </Button>
             <Button
               size="small"
               variant="contained"
               onClick={() => setSignature("signed")}
-              sx={{ textTransform: "none", fontSize: 12, bgcolor: PRIMARY, "&:hover": { bgcolor: PRIMARY_DARK } }}
+              sx={{
+                textTransform: "none",
+                fontSize: 12,
+                bgcolor: PRIMARY,
+                "&:hover": { bgcolor: PRIMARY_DARK },
+              }}
             >
               Save
             </Button>
@@ -674,9 +931,30 @@ export default function PodFlowDialog({
         </Box>
 
         {/* ATTACHMENTS CARD */}
-        <Box sx={{ backgroundColor: CARD, borderRadius: 3, p: 3, boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
-          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
-            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2 }}>
+        <Box
+          sx={{
+            backgroundColor: CARD,
+            borderRadius: 3,
+            p: 3,
+            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
+          }}
+        >
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              mb: 2,
+            }}
+          >
+            <Typography
+              sx={{
+                fontSize: 12,
+                color: TEXT_SECONDARY,
+                textTransform: "uppercase",
+                letterSpacing: 1.2,
+              }}
+            >
               Attach Files
             </Typography>
 
@@ -699,9 +977,17 @@ export default function PodFlowDialog({
           </Box>
 
           {attachments.length === 0 ? (
-            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>No files attached yet.</Typography>
+            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>
+              No files attached yet.
+            </Typography>
           ) : (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 1,
+              }}
+            >
               {attachments.map((file, idx) => (
                 <Box
                   key={`${file.name}_${idx}`}
@@ -715,17 +1001,38 @@ export default function PodFlowDialog({
                     bgcolor: "#F8FAFF",
                   }}
                 >
-                  <Box sx={{ display: "flex", flexDirection: "column" }}>
-                    <Typography sx={{ fontSize: 13, fontWeight: 600, color: TEXT_PRIMARY }}>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      flexDirection: "column",
+                    }}
+                  >
+                    <Typography
+                      sx={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: TEXT_PRIMARY,
+                      }}
+                    >
                       {file.name}
                     </Typography>
-                    <Typography sx={{ fontSize: 11, color: TEXT_SECONDARY }}>
+                    <Typography
+                      sx={{
+                        fontSize: 11,
+                        color: TEXT_SECONDARY,
+                      }}
+                    >
                       {(file.size / 1024).toFixed(1)} KB
                     </Typography>
                   </Box>
 
-                  <IconButton size="small" onClick={() => handleRemoveAttachment(idx)}>
-                    <DeleteOutlineIcon sx={{ fontSize: 18, color: TEXT_SECONDARY }} />
+                  <IconButton
+                    size="small"
+                    onClick={() => handleRemoveAttachment(idx)}
+                  >
+                    <DeleteOutlineIcon
+                      sx={{ fontSize: 18, color: TEXT_SECONDARY }}
+                    />
                   </IconButton>
                 </Box>
               ))}
@@ -734,11 +1041,19 @@ export default function PodFlowDialog({
         </Box>
       </DialogContent>
 
-      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
+      <DialogActions
+        sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}
+      >
         <Button
-          onClick={() => (hasDiscrepancy ? setStep("items") : setStep("question"))}
+          onClick={() =>
+            hasDiscrepancy ? setStep("items") : setStep("question")
+          }
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}
+          sx={{
+            textTransform: "none",
+            color: TEXT_SECONDARY,
+            fontWeight: 500,
+          }}
           disabled={submitting}
         >
           Back
@@ -783,7 +1098,7 @@ export default function PodFlowDialog({
       }}
     >
       {step === "question" && renderStepQuestion()}
-      {step === "items" && renderStepItems()}         {/* ✅ discrepancy path uses items component */}
+      {step === "items" && renderStepItems()} {/* discrepancy path */}
       {step === "editItem" && renderStepEditItem()}
       {step === "signature" && renderStepSignature()}
     </Dialog>

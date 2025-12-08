@@ -26,6 +26,11 @@
   "private": true,
   "cds": {
     "requires": {
+      "db": {
+        "kind": "hana"
+        }
+      },
+
       "auth": "xsuaa",
       "SKY_APP": {
         "kind": "odata-v2",
@@ -33,13 +38,21 @@
           "destination": "Sky_App"
         }
       },
-      "destinations": true,
-      "[production]": {
+      "destinations": true
+    },
+
+    "[production]": {
+      "requires": {
+        "db": {
+          "kind": "hana"
+        },
         "auth": "xsuaa"
-      },
-      "[development]": {
+      }
+    },
+
+    "[development]": {
+      "requires": {
         "auth": "mocked"
       }
     }
   }
-}
