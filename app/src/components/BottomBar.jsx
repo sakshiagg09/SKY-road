@@ -86,7 +86,6 @@ export default function BottomBar({ activeTab, setActiveTab, onReportClick }) {
           </button>
 
           <Menu anchorEl={anchorEl} open={menuOpen} onClose={handleReportMenuClose}>
-            <MenuItem onClick={() => handleChooseReport("planned")}>Report Planned Event</MenuItem>
             <MenuItem onClick={() => handleChooseReport("unplanned")}>Report Unplanned Event</MenuItem>
           </Menu>
         </div>

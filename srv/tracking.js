@@ -94,7 +94,7 @@ module.exports = cds.service.impl(async function () {
   // Open DB service once so the pool is ready before first request
   const db = await cds.connect.to('db');
   const run = (...args) => db.run(...args);
-  const { trackingDetails, eventReporting, updatesPOD, shipmentItems } = this.entities;
+  const { trackingDetails, eventReporting, updatesPOD, shipmentItems,attachmentUpload,delayEvents, } = this.entities;
 
   // DB tables (persistent)
   const {
@@ -184,4 +184,27 @@ module.exports = cds.service.impl(async function () {
     // IMPORTANT: use your real entity set name
     return await s4Post("/ProofOfDeliverySet", req.data);
   });
+   this.on("CREATE", attachmentUpload, async (req) => {
+
+    // Forward to S/4 AttachmentsSet
+    return await s4Post("/AttachmentsSet", req.data);
+  });
+   this.on("CREATE", delayEvents, async (req) => {
+    return await s4Post("/DelaySet", req.data);
+   });
+   this.on("READ", delayEvents, async (req) => {
+  const data = await s4Get("/DelaySet");
+  const rows = normalizeV2(data);
+  return rows.map((r) => ({
+    FoId:         r.FoId        || "",
+    StopId:       r.StopId      || "",
+    ETA:          r.ETA         || "",
+    RefEvent:     r.RefEvent    || "",
+    Event:        r.Event       || "",
+    EventCode:    r.EventCode   || "",
+    EvtReasonCode:r.EvtReasonCode || "",
+    Description:  r.Description || "",
+  }));
+});
+
 });

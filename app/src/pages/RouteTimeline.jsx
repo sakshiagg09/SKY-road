@@ -422,13 +422,12 @@ export default function RouteTimeline({
     }
 
     // POD also goes through backend so next step only opens on success
-    if (actionKey === "pod") {
-      const r = await sendEventReport("POD", stop);
-      if (r.ok && typeof onAction === "function") {
-        onAction("pod", { stop, response: r.body });
-      }
-      return;
+   if (actionKey === "pod") {
+    if (typeof onAction === "function") {
+      onAction("pod", { stop });
     }
+    return;
+  }
 
     // cross-stop rule (same as before)
     const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);

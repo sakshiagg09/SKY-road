@@ -1,3 +1,4 @@
+// src/dialogs/PodFlowDialog.jsx
 import React, { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
@@ -20,13 +21,11 @@ import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
-import UploadFileIcon from "@mui/icons-material/UploadFile";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 
-// ✅ your existing items component (already used elsewhere)
 import MaterialItemList from "../components/MaterialItemList";
+import SignatureAttachmentsSection from "./SignatureAttachmentsSection";
 
-// COLORS (aligned with ShipmentDetails / ReportEvent)
+// COLORS
 const PRIMARY = "#1976D2";
 const PRIMARY_DARK = "#0D47A1";
 const TEXT_PRIMARY = "#071E54";
@@ -34,74 +33,43 @@ const TEXT_SECONDARY = "#6B6C6E";
 const BG = "#EFF0F3";
 const CARD = "#FFFFFF";
 
-// Hard-coded items (like SKY 1.0) — replace later with real OData result if needed
-const INITIAL_ITEMS = [
-  {
-    // for now id acts as item_id fallback
-    id: "0000000020",
-    description: "packing material",
-    category: "PKG",
-    productId: "PACK_TRUCK",
-    qty: 1,
-    uom: "EA",
-    stop_id: "0000000050",
-  },
-  {
-    id: "0000000060",
-    description: "Lecithin",
-    category: "PRD",
-    productId: "1000000001",
-    qty: 1,
-    uom: "EA",
-    stop_id: "0000000040",
-  },
-];
-
 export default function PodFlowDialog({
   open,
   stop,
   foId,
   onClose,
   onSubmit,
-  // 🔁 set to your real CAP OData endpoint for ProofOfDeliverySet
+  // POD OData endpoint
   eventsUrl = "/odata/v4/GTT/updatesPOD",
+  // items OData endpoint
+  itemsUrl = "/odata/v4/GTT/shipmentItems",
+  // attachments proxy endpoint (CAP -> /AttachmentsSet in S/4)
+  attachmentsUrl = "/odata/v4/GTT/attachmentUpload",
 }) {
   // step: question -> items (when discrepancy) -> editItem -> signature
   const [step, setStep] = useState("question"); // 'question' | 'items' | 'editItem' | 'signature'
-  const [items, setItems] = useState(INITIAL_ITEMS);
-  const [baselineItems, setBaselineItems] = useState(INITIAL_ITEMS); // used to detect qty changes
+  const [items, setItems] = useState([]);
+  const [baselineItems, setBaselineItems] = useState([]); // used to detect qty changes
   const [editingItem, setEditingItem] = useState(null);
-  const [signature, setSignature] = useState(""); // placeholder string
-  const [attachments, setAttachments] = useState([]); // [{name, size}]
+
+  // signature is a dataURL (data:image/jpeg;base64,...)
+  const [signature, setSignature] = useState("");
+
+  // real File[] for attachments
+  const [attachments, setAttachments] = useState([]);
+
   const [hasDiscrepancy, setHasDiscrepancy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [itemsLoading, setItemsLoading] = useState(false);
 
-  // reset when dialog closes
-  useEffect(() => {
-    if (!open) {
-      setStep("question");
-      setItems(INITIAL_ITEMS);
-      setBaselineItems(INITIAL_ITEMS);
-      setEditingItem(null);
-      setSignature("");
-      setAttachments([]);
-      setHasDiscrepancy(false);
-      setSubmitting(false);
-    }
-  }, [open]);
-
-  // If stop is a WRAPPER (has FinalInfo), parse stops from it.
-  // If stop is already a STOP object, this will just end up empty.
+  // ----------------- stop / FoId helpers -----------------
   const parsedStops = useMemo(() => {
     const raw = stop?.FinalInfo;
     if (!raw) return [];
-
     try {
-      // raw may be a JSON string or an array already
       const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
       return Array.isArray(arr) ? arr : [];
     } catch {
-      // Some backends double-encode JSON; try a second pass
       try {
         if (typeof raw === "string") {
           const cleaned = raw.trim();
@@ -113,31 +81,23 @@ export default function PodFlowDialog({
           return Array.isArray(arr2) ? arr2 : [];
         }
       } catch {
-        // ignore
+        return [];
       }
       return [];
     }
   }, [stop]);
 
-  // Choose a good stop from FinalInfo for POD/no-discrepancy:
-  // Prefer the LAST customer stop (often the POD stop), else last stop overall.
   const stopFromFinalInfo = useMemo(() => {
     if (!parsedStops.length) return null;
     const rev = [...parsedStops].reverse();
     const lastCustomer = rev.find(
       (s) =>
-        (s?.typeLoc ?? "")
-          .toString()
-          .toUpperCase()
-          .includes("CUST") ||
+        (s?.typeLoc ?? "").toString().toUpperCase().includes("CUST") ||
         (s?.typeLoc ?? "").toString().toUpperCase() === "CUSTOMER"
     );
     return lastCustomer || parsedStops[parsedStops.length - 1];
   }, [parsedStops]);
 
-  // Choose the effective stop:
-  // 1) if `stop` already looks like a stop (has stopid/locid/etc) => use it
-  // 2) else use derived stop from FinalInfo
   const effectiveStop =
     stop?.stopid ||
     stop?.locid ||
@@ -148,23 +108,22 @@ export default function PodFlowDialog({
       ? stop
       : stopFromFinalInfo;
 
-  // FoId can come from prop OR wrapper
   const effectiveFoId = String(foId || stop?.FoId || "");
 
-  // stop title based on effectiveStop
   const stopTitle =
     effectiveStop?.name1 ||
     effectiveStop?.locid ||
     effectiveStop?.stopid ||
     "Selected Stop";
 
-  // IMPORTANT:
-  // Your backend example for StopId uses the numeric-looking location id (e.g. "0000000001"),
-  // which matches `locid` on your FinalInfo stops. So we prefer locid first.
+  // Prefer Location (like "1000000000") as StopId for POD API
   const stopIdValue = String(
-    effectiveStop?.locid ||
+    stop?.Location ||
+      effectiveStop?.Location ||
+      effectiveStop?.locid ||
       effectiveStop?.locId ||
       effectiveStop?.LOCID ||
+      effectiveStop?.location ||
       effectiveStop?.stopid ||
       effectiveStop?.stopId ||
       effectiveStop?.STOPID ||
@@ -173,55 +132,141 @@ export default function PodFlowDialog({
       ""
   );
 
-  // -----------------------------
-  // Payload builders (exact shapes you gave)
-  // -----------------------------
-  // No discrepancy:
-  // {
-  //   "FoId": "6300003009",
-  //   "Discrepency": "",
-  //   "StopId": "0000000001"
-  // }
+  // ----------------- normalise shipmentItems -----------------
+  const normaliseItem = (raw, index) => {
+    const baseQty = Number(raw.Quantity ?? raw.Qty ?? 0);
+    return {
+      id: raw.PackageId || `${index}`,
+      FoId: raw.FoId,
+      Location: raw.Location,
+      PackageId: raw.PackageId,
+      ItemDescr: raw.ItemDescr,
+      ItemCat: raw.ItemCat,
+      Type: raw.Type,
+      Quantity: baseQty,
+      QuantityUom: raw.QuantityUom || "EA",
+      GrossWeight: raw.GrossWeight,
+      GrossWeightUom: raw.GrossWeightUom,
+
+      // UI fields
+      description: raw.ItemDescr || "",
+      category: raw.ItemCat || "",
+      productId: raw.PackageId || "",
+      qty: baseQty,
+      uom: raw.QuantityUom || "EA",
+    };
+  };
+
+  // ----------------- load real items -----------------
+  useEffect(() => {
+    const resetState = () => {
+      setStep("question");
+      setItems([]);
+      setBaselineItems([]);
+      setEditingItem(null);
+      setSignature("");
+      setAttachments([]);
+      setHasDiscrepancy(false);
+      setSubmitting(false);
+      setItemsLoading(false);
+    };
+
+    if (!open) {
+      resetState();
+      return;
+    }
+
+    const loadItems = async () => {
+      try {
+        setItemsLoading(true);
+
+        // If items already on stop (from timeline), reuse
+        if (Array.isArray(stop?.items) && stop.items.length > 0) {
+          const norm = stop.items.map((it, idx) => normaliseItem(it, idx));
+          setItems(norm);
+          setBaselineItems(norm);
+          return;
+        }
+
+        // Otherwise, load from backend
+        if (!effectiveFoId || !stopIdValue) {
+          setItems([]);
+          setBaselineItems([]);
+          return;
+        }
+
+        const url =
+          `${itemsUrl}` +
+          `?$filter=FoId eq '${effectiveFoId}'` +
+          ` and Location eq '${stopIdValue}'`;
+
+        const res = await fetch(url);
+        if (!res.ok) {
+          console.error(
+            "shipmentItems OData failed",
+            res.status,
+            res.statusText
+          );
+          setItems([]);
+          setBaselineItems([]);
+          return;
+        }
+
+        const json = await res.json().catch(() => null);
+        const arr = Array.isArray(json?.value) ? json.value : [];
+        const norm = arr.map((it, idx) => normaliseItem(it, idx));
+
+        setItems(norm);
+        setBaselineItems(norm);
+      } catch (e) {
+        console.warn("Failed to load shipmentItems", e);
+        setItems([]);
+        setBaselineItems([]);
+      } finally {
+        setItemsLoading(false);
+      }
+    };
+
+    loadItems();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, effectiveFoId, stopIdValue]);
+
+  // ----------------------------- Payload builders -----------------------------
   const buildNoDiscrepancyPayload = () => ({
     FoId: effectiveFoId,
     Discrepency: "",
     StopId: stopIdValue,
   });
 
-  // Discrepancy:
-  // {
-  //   "FoId":"6300003009",
-  //   "Discrepency":"X",
-  //   "Items":"[{\"item_id\":\"0000000020\",\"stop_id\":\"0000000050\",\"ActQty\":\"1\",\"ActQtyUom\":\"EA\"}, ... ]"
-  // }
   const buildDiscrepancyPayload = () => {
-    // Prefer sending ONLY changed lines (discrepancy lines)
     const changed = (items || []).filter((it) => {
       const base = (baselineItems || []).find(
-        (b) => String(b.id) === String(it.id)
+        (b) =>
+          String(b.PackageId) === String(it.PackageId) &&
+          String(b.Location) === String(it.Location)
       );
       if (!base) return true;
-      return Number(base.qty) !== Number(it.qty);
+      return Number(base.Quantity) !== Number(it.qty);
     });
 
     if (changed.length === 0) {
-      // if they said discrepancy but didn’t change anything, we block submit
       throw new Error(
         "You marked discrepancy but no item quantity was changed."
       );
     }
 
     const mapped = changed.map((it) => ({
-      item_id: String(it.item_id || it.itemId || it.id || ""),
-      stop_id: String(it.stop_id || it.stopId || stopIdValue || ""),
-      ActQty: String(Number(it.ActQty ?? it.qty ?? 0)),
-      ActQtyUom: String(it.ActQtyUom || it.uom || "EA"),
+      item_id: String(it.PackageId),   // correct mapping
+      stop_id: String(it.Location),    // correct mapping
+      ActQty: String(Number(it.qty)),
+      ActQtyUom: String(it.QuantityUom || it.uom || "EA"),
     }));
 
     return {
       FoId: effectiveFoId,
-      Discrepency: "X", // 👈 capital X as requested
-      Items: JSON.stringify(mapped),
+      Discrepency: "X",
+      Items: JSON.stringify(mapped), // backend expects JSON string
+      StopId: stopIdValue,
     };
   };
 
@@ -238,16 +283,97 @@ export default function PodFlowDialog({
     return true;
   };
 
-  // -----------------------------
-  // Navigation / step handlers
-  // -----------------------------
+  // ----------------------------- Attachments + Signature upload -----------------------------
+
+  const readFileAsBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== "string") {
+          resolve("");
+          return;
+        }
+        const base64 = result.split(",")[1] || "";
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const uploadSingleAttachment = async (file) => {
+    if (!attachmentsUrl || !effectiveFoId) return;
+
+    const base64 = await readFileAsBase64(file);
+    if (!base64) return;
+
+    const ext = (file.name.split(".").pop() || "").toUpperCase();
+    const fileType = ext || "BIN";
+
+    const payload = {
+      FoId: effectiveFoId,
+      FileType: fileType, // e.g. JPG, PNG, PDF, ...
+      PDFBase64: base64,
+    };
+
+    const res = await fetch(attachmentsUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `Attachment upload failed for ${file.name} (${res.status}). ${text}`
+      );
+    }
+  };
+
+  // Signature as JPG
+  const uploadSignatureAttachment = async () => {
+    if (!attachmentsUrl || !effectiveFoId || !signature) return;
+
+    // signature is like "data:image/jpeg;base64,AAAA..."
+    const base64 = signature.split(",")[1] || "";
+    if (!base64) return;
+
+    const payload = {
+      FoId: effectiveFoId,
+      FileType: "JPG", // signature stored as JPG in backend
+      PDFBase64: base64,
+    };
+
+    const res = await fetch(attachmentsUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Signature upload failed (${res.status}). ${text}`);
+    }
+  };
+
+  const uploadAllAttachmentsAndSignature = async () => {
+    // sequential, simple – change to Promise.all if backend can handle parallel
+    for (const file of attachments || []) {
+      await uploadSingleAttachment(file);
+    }
+    await uploadSignatureAttachment();
+  };
+
+  // ----------------------------- Navigation / handlers -----------------------------
+
   const handleNoDiscrepancy = () => {
     setHasDiscrepancy(false);
     setStep("signature");
   };
 
-  // ✅ discrepancy -> navigate to items component
   const handleYesDiscrepancy = () => {
+    if (!items.length) {
+      alert("No items were loaded for this stop. Cannot record discrepancy.");
+      return;
+    }
     setHasDiscrepancy(true);
     setStep("items");
   };
@@ -260,9 +386,14 @@ export default function PodFlowDialog({
   const handleEditSave = () => {
     if (!editingItem) return;
     setItems((prev) =>
-      prev.map((i) => (String(i.id) === String(editingItem.id) ? editingItem : i))
+      prev.map((i) =>
+        String(i.PackageId) === String(editingItem.PackageId) &&
+        String(i.Location) === String(editingItem.Location)
+          ? editingItem
+          : i
+      )
     );
-    setStep("items"); // go back to items view
+    setStep("items");
   };
 
   const handleEditChange = (field, value) => {
@@ -276,40 +407,42 @@ export default function PodFlowDialog({
   const handleFileAdd = (event) => {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
-    setAttachments((prev) => [
-      ...prev,
-      ...files.map((f) => ({ name: f.name, size: f.size })),
-    ]);
+    setAttachments((prev) => [...prev, ...files]);
   };
 
   const handleRemoveAttachment = (idx) => {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  // ✅ Single submit that posts correct payload based on discrepancy flag
-  // This is the ONLY place where POD call is triggered.
   const handleSubmitPod = async () => {
     try {
       const payload = hasDiscrepancy
         ? buildDiscrepancyPayload()
         : buildNoDiscrepancyPayload();
 
-      // optional: notify parent with the exact payload you are sending
       if (typeof onSubmit === "function") onSubmit(payload);
 
       setSubmitting(true);
       if (!payload.FoId) throw new Error("Missing FoId.");
 
+      // 1) Submit POD
       await postToOData(payload);
+
+      // 2) Submit attachments + signature (if any)
+      if ((attachments && attachments.length > 0) || signature) {
+        await uploadAllAttachmentsAndSignature();
+      }
+
       closeDialog();
     } catch (e) {
-      alert(e?.message || "Failed to submit POD.");
+      console.error(e);
+      alert(e?.message || "Failed to submit POD / attachments.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // HEADER (common)
+  // -------------- UI helpers --------------
   const renderHeader = (subtitle) => (
     <Box
       sx={{
@@ -327,7 +460,7 @@ export default function PodFlowDialog({
           inset: 0,
           opacity: 0.07,
           backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.4'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
-      }}
+        }}
       />
 
       <Box sx={{ position: "relative", zIndex: 1 }}>
@@ -460,9 +593,7 @@ export default function PodFlowDialog({
             Any missing / damaged material in this shipment leg?
           </Typography>
 
-          <Typography
-            sx={{ fontSize: 13, color: TEXT_SECONDARY, mb: 3 }}
-          >
+          <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, mb: 3 }}>
             Choose <strong>Yes</strong> to adjust quantities, or{" "}
             <strong>No</strong> to continue to POD.
           </Typography>
@@ -494,16 +625,15 @@ export default function PodFlowDialog({
                 bgcolor: PRIMARY,
                 "&:hover": { bgcolor: PRIMARY_DARK },
               }}
+              disabled={itemsLoading}
             >
-              Yes
+              {itemsLoading ? "Loading…" : "Yes"}
             </Button>
           </Box>
         </Box>
       </DialogContent>
 
-      <DialogActions
-        sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}
-      >
+      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
         <Button
           onClick={closeDialog}
           sx={{
@@ -518,16 +648,15 @@ export default function PodFlowDialog({
     </>
   );
 
-  // STEP 2 – ITEMS (Discrepancy path) ✅ uses MaterialItemList
+  // STEP 2 – ITEMS
   const renderStepItems = () => (
     <>
       {renderHeader("Items (Discrepancy)")}
 
-      {/* Uses your existing component; extra props are safe even if it ignores them */}
       <Box sx={{ flex: 1, bgcolor: BG, overflowY: "auto" }}>
         <MaterialItemList
           stop={{ ...(stop || {}), items }}
-          loading={false}
+          loading={itemsLoading}
           items={items}
           onItemsChange={setItems}
           onBack={() => {
@@ -537,7 +666,6 @@ export default function PodFlowDialog({
           onConfirm={() => setStep("signature")}
         />
 
-        {/* If MaterialItemList is view-only, this built-in editor lets you adjust qty */}
         <Box sx={{ px: 3, pb: 3, pt: 1.5 }}>
           <Typography
             sx={{
@@ -561,7 +689,9 @@ export default function PodFlowDialog({
           >
             <List disablePadding>
               {items.map((item, index) => (
-                <React.Fragment key={item.id}>
+                <React.Fragment
+                  key={`${item.PackageId}_${item.Location}`}
+                >
                   <ListItemButton
                     disableRipple
                     onClick={() => handleEditClick(item)}
@@ -635,9 +765,7 @@ export default function PodFlowDialog({
                       <Chip
                         size="small"
                         label="Edit"
-                        icon={
-                          <EditOutlinedIcon sx={{ fontSize: 14 }} />
-                        }
+                        icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
                         sx={{
                           fontSize: 11,
                           bgcolor: "rgba(25,118,210,0.06)",
@@ -649,9 +777,7 @@ export default function PodFlowDialog({
                   </ListItemButton>
 
                   {index !== items.length - 1 && (
-                    <Divider
-                      sx={{ mx: 3, borderColor: "#E3E6EE" }}
-                    />
+                    <Divider sx={{ mx: 3, borderColor: "#E3E6EE" }} />
                   )}
                 </React.Fragment>
               ))}
@@ -703,7 +829,7 @@ export default function PodFlowDialog({
     </>
   );
 
-  // STEP 3 – EDIT ITEM
+  // STEP 2b – EDIT ITEM
   const renderStepEditItem = () => (
     <>
       {renderHeader("Edit Item Quantity")}
@@ -769,10 +895,7 @@ export default function PodFlowDialog({
               fullWidth
               value={editingItem?.qty ?? ""}
               onChange={(e) =>
-                handleEditChange(
-                  "qty",
-                  Number(e.target.value) || 0
-                )
+                handleEditChange("qty", Number(e.target.value) || 0)
               }
             />
             <TextField
@@ -786,9 +909,7 @@ export default function PodFlowDialog({
         </Box>
       </DialogContent>
 
-      <DialogActions
-        sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}
-      >
+      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
         <Button
           onClick={() => setStep("items")}
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
@@ -818,7 +939,7 @@ export default function PodFlowDialog({
     </>
   );
 
-  // STEP 4 – SIGNATURE & ATTACHMENTS + SUBMIT
+  // STEP 3 – SIGNATURE + ATTACHMENTS
   const renderStepSignature = () => (
     <>
       {renderHeader("Capture Proof of Delivery")}
@@ -832,218 +953,22 @@ export default function PodFlowDialog({
           overflowY: "auto",
         }}
       >
-        <Box
-          sx={{
-            mb: 2.5,
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-          }}
-        >
-          <Chip
-            label={
-              hasDiscrepancy
-                ? "Discrepancy Reported"
-                : "No Item Discrepancy"
-            }
-            sx={{
-              bgcolor: hasDiscrepancy
-                ? "rgba(245, 158, 11, 0.15)"
-                : "rgba(16, 185, 129, 0.12)",
-              color: hasDiscrepancy ? "#B45309" : "#047857",
-              fontWeight: 600,
-            }}
-          />
-        </Box>
-
-        {/* SIGNATURE CARD */}
-        <Box
-          sx={{
-            backgroundColor: CARD,
-            borderRadius: 3,
-            p: 3,
-            mb: 3,
-            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
-          }}
-        >
-          <Typography
-            sx={{
-              fontSize: 12,
-              color: TEXT_SECONDARY,
-              textTransform: "uppercase",
-              letterSpacing: 1.2,
-              mb: 1,
-            }}
-          >
-            Signature
-          </Typography>
-
-          <Box
-            sx={{
-              mt: 1,
-              mb: 1.5,
-              borderRadius: 2,
-              border: "1px dashed #CBD2E8",
-              height: 140,
-              bgcolor: "#F8FAFF",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: TEXT_SECONDARY,
-              fontSize: 13,
-            }}
-          >
-            Tap here to capture signature (placeholder)
-          </Box>
-
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "flex-end",
-              gap: 1.5,
-            }}
-          >
-            <Button
-              size="small"
-              onClick={() => setSignature("")}
-              sx={{
-                textTransform: "none",
-                fontSize: 12,
-                color: TEXT_SECONDARY,
-              }}
-            >
-              Clear
-            </Button>
-            <Button
-              size="small"
-              variant="contained"
-              onClick={() => setSignature("signed")}
-              sx={{
-                textTransform: "none",
-                fontSize: 12,
-                bgcolor: PRIMARY,
-                "&:hover": { bgcolor: PRIMARY_DARK },
-              }}
-            >
-              Save
-            </Button>
-          </Box>
-        </Box>
-
-        {/* ATTACHMENTS CARD */}
-        <Box
-          sx={{
-            backgroundColor: CARD,
-            borderRadius: 3,
-            p: 3,
-            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
-          }}
-        >
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              mb: 2,
-            }}
-          >
-            <Typography
-              sx={{
-                fontSize: 12,
-                color: TEXT_SECONDARY,
-                textTransform: "uppercase",
-                letterSpacing: 1.2,
-              }}
-            >
-              Attach Files
-            </Typography>
-
-            <Button
-              component="label"
-              startIcon={<UploadFileIcon sx={{ fontSize: 18 }} />}
-              sx={{
-                textTransform: "none",
-                fontSize: 12,
-                fontWeight: 600,
-                borderRadius: 999,
-                bgcolor: "rgba(25,118,210,0.08)",
-                color: PRIMARY,
-                "&:hover": { bgcolor: "rgba(25,118,210,0.14)" },
-              }}
-            >
-              Add
-              <input hidden multiple type="file" onChange={handleFileAdd} />
-            </Button>
-          </Box>
-
-          {attachments.length === 0 ? (
-            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>
-              No files attached yet.
-            </Typography>
-          ) : (
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 1,
-              }}
-            >
-              {attachments.map((file, idx) => (
-                <Box
-                  key={`${file.name}_${idx}`}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    px: 1.5,
-                    py: 0.75,
-                    borderRadius: 2,
-                    bgcolor: "#F8FAFF",
-                  }}
-                >
-                  <Box
-                    sx={{
-                      display: "flex",
-                      flexDirection: "column",
-                    }}
-                  >
-                    <Typography
-                      sx={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: TEXT_PRIMARY,
-                      }}
-                    >
-                      {file.name}
-                    </Typography>
-                    <Typography
-                      sx={{
-                        fontSize: 11,
-                        color: TEXT_SECONDARY,
-                      }}
-                    >
-                      {(file.size / 1024).toFixed(1)} KB
-                    </Typography>
-                  </Box>
-
-                  <IconButton
-                    size="small"
-                    onClick={() => handleRemoveAttachment(idx)}
-                  >
-                    <DeleteOutlineIcon
-                      sx={{ fontSize: 18, color: TEXT_SECONDARY }}
-                    />
-                  </IconButton>
-                </Box>
-              ))}
-            </Box>
-          )}
-        </Box>
+        <SignatureAttachmentsSection
+          hasDiscrepancy={hasDiscrepancy}
+          signatureDataUrl={signature}         // dataURL passed in
+          onSignatureChange={setSignature}     // updates dataURL
+          attachments={attachments}
+          onAddAttachments={handleFileAdd}
+          onRemoveAttachment={handleRemoveAttachment}
+          primaryColor={PRIMARY}
+          primaryDark={PRIMARY_DARK}
+          textPrimary={TEXT_PRIMARY}
+          textSecondary={TEXT_SECONDARY}
+          cardBg={CARD}
+        />
       </DialogContent>
 
-      <DialogActions
-        sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}
-      >
+      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
         <Button
           onClick={() =>
             hasDiscrepancy ? setStep("items") : setStep("question")
@@ -1078,7 +1003,6 @@ export default function PodFlowDialog({
     </>
   );
 
-  // MAIN DIALOG
   return (
     <Dialog
       open={open}
@@ -1098,7 +1022,7 @@ export default function PodFlowDialog({
       }}
     >
       {step === "question" && renderStepQuestion()}
-      {step === "items" && renderStepItems()} {/* discrepancy path */}
+      {step === "items" && renderStepItems()}
       {step === "editItem" && renderStepEditItem()}
       {step === "signature" && renderStepSignature()}
     </Dialog>

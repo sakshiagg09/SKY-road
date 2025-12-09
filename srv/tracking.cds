@@ -31,6 +31,7 @@ service GTT {
     key FoId        : String;
         Discrepency : String;
         StopId      : String;
+        Items       : LargeString;
   }
 
   // If you need this, define it here too (adjust fields as per your actual payload):
@@ -43,6 +44,25 @@ service GTT {
         Reason    : String;
   }
 
+    @cds.persistence.skip
+  entity attachmentPayload {
+    key FoId      : String;
+        FileType  : String;
+        PDFBase64 : LargeString;
+  }
+
+    @cds.persistence.skip
+  entity delayEvent {
+  key FoId         : String;   
+      StopId       : String;
+      ETA          : String;
+      RefEvent     : String;
+      Event        : String;  
+      EventCode    : String;  
+      EvtReasonCode: String;   
+      Description  : String;   
+}
+
   // ----- SERVICE ENTITIES
   entity trackingDetails as projection on shipmentDetails;
   entity updatesPOD      as projection on updatePOD;
@@ -51,5 +71,7 @@ service GTT {
 
   // Persisted table exposed as service entity
   entity shipmentItems   as projection on Items;
-
+  entity attachmentUpload  as projection on attachmentPayload;
+  entity delayEvents   as projection on delayEvent;
+  
 }
