@@ -5,6 +5,9 @@ import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
 import BottomBar from "./components/BottomBar";
 import ReportEventDialog from "./components/ReportEventDialog";
 
+// ⭐ NEW import
+import DriverTrackingManager from "./tracking/DriverTrackingManager";
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
   const [selectedShipment, setSelectedShipment] = useState(null);
@@ -92,6 +95,9 @@ export default function App() {
         flexDirection: "column",
       }}
     >
+      {/* ⭐ Tracking manager runs in background, safe & invisible */}
+      <DriverTrackingManager selectedShipment={selectedShipment} />
+
       <div
         style={{
           flex: 1,
