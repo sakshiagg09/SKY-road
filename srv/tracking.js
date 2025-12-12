@@ -166,6 +166,7 @@ module.exports = cds.service.impl(async function () {
       QuantityUom: r.QuantityUom,
       GrossWeight: r.GrossWeight,
       GrossWeightUom: r.GrossWeightUom,
+      StopId: r.StopId || "",
     }));
 
     // Persist to HANA (UPSERT by composite key FoId+Location+PackageId)

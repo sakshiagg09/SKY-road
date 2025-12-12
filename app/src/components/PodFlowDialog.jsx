@@ -147,7 +147,7 @@ export default function PodFlowDialog({
       QuantityUom: raw.QuantityUom || "EA",
       GrossWeight: raw.GrossWeight,
       GrossWeightUom: raw.GrossWeightUom,
-
+      StopId: raw.StopId || "",
       // UI fields
       description: raw.ItemDescr || "",
       category: raw.ItemCat || "",
@@ -257,7 +257,7 @@ export default function PodFlowDialog({
 
     const mapped = changed.map((it) => ({
       item_id: String(it.PackageId),   // correct mapping
-      stop_id: String(it.Location),    // correct mapping
+      stop_id: String(it.StopId),    // correct mapping
       ActQty: String(Number(it.qty)),
       ActQtyUom: String(it.QuantityUom || it.uom || "EA"),
     }));

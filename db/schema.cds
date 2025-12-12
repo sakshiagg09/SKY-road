@@ -109,6 +109,7 @@ entity Items : managed {
         QuantityUom    : String(10);
         GrossWeight    : Decimal(15, 3);
         GrossWeightUom : String(10);
+        StopId        : String(20);
 
         toShipment     : Association to Shipments
                              on toShipment.FoId = FoId;
