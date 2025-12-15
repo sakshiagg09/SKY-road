@@ -1,6 +1,7 @@
-//srv/tracking.js
+// srv/tracking.js
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
+const licenseOcr = require("./licenseOcrService"); // 👈 NEW
 
 const { UPSERT } = cds.ql;
 
@@ -11,12 +12,17 @@ function getFilterVal(req, prop) {
   for (let i = 0; i < where.length; i++) {
     const t = where[i];
     // Common CAP pattern: {ref:['FoId']}, '=', {val:'...'}
-    if (t && typeof t === 'object' && Array.isArray(t.ref) && t.ref[0] === prop) {
-      if (where[i + 1] === '=' && where[i + 2] && typeof where[i + 2] === 'object' && 'val' in where[i + 2]) {
+    if (t && typeof t === "object" && Array.isArray(t.ref) && t.ref[0] === prop) {
+      if (
+        where[i + 1] === "=" &&
+        where[i + 2] &&
+        typeof where[i + 2] === "object" &&
+        "val" in where[i + 2]
+      ) {
         return where[i + 2].val;
       }
       // Some templates use indexes (legacy)
-      if (where[i + 2] && typeof where[i + 2] === 'object' && 'val' in where[i + 2]) {
+      if (where[i + 2] && typeof where[i + 2] === "object" && "val" in where[i + 2]) {
         return where[i + 2].val;
       }
     }
@@ -28,7 +34,7 @@ function normalizeV2(data) {
   // OData V2 may return { d: { results: [...] } } or { d: {...} }
   const d = data?.d ?? data;
   if (Array.isArray(d?.results)) return d.results;
-  if (d && typeof d === 'object') return [d];
+  if (d && typeof d === "object") return [d];
   return [];
 }
 
@@ -45,8 +51,8 @@ async function fetchCsrf() {
     { destinationName: DESTINATION },
     {
       method: "GET",
-      url: "/$metadata",              // <-- relative to destination URL
-      headers: { "x-csrf-token": "Fetch" }
+      url: "/$metadata", // <-- relative to destination URL
+      headers: { "x-csrf-token": "Fetch" },
     },
     { fetchCsrfToken: false }
   );
@@ -75,14 +81,14 @@ async function s4Post(url, payload) {
     { destinationName: DESTINATION },
     {
       method: "POST",
-      url,                            // <-- relative to destination URL
+      url, // <-- relative to destination URL
       data: payload,
       headers: {
         "x-csrf-token": token,
         Cookie: cookie,
         Accept: "application/json",
-        "Content-Type": "application/json"
-      }
+        "Content-Type": "application/json",
+      },
     },
     { fetchCsrfToken: false }
   );
@@ -92,17 +98,19 @@ async function s4Post(url, payload) {
 
 module.exports = cds.service.impl(async function () {
   // Open DB service once so the pool is ready before first request
-  const db = await cds.connect.to('db');
+  const db = await cds.connect.to("db");
   const run = (...args) => db.run(...args);
-  const { trackingDetails, eventReporting, updatesPOD, shipmentItems,attachmentUpload,delayEvents, } = this.entities;
+  const {
+    trackingDetails,
+    eventReporting,
+    updatesPOD,
+    shipmentItems,
+    attachmentUpload,
+    delayEvents,
+  } = this.entities;
 
   // DB tables (persistent)
-  const {
-    Shipments,
-    ShipmentStops,
-    StopEvents,
-    Items
-  } = cds.entities('sky.db');
+  const { Shipments, ShipmentStops, StopEvents, Items } = cds.entities("sky.db");
 
   const safeRun = (stmt, context) => {
     // Fire-and-forget; do not block OData response on DB
@@ -111,11 +119,27 @@ module.exports = cds.service.impl(async function () {
     });
   };
 
+  // ---------------------------------------------------------------------------
+  // READ trackingDetails – now requires BOTH FoId + DriverLicense
+  // ---------------------------------------------------------------------------
   this.on("READ", trackingDetails, async (req) => {
-    const foId = getFilterVal(req, 'FoId') ?? req.query.SELECT.where?.[2]?.val;
-    if (!foId) return [];
+    const foId = getFilterVal(req, "FoId");
+    const driverLicense = getFilterVal(req, "DriverLicense");
 
-    const data = await s4Get(`/SearchFOSet('${foId}')?$format=json`);
+    if (!foId || !driverLicense) {
+      console.warn("READ trackingDetails called without FoId or DriverLicense", {
+        foId,
+        driverLicense,
+      });
+      return [];
+    }
+
+    // 👇 Adjust this path if your S/4 service expects a different syntax,
+    // e.g. /SearchFOSet(FoId='...',DriverLicense='...')
+    const path =
+       `/SearchFOSet(FoId='${foId}',LicenseNumber='${driverLicense}')?$format=json`;
+
+    const data = await s4Get(path);
     const rows = normalizeV2(data);
     const row = rows[0];
     if (!row) return [];
@@ -128,22 +152,29 @@ module.exports = cds.service.impl(async function () {
         DirectionsInfo: row.DirectionsInfo ?? null,
         StopInfo: row.StopInfo ?? null,
       }),
-      'Shipments'
+      "Shipments"
     );
 
-    // Return to UI
-    return [{
-      FoId: row.FoId,
-      FinalInfo: row.FinalInfo,
-      DirectionsInfo: row.DirectionsInfo,
-      StopInfo: row.StopInfo,
-    }];
-  });   
+    // Return to UI – also echo back the license we used
+    return [
+      {
+        FoId: row.FoId,
+        DriverLicense: row.DriverLicense || driverLicense,
+        FinalInfo: row.FinalInfo,
+        DirectionsInfo: row.DirectionsInfo,
+        StopInfo: row.StopInfo,
+      },
+    ];
+  });
 
+  // ---------------------------------------------------------------------------
+  // READ shipmentItems (unchanged)
+  // ---------------------------------------------------------------------------
   this.on("READ", shipmentItems, async (req) => {
     // Read FoId & Location from $filter (CAP query AST)
-    const foId = getFilterVal(req, 'FoId') ?? req.query.SELECT.where?.[2]?.val;
-    const location = getFilterVal(req, 'Location') ?? req.query.SELECT.where?.[6]?.val;
+    const foId = getFilterVal(req, "FoId") ?? req.query.SELECT.where?.[2]?.val;
+    const location =
+      getFilterVal(req, "Location") ?? req.query.SELECT.where?.[6]?.val;
 
     if (!foId || !location) return [];
 
@@ -171,41 +202,69 @@ module.exports = cds.service.impl(async function () {
 
     // Persist to HANA (UPSERT by composite key FoId+Location+PackageId)
     if (items.length) {
-      safeRun(UPSERT.into(Items).entries(items), 'Items');
+      safeRun(UPSERT.into(Items).entries(items), "Items");
     }
 
     return items;
   });
 
+  // ---------------------------------------------------------------------------
+  // CREATE handlers (unchanged)
+  // ---------------------------------------------------------------------------
   this.on("CREATE", eventReporting, async (req) => {
     // IMPORTANT: use your real entity set name
     return await s4Post("/EventsReportingSet", req.data);
   });
+
   this.on("CREATE", updatesPOD, async (req) => {
     // IMPORTANT: use your real entity set name
     return await s4Post("/ProofOfDeliverySet", req.data);
   });
-   this.on("CREATE", attachmentUpload, async (req) => {
 
+  this.on("CREATE", attachmentUpload, async (req) => {
     // Forward to S/4 AttachmentsSet
     return await s4Post("/AttachmentsSet", req.data);
   });
-   this.on("CREATE", delayEvents, async (req) => {
-    return await s4Post("/DelaySet", req.data);
-   });
-   this.on("READ", delayEvents, async (req) => {
-  const data = await s4Get("/DelaySet");
-  const rows = normalizeV2(data);
-  return rows.map((r) => ({
-    FoId:         r.FoId        || "",
-    StopId:       r.StopId      || "",
-    ETA:          r.ETA         || "",
-    RefEvent:     r.RefEvent    || "",
-    Event:        r.Event       || "",
-    EventCode:    r.EventCode   || "",
-    EvtReasonCode:r.EvtReasonCode || "",
-    Description:  r.Description || "",
-  }));
-});
 
+  this.on("CREATE", delayEvents, async (req) => {
+    return await s4Post("/DelaySet", req.data);
+  });
+
+  this.on("READ", delayEvents, async (req) => {
+    const data = await s4Get("/DelaySet");
+    const rows = normalizeV2(data);
+    return rows.map((r) => ({
+      FoId: r.FoId || "",
+      StopId: r.StopId || "",
+      ETA: r.ETA || "",
+      RefEvent: r.RefEvent || "",
+      Event: r.Event || "",
+      EventCode: r.EventCode || "",
+      EvtReasonCode: r.EvtReasonCode || "",
+      Description: r.Description || "",
+    }));
+  });
+
+  // ---------------------------------------------------------------------------
+  // OCR ACTION: extractLicenseNumber
+  // ---------------------------------------------------------------------------
+  this.on("extractLicenseNumber", async (req) => {
+    try {
+      const { imageBase64 } = req.data || {};
+      if (!imageBase64) {
+        return req.reject(400, "imageBase64 is required");
+      }
+
+      const buf = Buffer.from(imageBase64, "base64");
+      const res = await licenseOcr.extractLicenseNumber(buf);
+
+      return {
+        licenseNumber: res.licenseNumber,
+        confidence: res.confidence,
+      };
+    } catch (e) {
+      console.error("extractLicenseNumber failed:", e);
+      return req.reject(500, e.message || "OCR failed");
+    }
+  });
 });

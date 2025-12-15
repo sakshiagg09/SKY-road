@@ -6,6 +6,7 @@ service GTT {
   @cds.persistence.skip
   entity shipmentDetails {
     key FoId           : String;
+        DriverLicense : String;
         FinalInfo      : String;
         DirectionsInfo : String;
         StopInfo       : String;
@@ -74,4 +75,13 @@ service GTT {
   entity attachmentUpload  as projection on attachmentPayload;
   entity delayEvents   as projection on delayEvent;
   
+
+    // ----- OCR ACTION (for license scanning from frontend)
+  action extractLicenseNumber(
+    imageBase64 : LargeString   // base64-encoded JPEG/PNG from the app
+  ) returns {
+    licenseNumber : String;
+    confidence    : Decimal(5,4);
+  };
+
 }
