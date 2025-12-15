@@ -256,8 +256,8 @@ export default function PodFlowDialog({
     }
 
     const mapped = changed.map((it) => ({
-      item_id: String(it.PackageId),   // correct mapping
-      stop_id: String(it.StopId),    // correct mapping
+      item_id: String(it.PackageId), // correct mapping
+      stop_id: String(it.StopId), // correct mapping
       ActQty: String(Number(it.qty)),
       ActQtyUom: String(it.QuantityUom || it.uom || "EA"),
     }));
@@ -276,11 +276,22 @@ export default function PodFlowDialog({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`OData POST failed (${res.status}). ${text}`);
     }
-    return true;
+
+    // 👉 This will be your object:
+    // {
+    //   "@odata.context": "...",
+    //   "Event": "POD",
+    //   "StopId": "...",
+    //   "FoId": "..."
+    //   ...
+    // }
+    const json = await res.json().catch(() => null);
+    return json;
   };
 
   // ----------------------------- Attachments + Signature upload -----------------------------
@@ -420,19 +431,27 @@ export default function PodFlowDialog({
         ? buildDiscrepancyPayload()
         : buildNoDiscrepancyPayload();
 
-      if (typeof onSubmit === "function") onSubmit(payload);
-
       setSubmitting(true);
       if (!payload.FoId) throw new Error("Missing FoId.");
 
-      // 1) Submit POD
-      await postToOData(payload);
+      // 1) Submit POD and get backend result (with Event/FoId/StopId)
+      const podResult = await postToOData(payload);
 
       // 2) Submit attachments + signature (if any)
       if ((attachments && attachments.length > 0) || signature) {
         await uploadAllAttachmentsAndSignature();
       }
 
+      // 3) Notify parent that POD is successfully done
+      //    -> parent can update timeline based on podResult.Event
+      if (typeof onSubmit === "function") {
+        onSubmit({
+          payload,
+          response: podResult,
+        });
+      }
+
+      // 4) Close dialog
       closeDialog();
     } catch (e) {
       console.error(e);
@@ -689,9 +708,7 @@ export default function PodFlowDialog({
           >
             <List disablePadding>
               {items.map((item, index) => (
-                <React.Fragment
-                  key={`${item.PackageId}_${item.Location}`}
-                >
+                <React.Fragment key={`${item.PackageId}_${item.Location}`}>
                   <ListItemButton
                     disableRipple
                     onClick={() => handleEditClick(item)}
@@ -955,8 +972,8 @@ export default function PodFlowDialog({
       >
         <SignatureAttachmentsSection
           hasDiscrepancy={hasDiscrepancy}
-          signatureDataUrl={signature}         // dataURL passed in
-          onSignatureChange={setSignature}     // updates dataURL
+          signatureDataUrl={signature} // dataURL passed in
+          onSignatureChange={setSignature} // updates dataURL
           attachments={attachments}
           onAddAttachments={handleFileAdd}
           onRemoveAttachment={handleRemoveAttachment}

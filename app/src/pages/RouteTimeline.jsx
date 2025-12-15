@@ -1,3 +1,4 @@
+// app/src/pages/RouteTimeline.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
@@ -31,6 +32,7 @@ export default function RouteTimeline({
   selectedShipment,
   onAction,
   eventsUrl = "/odata/v4/GTT/eventReporting",
+  podCompletedInfo, // 👈 NEW
 }) {
   const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";
@@ -238,6 +240,40 @@ export default function RouteTimeline({
     return m;
   });
 
+  // 🔹 When POD (or other event) is successfully completed via POD dialog,
+  // update reportedMap based on the backend Event ("POD").
+  useEffect(() => {
+    if (!podCompletedInfo) return;
+
+    const { event, stopId } = podCompletedInfo;
+    if (!stopId) return;
+
+    const ev = String(event || "").toUpperCase();
+    let mapped = null;
+    if (ev.includes("ARRIV")) mapped = "arrival";
+    else if (ev.includes("DEPART")) mapped = "departure";
+    else if (ev.includes("POD")) mapped = "pod";
+
+    if (!mapped) return;
+
+    setReportedMap((prev) => {
+      const copy = { ...prev };
+
+      // find matching stop by locid/stopid
+      const matchingStop = derivedStops.find(
+        (s) => (s.locid || s.stopid || "").toString() === stopId.toString()
+      );
+      if (!matchingStop) return prev;
+
+      const key = getStopKey(matchingStop);
+      const seq = allowedSequenceForStop(matchingStop);
+      const flags = computeFlagsUpTo(seq, mapped);
+
+      copy[key] = { ...(copy[key] || {}), ...flags };
+      return copy;
+    });
+  }, [podCompletedInfo, derivedStops]);
+
   // completedCount and progress (arrival OR departure closes a stop)
   const completedCount = useMemo(
     () =>
@@ -268,7 +304,7 @@ export default function RouteTimeline({
     return derivedStops.length;
   }, [derivedStops, reportedMap]);
 
-  // map server Event string -> action key
+  // map server Event string -> action key (used for ARRV/DEPT API)
   const mapServerEventToActionKey = (ev) => {
     if (!ev) return null;
     const e = String(ev).toUpperCase();
@@ -406,9 +442,7 @@ export default function RouteTimeline({
 
   const handleAction = async (actionKey) => {
     handleMenuClose();
-    const stop = derivedStops.find(
-      (s) => getStopKey(s) === activeStopKey
-    );
+    const stop = derivedStops.find((s) => getStopKey(s) === activeStopKey);
     if (!stop) return;
 
     const stopIndex = derivedStops.findIndex(
@@ -421,13 +455,13 @@ export default function RouteTimeline({
       return;
     }
 
-    // POD also goes through backend so next step only opens on success
-   if (actionKey === "pod") {
-    if (typeof onAction === "function") {
-      onAction("pod", { stop });
+    // POD -> open POD dialog (actual POD posting happens there)
+    if (actionKey === "pod") {
+      if (typeof onAction === "function") {
+        onAction("pod", { stop });
+      }
+      return;
     }
-    return;
-  }
 
     // cross-stop rule (same as before)
     const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
@@ -506,7 +540,7 @@ export default function RouteTimeline({
     );
   }
 
-  // ----------------- render timeline UI (same styling) -----------------
+  // ----------------- render timeline UI -----------------
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -607,8 +641,7 @@ export default function RouteTimeline({
                 style={{
                   backgroundColor: CARD,
                   borderColor: "#dde3ec",
-                  boxShadow:
-                    "4px 4px 14px #d9dde6, -4px -4px 14px #ffffff",
+                  boxShadow: "4px 4px 14px #d9dde6, -4px -4px 14px #ffffff",
                   position: "relative",
                   overflow: "visible",
                 }}

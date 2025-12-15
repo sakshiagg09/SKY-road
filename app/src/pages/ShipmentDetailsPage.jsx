@@ -1,3 +1,4 @@
+// app/src/pages/ShipmentDetailsPage.jsx
 import React, { useState, useCallback } from "react";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
@@ -15,7 +16,6 @@ import PodFlowDialog from "../components/PodFlowDialog"; // 👈 adjust path if 
  */
 export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   const BG = "#EFF0F3";
-  const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";
   const TEXT_PRIMARY = "#071E54";
   const TEXT_SECONDARY = "#6B6C6E";
@@ -26,6 +26,9 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   // 🔹 POD dialog state
   const [podOpen, setPodOpen] = useState(false);
   const [podContext, setPodContext] = useState({ stop: null, FoId: null });
+
+  // 🔹 Info about last successfully completed POD (to update timeline)
+  const [podCompletedInfo, setPodCompletedInfo] = useState(null);
 
   if (!selectedShipment) {
     return (
@@ -86,24 +89,51 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
 
       // 🔹 when RouteTimeline asks for POD, open dialog
       if (action === "pod" && payload) {
-    const stop = payload.stop || payload; // support both shapes
-    setPodContext({
-      stop,
-      FoId: String(selectedShipment.FoId || selectedShipment.foId || ""),
-    });
-    setPodOpen(true);
-  }
+        const stop = payload.stop || payload; // support both shapes
+        setPodContext({
+          stop,
+          FoId: String(selectedShipment.FoId || selectedShipment.foId || ""),
+        });
+        setPodOpen(true);
+      }
 
       // still bubble up to parent if they passed onAction
       if (typeof onAction === "function") onAction(action, payload);
     },
-    [onAction, selectedShipment.FoId]
+    [onAction, selectedShipment.FoId, selectedShipment.foId]
   );
 
-  // optional: hook if you want to see exact POD payload being sent
-  const handlePodSubmit = (payload) => {
-    console.log("POD payload being posted:", payload);
-    // you could show a toast here if you have one
+  // called AFTER POD successfully posted (from PodFlowDialog)
+  const handlePodSubmit = ({ payload, response }) => {
+    console.log("POD successfully posted:", { payload, response });
+
+    const event = (response && response.Event) || "POD";
+    const foIdFromResponse = response && response.FoId;
+    const stopIdFromResponse = response && response.StopId;
+
+    const fallbackFoId =
+      (payload && payload.FoId) ||
+      String(selectedShipment.FoId || selectedShipment.foId || "");
+    const fallbackStopId = payload && payload.StopId;
+
+    const effectiveFoId = foIdFromResponse || fallbackFoId;
+    const effectiveStopId = stopIdFromResponse || fallbackStopId;
+
+    if (!effectiveStopId) {
+      // If StopId is empty in response and payload, we can't map it to a stop.
+      console.warn(
+        "POD completed but StopId is missing in response/payload. Timeline cannot be updated.",
+        { payload, response }
+      );
+      return;
+    }
+
+    setPodCompletedInfo({
+      foId: effectiveFoId,
+      stopId: effectiveStopId,
+      event,
+      ts: Date.now(), // used to force React updates even for same stop
+    });
   };
 
   return (
@@ -239,6 +269,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         <RouteTimeline
           selectedShipment={selectedShipment}
           onAction={handleChildAction}
+          podCompletedInfo={podCompletedInfo} // 👈 NEW
         />
       </div>
 
