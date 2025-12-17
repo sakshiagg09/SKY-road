@@ -13,11 +13,17 @@
       "source": "^/odata/(.*)$",
       "target": "/odata/$1",
       "destination": "srv-api",
-      "authenticationType": "none",
+      "authenticationType": "xsuaa",
       "csrfProtection": false
     },
     {
+      "source": "^/(.*\\.(?:js|css|map|png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|eot|json))$",
+      "localDir": "resources",
+      "authenticationType": "xsuaa"
+    },
+    {
       "source": "^(.*)$",
+      "target": "/index.html",
       "localDir": "resources",
       "authenticationType": "xsuaa"
     }
