@@ -1,23 +1,14 @@
-// Call this once at app startup to capture OAuth redirect deep links
-export function initPkceRedirectListener() {
-  // No-op on web
-  if (!Capacitor.isNativePlatform()) return;
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import "./index.css";
+import App from "./App.jsx";
+import { initPkceRedirectListener } from "./lib/http";
 
-  CapApp.addListener("appUrlOpen", async (event) => {
-    const url = event?.url || "";
-    if (!url) return;
+// Initialize OAuth redirect handling for mobile (Authorization Code + PKCE)
+initPkceRedirectListener();
 
-    // Only handle our redirect
-    if (!OAUTH_REDIRECT_URI || !url.startsWith(OAUTH_REDIRECT_URI)) return;
-
-    try {
-      await Browser.close();
-      await exchangeCodeForToken(url);
-      console.log("OAuth login successful: token stored");
-    } catch (e) {
-      console.error("OAuth callback handling failed", e);
-    }
-  });
-}
-
-export { initPkceRedirectListener };
+createRoot(document.getElementById("root")).render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);

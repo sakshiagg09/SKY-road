@@ -1,5 +1,6 @@
-import { Capacitor } from "@capacitor/core";
-import { CapacitorHttp } from "@capacitor/core";
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { Browser } from "@capacitor/browser";
+import { App as CapApp } from "@capacitor/app";
 
 export async function httpJson(url, options = {}) {
   const method = (options.method || "GET").toUpperCase();
@@ -10,6 +11,12 @@ export async function httpJson(url, options = {}) {
   // Allow callers to pass a token without repeating boilerplate
   if (options.authToken && !headers.Authorization) {
     headers.Authorization = `Bearer ${options.authToken}`;
+  }
+
+  // If caller didn't pass a token explicitly, try using the stored token (mobile PKCE flow)
+  if (!headers.Authorization) {
+    const stored = typeof localStorage !== "undefined" ? localStorage.getItem("access_token") : null;
+    if (stored) headers.Authorization = `Bearer ${stored}`;
   }
 
   // Default Accept header
@@ -94,4 +101,142 @@ export async function httpJson(url, options = {}) {
   }
 
   return data;
+}
+
+// -----------------------------
+// OAuth Authorization Code + PKCE (mobile)
+// -----------------------------
+
+const XSUAA_BASE = import.meta.env.VITE_XSUAA_BASE;
+const OAUTH_CLIENT_ID = import.meta.env.VITE_OAUTH_CLIENT_ID;
+const OAUTH_REDIRECT_URI = import.meta.env.VITE_OAUTH_REDIRECT_URI;
+const OAUTH_SCOPE = import.meta.env.VITE_OAUTH_SCOPE || "openid";
+
+function b64urlFromArrayBuffer(buf) {
+  const bytes = new Uint8Array(buf);
+  let str = "";
+  bytes.forEach((b) => (str += String.fromCharCode(b)));
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomString(length = 64) {
+  const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(values, (v) => charset[v % charset.length]).join("");
+}
+
+async function sha256(text) {
+  return await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+}
+
+export function getAccessToken() {
+  return typeof localStorage !== "undefined" ? localStorage.getItem("access_token") : null;
+}
+
+export async function logout() {
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    localStorage.removeItem("pkce_verifier");
+    localStorage.removeItem("pkce_state");
+  }
+}
+
+// Opens the system browser to start login (Authorization Code + PKCE)
+export async function startPkceLogin() {
+  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI) {
+    throw new Error(
+      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, and VITE_OAUTH_REDIRECT_URI in .env"
+    );
+  }
+
+  // Only meaningful on native; on web you likely use approuter login.
+  if (!Capacitor.isNativePlatform()) {
+    throw new Error("PKCE login is intended for native mobile builds.");
+  }
+
+  const verifier = randomString(64);
+  const challenge = b64urlFromArrayBuffer(await sha256(verifier));
+  const state = randomString(16);
+
+  localStorage.setItem("pkce_verifier", verifier);
+  localStorage.setItem("pkce_state", state);
+
+  const authUrl =
+    `${XSUAA_BASE}/oauth/authorize` +
+    `?response_type=code` +
+    `&client_id=${encodeURIComponent(OAUTH_CLIENT_ID)}` +
+    `&redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}` +
+    `&scope=${encodeURIComponent(OAUTH_SCOPE)}` +
+    `&state=${encodeURIComponent(state)}` +
+    `&code_challenge=${encodeURIComponent(challenge)}` +
+    `&code_challenge_method=S256`;
+
+  await Browser.open({ url: authUrl });
+}
+
+export async function exchangeCodeForToken(callbackUrl) {
+  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI) {
+    throw new Error(
+      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, and VITE_OAUTH_REDIRECT_URI in .env"
+    );
+  }
+
+  const parsed = new URL(callbackUrl);
+  const code = parsed.searchParams.get("code");
+  const returnedState = parsed.searchParams.get("state");
+
+  const expectedState = localStorage.getItem("pkce_state");
+  const verifier = localStorage.getItem("pkce_verifier");
+
+  if (!code) throw new Error("Login failed: no authorization code returned.");
+  if (!verifier) throw new Error("Login failed: missing PKCE verifier.");
+  if (returnedState !== expectedState) throw new Error("Login failed: invalid state.");
+
+  const tokenUrl = `${XSUAA_BASE}/oauth/token`;
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    client_id: OAUTH_CLIENT_ID,
+    code,
+    redirect_uri: OAUTH_REDIRECT_URI,
+    code_verifier: verifier,
+  });
+
+  const res = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
+  }
+
+  if (json.access_token) localStorage.setItem("access_token", json.access_token);
+  if (json.refresh_token) localStorage.setItem("refresh_token", json.refresh_token);
+
+  return json.access_token;
+}
+
+// Call this once at app startup to capture OAuth redirect deep links
+export function initPkceRedirectListener() {
+  // No-op on web
+  if (!Capacitor.isNativePlatform()) return;
+
+  CapApp.addListener("appUrlOpen", async (event) => {
+    const url = event?.url || "";
+    if (!url) return;
+
+    // Only handle our redirect
+    if (!OAUTH_REDIRECT_URI || !url.startsWith(OAUTH_REDIRECT_URI)) return;
+
+    try {
+      await Browser.close();
+      await exchangeCodeForToken(url);
+      console.log("OAuth login successful: token stored");
+    } catch (e) {
+      console.error("OAuth callback handling failed", e);
+    }
+  });
 }
