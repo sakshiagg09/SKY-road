@@ -1,10 +1,10 @@
 // src/tracking/DriverTrackingManager.jsx
 import React, { useEffect, useCallback } from "react";
-import { Capacitor, registerPlugin } from "@capacitor/core";
+import { Capacitor } from "@capacitor/core";
 import { useBackgroundLocation } from "../hooks/useBackgroundLocation";
 import { enqueue, drain } from "./locationQueue";
-
-const BackgroundGeolocation = registerPlugin("BackgroundGeolocation");
+import { apiUrl } from "../lib/apiBase";
+import { httpJson, getAccessToken } from "../lib/http";
 
 export default function DriverTrackingManager({ selectedShipment }) {
 
@@ -22,10 +22,18 @@ export default function DriverTrackingManager({ selectedShipment }) {
 
     for (const point of queue) {
       try {
-        await fetch("/api/tracking/location", {
+        // Do not attempt network calls until authenticated on native.
+        // (Token is populated by the PKCE flow and auto-attached by httpJson.)
+        if (Capacitor.isNativePlatform() && !getAccessToken()) {
+          enqueue(point); // keep it queued
+          throw new Error("NOT_AUTHENTICATED");
+        }
+
+        const url = apiUrl("/api/tracking/location");
+        await httpJson(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(point),
+          body: point,
         });
       } catch (e) {
         enqueue(point); // requeue failed
@@ -65,7 +73,11 @@ export default function DriverTrackingManager({ selectedShipment }) {
       try {
         await flushQueue();
       } catch (e) {
-        console.log("SKY: offline, will retry later");
+        if (String(e?.message || "").includes("NOT_AUTHENTICATED")) {
+          console.log("SKY: not authenticated yet; location queued");
+        } else {
+          console.log("SKY: offline or backend unreachable; will retry later");
+        }
       }
     },
     [selectedShipment]

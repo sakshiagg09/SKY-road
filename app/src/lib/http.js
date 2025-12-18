@@ -110,7 +110,7 @@ export async function httpJson(url, options = {}) {
 const XSUAA_BASE = import.meta.env.VITE_XSUAA_BASE;
 const OAUTH_CLIENT_ID = import.meta.env.VITE_OAUTH_CLIENT_ID;
 const OAUTH_REDIRECT_URI = import.meta.env.VITE_OAUTH_REDIRECT_URI;
-const OAUTH_SCOPE = import.meta.env.VITE_OAUTH_SCOPE || "openid";
+const OAUTH_SCOPE = import.meta.env.VITE_OAUTH_SCOPE;
 
 function b64urlFromArrayBuffer(buf) {
   const bytes = new Uint8Array(buf);
@@ -144,9 +144,9 @@ export async function logout() {
 
 // Opens the system browser to start login (Authorization Code + PKCE)
 export async function startPkceLogin() {
-  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI) {
+  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI || !OAUTH_SCOPE) {
     throw new Error(
-      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, and VITE_OAUTH_REDIRECT_URI in .env"
+      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, VITE_OAUTH_REDIRECT_URI, and VITE_OAUTH_SCOPE in .env"
     );
   }
 
@@ -176,9 +176,9 @@ export async function startPkceLogin() {
 }
 
 export async function exchangeCodeForToken(callbackUrl) {
-  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI) {
+  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI || !OAUTH_SCOPE) {
     throw new Error(
-      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, and VITE_OAUTH_REDIRECT_URI in .env"
+      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, VITE_OAUTH_REDIRECT_URI, and VITE_OAUTH_SCOPE in .env"
     );
   }
 
@@ -202,15 +202,34 @@ export async function exchangeCodeForToken(callbackUrl) {
     code_verifier: verifier,
   });
 
-  const res = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
+  let json;
 
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
+  if (Capacitor.isNativePlatform()) {
+    const resp = await CapacitorHttp.request({
+      url: tokenUrl,
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      // Send the form body as a raw string
+      data: body.toString(),
+    });
+
+    // CapacitorHttp returns parsed JSON for application/json responses
+    json = typeof resp.data === "string" ? JSON.parse(resp.data) : resp.data;
+
+    if (resp.status < 200 || resp.status >= 300) {
+      throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
+    }
+  } else {
+    const res = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+
+    json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
+    }
   }
 
   if (json.access_token) localStorage.setItem("access_token", json.access_token);
@@ -227,6 +246,8 @@ export function initPkceRedirectListener() {
   CapApp.addListener("appUrlOpen", async (event) => {
     const url = event?.url || "";
     if (!url) return;
+
+    console.log("OAuth redirect received:", url);
 
     // Only handle our redirect
     if (!OAUTH_REDIRECT_URI || !url.startsWith(OAUTH_REDIRECT_URI)) return;
