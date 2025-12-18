@@ -35,6 +35,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- OAuth redirect deep link (Authorization Code + PKCE) -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <!-- Must match the redirect URI registered in XSUAA -->
+                <data
+                    android:scheme="com.example.app"
+                    android:host="auth" />
+            </intent-filter>
+
         </activity>
 
         <provider

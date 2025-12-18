@@ -9,7 +9,7 @@ import { LinearProgress } from "@mui/material";
 import logo from "../assets/logo.png.png";
 import BarcodeScanner from "../components/BarcodeScanner";
 
-import { apiUrl } from "../lib/apiBase";
+import { apiUrl, apiUrlWithParams } from "../lib/apiBase";
 import { httpJson } from "../lib/http";
 
 /**
@@ -79,31 +79,28 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
 
   // trackingDetails now requires FoId + DriverLicense
   async function loadTrackingDetails(trackingId, licenseNumber) {
-     const url = apiUrl(
-    `/odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`
-  );
+    const filter = `FoId eq '${String(trackingId).trim()}' and DriverLicense eq '${String(licenseNumber).trim()}'`;
 
-  const res = await httpJson(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`Failed to load tracking details (${res.status})`);
-  return await res.json();
-}
+    // Build URL safely (prevents duplicate quotes / double-encoding / accidental concatenation)
+    const url = apiUrlWithParams("/odata/v4/GTT/trackingDetails", {
+      $filter: filter,
+    });
+
+    // httpJson() already throws on non-2xx and parses JSON
+    return await httpJson(url);
+  }
 
   // OCR call (CAP action) – returns { licenseNumber, confidence } (depending on your handler)
   async function extractLicenseNumberFromImage(base64) {
-  const url = apiUrl("/odata/v4/GTT/extractLicenseNumber");
+    const url = apiUrl("/odata/v4/GTT/extractLicenseNumber");
 
-  const res = await httpJson(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ imageBase64: base64 }),
-  });
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`OCR failed (${res.status}). ${txt}`);
+    // httpJson() already throws on non-2xx and parses JSON
+    return await httpJson(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: { imageBase64: base64 },
+    });
   }
-  return await res.json();
-}
 
   // file -> base64 (without prefix)
   const fileToBase64 = (file) =>
