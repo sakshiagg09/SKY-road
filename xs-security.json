@@ -3,10 +3,11 @@
   "tenant-mode": "dedicated",
   "description": "XSUAA security for sky-road CAP application",
   "oauth2-configuration": {
-  "redirect-uris": [
-    "https://*.cfapps.us10-001.hana.ondemand.com/login/callback"
-  ]
-},
+    "redirect-uris": [
+      "https://*.cfapps.us10-001.hana.ondemand.com/login/callback",
+      "com.example.app://auth"
+    ]
+  },
   "scopes": [
     {
       "name": "$XSAPPNAME.User",
