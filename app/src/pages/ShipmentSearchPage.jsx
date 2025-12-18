@@ -10,7 +10,7 @@ import logo from "../assets/logo.png.png";
 import BarcodeScanner from "../components/BarcodeScanner";
 
 import { apiUrl, apiUrlWithParams } from "../lib/apiBase";
-import { httpJson } from "../lib/http";
+import { httpJson, getAccessToken } from "../lib/http";
 
 /**
  * Props:
@@ -224,6 +224,12 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
       return;
     }
 
+    // If user is not authenticated yet, do not attempt API calls from this page.
+    if (!getAccessToken()) {
+      setApiError("Please login first, then search again.");
+      return;
+    }
+
     setLoading(true);
     setApiError("");
 
@@ -293,6 +299,12 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
 
     if (!fo || !lic) {
       alert("Please search again using FO and License Number.");
+      return;
+    }
+
+    // If user is not authenticated yet, do not attempt API calls from this page.
+    if (!getAccessToken()) {
+      setApiError("Please login first, then try again.");
       return;
     }
 

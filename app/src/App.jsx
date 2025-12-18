@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import ShipmentSearchPage from "./pages/ShipmentSearchPage";
 import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
 import BottomBar from "./components/BottomBar";
@@ -8,7 +8,20 @@ import ReportEventDialog from "./components/ReportEventDialog";
 // ⭐ NEW import
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
 
+import { Capacitor } from "@capacitor/core";
+import { getAccessToken, startPkceLogin } from "./lib/http";
+
 export default function App() {
+  // 🔐 Start OAuth login early on native (before search page is used)
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (getAccessToken()) return; // already logged in
+
+    // Fire-and-forget: user completes login in system browser
+    startPkceLogin().catch((e) => {
+      console.error("Failed to start PKCE login", e);
+    });
+  }, []);
   const [activeTab, setActiveTab] = useState("home");
   const [selectedShipment, setSelectedShipment] = useState(null);
 
