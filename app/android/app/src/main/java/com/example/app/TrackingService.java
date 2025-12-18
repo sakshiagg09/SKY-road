@@ -17,6 +17,7 @@ import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
+import android.content.SharedPreferences;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
@@ -42,8 +43,14 @@ public class TrackingService extends Service {
     private static final String TAG = "SKY_TRACKING";
     private static final String CHANNEL_ID = "sky_tracking_channel";
 
-    // TODO: CHANGE THIS TO YOUR REAL BACKEND URL
-    private static final String BACKEND_URL = "https://YOUR_BACKEND_HOST/api/tracking/location";
+    // Backend endpoint for native tracking (must be your real BTP host).
+    // Keep this in ONE place and change as needed per landscape.
+    private static final String BACKEND_URL =
+            "https://nav-it-consulting-gmbh-nav-payg-btp-3oqfixeo-dev-sky-ro70256e00.cfapps.us10-001.hana.ondemand.com/api/tracking/location";
+
+    // SharedPreferences keys for auth token (written by the JS layer after PKCE login)
+    private static final String PREFS_AUTH = "auth";
+    private static final String KEY_ACCESS_TOKEN = "access_token";
 
     private FusedLocationProviderClient fusedClient;
     private LocationCallback locationCallback;
@@ -221,6 +228,17 @@ public class TrackingService extends Service {
         }
     }
 
+    @Nullable
+    private String getStoredAccessToken() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_AUTH, MODE_PRIVATE);
+            return prefs.getString(KEY_ACCESS_TOKEN, null);
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to read access token from SharedPreferences", e);
+            return null;
+        }
+    }
+
     private boolean sendToBackend(String foId, String driverId, double lat, double lng, float acc, String ts) {
         HttpURLConnection conn = null;
         try {
@@ -231,6 +249,15 @@ public class TrackingService extends Service {
             conn.setDoOutput(true);
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Accept", "application/json");
+
+            // Attach Bearer token if present. If missing, do not call protected backend.
+            String token = getStoredAccessToken();
+            if (token == null || token.trim().isEmpty()) {
+                Log.w(TAG, "Not authenticated yet (no access token). Keeping location queued.");
+                return false;
+            }
+            conn.setRequestProperty("Authorization", "Bearer " + token);
 
             JSONObject body = new JSONObject();
             body.put("FoId", foId);
@@ -249,6 +276,11 @@ public class TrackingService extends Service {
 
             int code = conn.getResponseCode();
             Log.d(TAG, "Backend response code: " + code);
+
+            if (code == 401 || code == 403) {
+                Log.w(TAG, "Backend rejected request (auth/permission). Ensure user has SkyRoad-User role collection and token is valid.");
+            }
+
             return code >= 200 && code < 300;
         } catch (Exception e) {
             Log.e(TAG, "Failed to send location to backend", e);
