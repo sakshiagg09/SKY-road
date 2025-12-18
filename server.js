@@ -8,6 +8,15 @@ cds.on("bootstrap", (app) => {
   app.use(bodyParser.raw({ limit: "15mb" }));
   app.use(bodyParser.text({ limit: "15mb" }));
   app.use(bodyParser.urlencoded({ limit: "15mb", extended: true }));
+
+  // ✅ CORS for Capacitor APK / cross-origin calls
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-csrf-token");
+    if (req.method === "OPTIONS") return res.sendStatus(200);
+    next();
+  });
 });
 
 module.exports = cds.server;

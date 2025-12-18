@@ -3,11 +3,14 @@ import { useEffect, useState, useRef } from "react";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
-import DocumentScannerRoundedIcon from "@mui/icons-material/DocumentScannerRounded"; // ✅ NEW
+import DocumentScannerRoundedIcon from "@mui/icons-material/DocumentScannerRounded";
 import { LinearProgress } from "@mui/material";
 
 import logo from "../assets/logo.png.png";
 import BarcodeScanner from "../components/BarcodeScanner";
+
+import { apiUrl } from "../lib/apiBase";
+import { httpJson } from "../lib/http";
 
 /**
  * Props:
@@ -22,7 +25,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
   const [apiError, setApiError] = useState("");
   const [showScanner, setShowScanner] = useState(false);
 
-  // ✅ hidden input for OCR image capture
+  // hidden input for OCR image capture
   const licenseFileRef = useRef(null);
 
   const ICON_KEY_DEFAULT = "truck";
@@ -35,7 +38,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
-  // load recent from localStorage on mount (and sanitize)
+  // load recent from localStorage on mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem("sr_recent_shipments");
@@ -61,7 +64,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   }, []);
 
-  // Helper: parse FinalInfo -> array of stops
+  // parse FinalInfo -> stops[]
   const parseFinalInfo = (finalInfoValue) => {
     if (!finalInfoValue) return [];
     try {
@@ -74,30 +77,35 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
-  // --- API: trackingDetails now requires FoId + DriverLicense ----------
+  // trackingDetails now requires FoId + DriverLicense
   async function loadTrackingDetails(trackingId, licenseNumber) {
-    const res = await fetch(
-      `odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`
-    );
-    if (!res.ok) throw new Error("Failed to load tracking details");
-    return await res.json();
-  }
+     const url = apiUrl(
+    `/odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`
+  );
 
-  // ✅ OCR call (CAP action) – returns { licenseNumber, confidence }
+  const res = await httpJson(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`Failed to load tracking details (${res.status})`);
+  return await res.json();
+}
+
+  // OCR call (CAP action) – returns { licenseNumber, confidence } (depending on your handler)
   async function extractLicenseNumberFromImage(base64) {
-    const res = await fetch("/odata/v4/GTT/extractLicenseNumber", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageBase64: base64 }),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(`OCR failed (${res.status}). ${txt}`);
-    }
-    return await res.json();
-  }
+  const url = apiUrl("/odata/v4/GTT/extractLicenseNumber");
 
-  // ✅ file -> base64 (without data:image/... prefix)
+  const res = await httpJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ imageBase64: base64 }),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`OCR failed (${res.status}). ${txt}`);
+  }
+  return await res.json();
+}
+
+  // file -> base64 (without prefix)
   const fileToBase64 = (file) =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -110,16 +118,14 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
       reader.readAsDataURL(file);
     });
 
-  // ✅ click OCR icon
   const handleLicenseOcrClick = () => {
     setApiError("");
     if (licenseFileRef.current) licenseFileRef.current.click();
   };
 
-  // ✅ when user selects / captures image
   const handleLicenseFilePicked = async (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ""; // allow same file again next time
+    e.target.value = ""; // allow same file again
     if (!file) return;
 
     try {
@@ -133,6 +139,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
 
       const lic =
         out?.licenseNumber ||
+        out?.LicenseNumber ||
         out?.d?.licenseNumber ||
         out?.value?.licenseNumber ||
         "";
@@ -151,7 +158,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
-  // update recent list — now also stores licenseNumber
+  // persist recent
   const addToRecent = (entry) => {
     try {
       const raw = localStorage.getItem("sr_recent_shipments");
@@ -175,7 +182,10 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         licenseNumber: entry.licenseNumber || "",
       };
 
-      const existing = cur.filter((r) => r.id !== compactEntry.id);
+      // IMPORTANT: dedupe by (FO + license) now, not only FO
+      const existing = cur.filter(
+        (r) => !(r.id === compactEntry.id && (r.licenseNumber || "") === (compactEntry.licenseNumber || ""))
+      );
       const next = [compactEntry, ...existing].slice(0, 10);
 
       localStorage.setItem("sr_recent_shipments", JSON.stringify(next));
@@ -185,7 +195,29 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
-  // --- Search / scan flow -------------------------------------------
+  // ✅ STRICT SUCCESS CHECK based on your backend response
+  const isBackendSuccess = (row, inputFo, inputLicense) => {
+    const foReturned = String(row?.FoId || "").trim();
+    const licReturned = String(row?.DriverLicense || "").trim();
+    const msg = String(row?.Message || "").trim().toLowerCase();
+
+    // failure pattern you showed: FoId = "" and Message = "Invalid ..."
+    if (!foReturned) return { ok: false, reason: row?.Message || "Invalid License Number/Shipment ID" };
+
+    // also guard against explicit "invalid" message even if someone sends weird data
+    if (msg.includes("invalid")) return { ok: false, reason: row?.Message || "Invalid License Number/Shipment ID" };
+
+    // optional: ensure returned values match what user typed (recommended)
+    const matchesFo = foReturned === String(inputFo || "").trim();
+    const matchesLic = licReturned === String(inputLicense || "").trim();
+
+    if (!matchesFo || !matchesLic) {
+      return { ok: false, reason: row?.Message || "FO / License does not match." };
+    }
+
+    return { ok: true };
+  };
+
   const handleSearch = async () => {
     const fo = trackingInput.trim();
     const license = licenseInput.trim();
@@ -200,29 +232,39 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
 
     try {
       const data = await loadTrackingDetails(fo, license);
-      const first = data && Array.isArray(data.value) ? data.value[0] : data;
-      if (!first) {
+
+      const firstRow =
+        data && Array.isArray(data.value) ? data.value[0] : data;
+
+      if (!firstRow) {
         setApiError("No shipment found for this FO + License combination.");
         return;
       }
 
-      const stops = parseFinalInfo(first.FinalInfo);
+      // ✅ DO NOT NAVIGATE unless backend confirms success
+      const check = isBackendSuccess(firstRow, fo, license);
+      if (!check.ok) {
+        setApiError(check.reason || "Invalid License Number/Shipment ID");
+        return;
+      }
+
+      const stops = parseFinalInfo(firstRow.FinalInfo);
 
       const shipmentPayload = {
-        FoId: first.FoId || fo,
-        raw: first,
+        FoId: firstRow.FoId || fo,
+        raw: firstRow,
         stops,
-        latitude: first.Latitude,
-        longitude: first.Longitude,
+        latitude: firstRow.Latitude,
+        longitude: firstRow.Longitude,
         licenseNumber: license,
       };
 
       const recentEntry = {
-        id: first.FoId || fo,
-        status: first.StatusText || "In Transit",
-        date: first.PlannedDepDate || new Date().toLocaleDateString("en-GB"),
+        id: firstRow.FoId || fo,
+        status: firstRow.StatusText || "In Transit",
+        date: firstRow.PlannedDepDate || new Date().toLocaleDateString("en-GB"),
         time:
-          first.PlannedDepTime ||
+          firstRow.PlannedDepTime ||
           new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         color: "#1976D2",
         iconKey: ICON_KEY_DEFAULT,
@@ -249,10 +291,11 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
   };
 
   const openFromRecent = async (s) => {
-    if (!s.licenseNumber) {
-      alert(
-        "This shipment was saved before license-based search was enabled. Please search again using FO and License Number."
-      );
+    const fo = String(s.id || "").trim();
+    const lic = String(s.licenseNumber || "").trim();
+
+    if (!fo || !lic) {
+      alert("Please search again using FO and License Number.");
       return;
     }
 
@@ -260,21 +303,32 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     setApiError("");
 
     try {
-      const data = await loadTrackingDetails(s.id, s.licenseNumber);
-      const first = data && Array.isArray(data.value) ? data.value[0] : data;
-      if (!first) {
+      const data = await loadTrackingDetails(fo, lic);
+      const firstRow =
+        data && Array.isArray(data.value) ? data.value[0] : data;
+
+      if (!firstRow) {
         setApiError("No shipment found for this FO + License combination.");
         return;
       }
-      const stops = parseFinalInfo(first?.FinalInfo);
+
+      // ✅ ALSO validate here
+      const check = isBackendSuccess(firstRow, fo, lic);
+      if (!check.ok) {
+        setApiError(check.reason || "Invalid License Number/Shipment ID");
+        return;
+      }
+
+      const stops = parseFinalInfo(firstRow?.FinalInfo);
       const shipmentPayload = {
-        FoId: first?.FoId || s.id,
-        raw: first,
+        FoId: firstRow?.FoId || fo,
+        raw: firstRow,
         stops,
-        latitude: first.Latitude,
-        longitude: first.Longitude,
-        licenseNumber: s.licenseNumber,
+        latitude: firstRow.Latitude,
+        longitude: firstRow.Longitude,
+        licenseNumber: lic,
       };
+
       setSelectedShipment(shipmentPayload);
       setActiveTab("track");
     } catch (e) {
@@ -340,7 +394,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
           )}
         </div>
 
-        {/* LICENSE INPUT + ✅ OCR ICON */}
+        {/* LICENSE INPUT + OCR ICON */}
         <div
           className="flex items-center rounded-full px-4 py-3"
           style={{
@@ -359,7 +413,6 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           />
 
-          {/* ✅ OCR scan icon */}
           <button
             onClick={handleLicenseOcrClick}
             disabled={loading}
@@ -375,7 +428,6 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
             <DocumentScannerRoundedIcon sx={{ color: "#1976D2", fontSize: 20 }} />
           </button>
 
-          {/* ✅ hidden file input */}
           <input
             ref={licenseFileRef}
             type="file"
@@ -431,7 +483,10 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
               onClick={() => openFromRecent(s)}
             >
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full flex items-center justify-center" style={{ backgroundColor: s.color, color: "white" }}>
+                <div
+                  className="h-10 w-10 rounded-full flex items-center justify-center"
+                  style={{ backgroundColor: s.color, color: "white" }}
+                >
                   {renderIconForKey(s.iconKey)}
                 </div>
 

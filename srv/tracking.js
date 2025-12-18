@@ -151,6 +151,7 @@ module.exports = cds.service.impl(async function () {
         FinalInfo: row.FinalInfo ?? null,
         DirectionsInfo: row.DirectionsInfo ?? null,
         StopInfo: row.StopInfo ?? null,
+        Message: row.Message ?? null,
       }),
       "Shipments"
     );
@@ -163,6 +164,7 @@ module.exports = cds.service.impl(async function () {
         FinalInfo: row.FinalInfo,
         DirectionsInfo: row.DirectionsInfo,
         StopInfo: row.StopInfo,
+        Message: row.Message || "",
       },
     ];
   });

@@ -10,6 +10,7 @@ service GTT {
         FinalInfo      : String;
         DirectionsInfo : String;
         StopInfo       : String;
+        Message        : String;
   }
 
   @cds.persistence.skip

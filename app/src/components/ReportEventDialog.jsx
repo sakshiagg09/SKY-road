@@ -27,6 +27,7 @@ import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import NotesIcon from "@mui/icons-material/Notes";
+import { apiUrl } from "../lib/apiBase";
 
 export default function ReportEventDialog({
   selectedShipment = null,
@@ -139,7 +140,7 @@ export default function ReportEventDialog({
     setReasonsError("");
 
     try {
-      const res = await fetch("odata/v4/GTT/delayEvents");
+      const res = await fetch(apiUrl("/odata/v4/GTT/delayEvents"));
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -255,7 +256,7 @@ export default function ReportEventDialog({
     console.log("Delay event payload:", payload);
 
     try {
-      const res = await fetch("odata/v4/GTT/delayEvents", {
+      const res = await fetch(apiUrl("/odata/v4/GTT/delayEvents"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

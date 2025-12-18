@@ -24,6 +24,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 
 import MaterialItemList from "../components/MaterialItemList";
 import SignatureAttachmentsSection from "./SignatureAttachmentsSection";
+import { apiUrl } from "../lib/apiBase";
 
 // COLORS
 const PRIMARY = "#1976D2";
@@ -200,7 +201,9 @@ export default function PodFlowDialog({
           `?$filter=FoId eq '${effectiveFoId}'` +
           ` and Location eq '${stopIdValue}'`;
 
-        const res = await fetch(url);
+        const res = await fetch(apiUrl(url), {
+          headers: { Accept: "application/json" },
+        });
         if (!res.ok) {
           console.error(
             "shipmentItems OData failed",
@@ -271,7 +274,7 @@ export default function PodFlowDialog({
   };
 
   const postToOData = async (payload) => {
-    const res = await fetch(eventsUrl, {
+    const res = await fetch(apiUrl(eventsUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -327,7 +330,7 @@ export default function PodFlowDialog({
       PDFBase64: base64,
     };
 
-    const res = await fetch(attachmentsUrl, {
+    const res = await fetch(apiUrl(attachmentsUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -354,7 +357,7 @@ export default function PodFlowDialog({
       PDFBase64: base64,
     };
 
-    const res = await fetch(attachmentsUrl, {
+    const res = await fetch(apiUrl(attachmentsUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

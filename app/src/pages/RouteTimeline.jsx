@@ -7,6 +7,7 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import EventAvailableIcon from "@mui/icons-material/EventAvailable";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
+import { apiUrl } from "../lib/apiBase";
 
 import {
   IconButton,
@@ -327,7 +328,7 @@ export default function RouteTimeline({
     try {
       setSending((p) => ({ ...p, [sendKey]: true }));
 
-      const res = await fetch(eventsUrl, {
+      const res = await fetch(apiUrl(eventsUrl), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -402,7 +403,9 @@ export default function RouteTimeline({
         `?$filter=FoId eq '${foId}'` +
         ` and Location eq '${loc}'`;
 
-      const res = await fetch(url);
+       const res = await fetch(apiUrl(url), {
+        headers: { Accept: "application/json" },
+      });
       if (!res.ok) {
         console.error(
           "shipmentItems call failed",
@@ -508,9 +511,9 @@ export default function RouteTimeline({
   const badgeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
-    if (r.departure) return "Departure";
+    if (r.departure) return "Departed";
     if (r.pod) return "POD";
-    if (r.arrival) return "Arrival";
+    if (r.arrival) return "Arrived";
 
     // fallback to original FinalInfo.event if present
     const ev = (stop.eventRaw ?? "").toString().trim().toUpperCase();
@@ -547,9 +550,7 @@ export default function RouteTimeline({
         <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>
           Route timeline
         </p>
-        <p className="text-[11px]" style={{ color: PRIMARY }}>
-          View on map ▸
-        </p>
+        
       </div>
 
       <div className="mt-2">
@@ -753,12 +754,12 @@ export default function RouteTimeline({
                   >
                     {idx <= 1 ? (
                       <div>
-                        Material Load :{" "}
+                        Package Load :{" "}
                         {stop.displayLoad ?? stop.materialLoad} Packages
                       </div>
                     ) : (
                       <div>
-                        Material Unload :{" "}
+                        Package Unload :{" "}
                         {stop.displayUnload ?? stop.materialUnload} Packages
                       </div>
                     )}
