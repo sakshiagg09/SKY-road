@@ -24,10 +24,14 @@ export default function DriverTrackingManager({ selectedShipment }) {
       try {
         // Do not attempt network calls until authenticated on native.
         // (Token is populated by the PKCE flow and auto-attached by httpJson.)
-        if (Capacitor.isNativePlatform() && !getAccessToken()) {
-          enqueue(point); // keep it queued
-          throw new Error("NOT_AUTHENTICATED");
+        const token = await getAccessToken();
+        if (Capacitor.isNativePlatform() && !token) {
+          console.log("SKY: not authenticated yet; queue kept");
+          return; // ✅ don't drain, keep queue intact
         }
+
+        const queue = drain();
+        if (!queue.length) return;
 
         const url = apiUrl("/api/tracking/location");
         await httpJson(url, {

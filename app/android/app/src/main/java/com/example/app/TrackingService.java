@@ -1,3 +1,4 @@
+// app/android/app/src/main/java/com/example/app/TrackingService.java
 package com.example.app;
 
 import android.Manifest;
@@ -253,6 +254,7 @@ public class TrackingService extends Service {
 
             // Attach Bearer token if present. If missing, do not call protected backend.
             String token = getStoredAccessToken();
+            System.out.println(getStoredAccessToken());
             if (token == null || token.trim().isEmpty()) {
                 Log.w(TAG, "Not authenticated yet (no access token). Keeping location queued.");
                 return false;

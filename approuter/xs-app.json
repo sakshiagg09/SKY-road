@@ -3,18 +3,27 @@
   "authenticationMethod": "route",
   "routes": [
     {
+      "source": "^/api/auth/exchange$",
+      "target": "/api/auth/exchange",
+      "destination": "srv-api",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
+    {
       "source": "^/api/(.*)$",
-      "target": "/$1",
+      "target": "/api/$1",
       "destination": "srv-api",
       "authenticationType": "xsuaa",
-      "csrfProtection": false
+      "csrfProtection": false,
+      "forwardAuthToken": true
     },
     {
       "source": "^/odata/(.*)$",
       "target": "/odata/$1",
       "destination": "srv-api",
       "authenticationType": "xsuaa",
-      "csrfProtection": false
+      "csrfProtection": false,
+      "forwardAuthToken": true
     },
     {
       "source": "^/(.*\\.(?:js|css|map|png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|eot|json))$",

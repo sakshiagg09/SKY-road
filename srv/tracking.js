@@ -2,8 +2,112 @@
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 const licenseOcr = require("./licenseOcrService"); // 👈 NEW
+const express = require("express");
 
 const { UPSERT } = cds.ql;
+function getXsuaaCredentials() {
+  // Try common CAP locations (varies by setup)
+  return (
+    cds.env.requires?.uaa?.credentials ||
+    cds.env.requires?.xsuaa?.credentials ||
+    cds.env.requires?.auth?.credentials ||
+    null
+  );
+}
+
+// --- register custom REST routes
+cds.on("bootstrap", (app) => {
+  // ensure JSON parsing for these custom endpoints
+  app.use(express.json({ limit: "10mb" }));
+
+  // ---------------------------------------------------------
+  // POST /api/auth/exchange
+  // Mobile sends { code, code_verifier, redirect_uri }
+  // Server exchanges code -> token using XSUAA client secret
+  // ---------------------------------------------------------
+  app.post("/api/auth/exchange", async (req, res) => {
+    try {
+      const { code, code_verifier, redirect_uri } = req.body || {};
+      if (!code || !code_verifier || !redirect_uri) {
+        return res.status(400).json({
+          error: "missing_fields",
+          error_description: "code, code_verifier, redirect_uri are required",
+        });
+      }
+
+      const xsuaa = getXsuaaCredentials();
+      if (!xsuaa?.url || !xsuaa?.clientid || !xsuaa?.clientsecret) {
+        return res.status(500).json({
+          error: "xsuaa_binding_missing",
+          error_description:
+            "XSUAA credentials not found in CAP env. Ensure service binding exists for sky-road-uaa.",
+        });
+      }
+
+      const tokenUrl = `${xsuaa.url}/oauth/token`;
+
+      const body = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri,
+        client_id: xsuaa.clientid,
+        code_verifier,
+      });
+
+      const basic = Buffer.from(`${xsuaa.clientid}:${xsuaa.clientsecret}`).toString("base64");
+
+      // Node 18+ has global fetch. If your runtime is older, we can add node-fetch later.
+      const r = await fetch(tokenUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${basic}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: body.toString(),
+      });
+
+      const json = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        return res.status(401).json(json);
+      }
+
+      return res.json(json);
+    } catch (e) {
+      console.error("auth/exchange failed:", e);
+      return res.status(500).json({ error: "exchange_failed", error_description: e.message });
+    }
+  });
+
+  // ---------------------------------------------------------
+  // POST /api/tracking/location
+  // Your mobile/native tracking pushes points here
+  // ---------------------------------------------------------
+  app.post("/api/tracking/location", async (req, res) => {
+    try {
+      // If approuter enforces XSUAA, requests will arrive with valid JWT.
+      // (Later we’ll ensure approuter forwards token and CAP validates it)
+      const auth = req.headers.authorization || "";
+      if (!auth.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "unauthorized", error_description: "Missing Bearer token" });
+      }
+
+      const { FoId, DriverId, Latitude, Longitude, Accuracy, Timestamp } = req.body || {};
+      if (!FoId || !DriverId) {
+        return res.status(400).json({
+          error: "bad_request",
+          error_description: "FoId and DriverId are required",
+        });
+      }
+
+      // For now: accept + acknowledge
+      // (Later we can persist to HANA table or forward to S/4)
+      return res.status(201).json({ ok: true });
+    } catch (e) {
+      console.error("tracking/location failed:", e);
+      return res.status(500).json({ error: "tracking_failed", error_description: e.message });
+    }
+  });
+});
 
 // Robust extraction of $filter values from CAP query AST
 function getFilterVal(req, prop) {

@@ -1,32 +1,113 @@
+// app/src/lib/http.js
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
 import { App as CapApp } from "@capacitor/app";
+import { Preferences } from "@capacitor/preferences";
+import { apiUrl } from "./apiBase";
+import { registerPlugin } from "@capacitor/core";
+
+// ✅ Android SharedPreferences("auth") bridge (needed for TrackingService.java)
+const AuthStore = registerPlugin("AuthStore");
+
+// ---- keys
+const K_ACCESS = "access_token";
+const K_REFRESH = "refresh_token";
+const K_PKCE_VERIFIER = "pkce_verifier";
+const K_PKCE_STATE = "pkce_state";
+
+// -----------------------------
+// Storage helpers (native-safe)
+// -----------------------------
+async function prefGet(key) {
+  const { value } = await Preferences.get({ key });
+  return value ?? null;
+}
+
+async function prefSet(key, value) {
+  if (value === undefined || value === null) return;
+  await Preferences.set({ key, value: String(value) });
+}
+
+async function prefRemove(key) {
+  await Preferences.remove({ key });
+}
+
+export async function getAccessToken() {
+  if (Capacitor.isNativePlatform()) return await prefGet(K_ACCESS);
+  return typeof localStorage !== "undefined" ? localStorage.getItem(K_ACCESS) : null;
+}
+
+async function setAccessToken(token) {
+  if (Capacitor.isNativePlatform()) {
+    await prefSet(K_ACCESS, token);
+  } else if (typeof localStorage !== "undefined") {
+    localStorage.setItem(K_ACCESS, token);
+  }
+}
+
+async function setRefreshToken(token) {
+  if (Capacitor.isNativePlatform()) {
+    await prefSet(K_REFRESH, token);
+  } else if (typeof localStorage !== "undefined") {
+    localStorage.setItem(K_REFRESH, token);
+  }
+}
+
+// ✅ IMPORTANT: write to Android SharedPreferences("auth") so TrackingService.java can read it
+async function persistNativeAuth(accessToken, refreshToken) {
+  if (!Capacitor.isNativePlatform()) return;
+
+  try {
+    await AuthStore.setTokens({
+      accessToken,
+      refreshToken: refreshToken || "",
+    });
+  } catch (e) {
+    console.warn("AuthStore.setTokens failed (TrackingService may not authenticate):", e);
+  }
+}
+
+export async function logout() {
+  if (Capacitor.isNativePlatform()) {
+    await prefRemove(K_ACCESS);
+    await prefRemove(K_REFRESH);
+    await prefRemove(K_PKCE_VERIFIER);
+    await prefRemove(K_PKCE_STATE);
+
+    // also clear Android SharedPreferences("auth")
+    try {
+      await AuthStore.clear();
+    } catch (e) {
+      console.warn("AuthStore.clear failed:", e);
+    }
+  } else if (typeof localStorage !== "undefined") {
+    localStorage.removeItem(K_ACCESS);
+    localStorage.removeItem(K_REFRESH);
+    localStorage.removeItem(K_PKCE_VERIFIER);
+    localStorage.removeItem(K_PKCE_STATE);
+  }
+}
 
 export async function httpJson(url, options = {}) {
   const method = (options.method || "GET").toUpperCase();
-
-  // Normalize headers (avoid accidental mutation)
   const headers = { ...(options.headers || {}) };
 
-  // Allow callers to pass a token without repeating boilerplate
+  // allow caller token
   if (options.authToken && !headers.Authorization) {
     headers.Authorization = `Bearer ${options.authToken}`;
   }
 
-  // If caller didn't pass a token explicitly, try using the stored token (mobile PKCE flow)
+  // auto attach token
   if (!headers.Authorization) {
-    const stored = typeof localStorage !== "undefined" ? localStorage.getItem("access_token") : null;
+    const stored = await getAccessToken();
     if (stored) headers.Authorization = `Bearer ${stored}`;
   }
 
-  // Default Accept header
-  if (!headers.Accept) {
-    headers.Accept = "application/json";
-  }
+  if (!headers.Accept) headers.Accept = "application/json";
 
   const body = options.body;
 
-  // WEB: normal fetch
+  // WEB
   if (!Capacitor.isNativePlatform()) {
     const res = await fetch(url, { ...options, headers });
     const text = await res.text();
@@ -34,10 +115,7 @@ export async function httpJson(url, options = {}) {
     return text ? JSON.parse(text) : null;
   }
 
-  // NATIVE: CapacitorHttp (bypasses CORS)
-  // CapacitorHttp returns `data` as an object for JSON responses in most cases,
-  // but may return a string (e.g., text/html login redirect page).
-  let data;
+  // NATIVE
   try {
     if (body !== undefined && body !== null && !headers["Content-Type"] && !headers["content-type"]) {
       headers["Content-Type"] = "application/json";
@@ -47,7 +125,6 @@ export async function httpJson(url, options = {}) {
       url,
       method,
       headers,
-      // If caller provided a string body, try to parse as JSON; otherwise pass through
       data:
         body === undefined || body === null
           ? undefined
@@ -58,59 +135,46 @@ export async function httpJson(url, options = {}) {
 
     const status = resp.status;
     const respHeaders = resp.headers || {};
-    const contentType =
-      respHeaders["content-type"] ||
-      respHeaders["Content-Type"] ||
-      "";
+    const contentType = respHeaders["content-type"] || respHeaders["Content-Type"] || "";
 
     if (status < 200 || status >= 300) {
-      const errPayload =
-        typeof resp.data === "string"
-          ? resp.data
-          : JSON.stringify(resp.data);
-      throw new Error(`HTTP ${status}: ${errPayload}`);
+      const errPayload = typeof resp.data === "string" ? resp.data : JSON.stringify(resp.data);
+      throw new Error(`HTTP ${status} (${contentType}): ${errPayload}`);
     }
 
-    // Detect common "HTML login" responses (BTP/XSUAA redirect pages often come back as 200 text/html)
+    // HTML login page detection
     if (
       typeof resp.data === "string" &&
       (contentType.includes("text/html") ||
         resp.data.trim().toLowerCase().startsWith("<html") ||
         resp.data.trim().toLowerCase().startsWith("<!doctype"))
     ) {
+      const preview = resp.data.slice(0, 200);
       throw new Error(
-        "Unauthenticated request: received HTML (likely a login redirect). Ensure you attach a valid Bearer token or session cookies for this endpoint."
+        `Unauthenticated: received HTML (login redirect). content-type=${contentType}. preview=${preview}`
       );
     }
 
-    // If we got JSON as string, parse it
     if (typeof resp.data === "string") {
       const trimmed = resp.data.trim();
-      data = trimmed ? JSON.parse(trimmed) : null;
-    } else {
-      data = resp.data;
+      return trimmed ? JSON.parse(trimmed) : null;
     }
+    return resp.data;
   } catch (e) {
-    // Improve error messaging for JSON parsing problems
     if (e instanceof SyntaxError) {
-      throw new Error(
-        `Failed to parse JSON response from ${url}. This often means the backend returned HTML/text (e.g., login page). Original error: ${e.message}`
-      );
+      throw new Error(`Failed to parse JSON from ${url}. Backend returned HTML/text. ${e.message}`);
     }
     throw e;
   }
-
-  return data;
 }
 
 // -----------------------------
 // OAuth Authorization Code + PKCE (mobile)
 // -----------------------------
-
 const XSUAA_BASE = import.meta.env.VITE_XSUAA_BASE;
 const OAUTH_CLIENT_ID = import.meta.env.VITE_OAUTH_CLIENT_ID;
 const OAUTH_REDIRECT_URI = import.meta.env.VITE_OAUTH_REDIRECT_URI;
-const OAUTH_SCOPE = import.meta.env.VITE_OAUTH_SCOPE;
+const OAUTH_SCOPE = import.meta.env.VITE_OAUTH_SCOPE || "openid";
 
 function b64urlFromArrayBuffer(buf) {
   const bytes = new Uint8Array(buf);
@@ -129,38 +193,19 @@ async function sha256(text) {
   return await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
 }
 
-export function getAccessToken() {
-  return typeof localStorage !== "undefined" ? localStorage.getItem("access_token") : null;
-}
-
-export async function logout() {
-  if (typeof localStorage !== "undefined") {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("pkce_verifier");
-    localStorage.removeItem("pkce_state");
-  }
-}
-
 // Opens the system browser to start login (Authorization Code + PKCE)
 export async function startPkceLogin() {
-  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI || !OAUTH_SCOPE) {
-    throw new Error(
-      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, VITE_OAUTH_REDIRECT_URI, and VITE_OAUTH_SCOPE in .env"
-    );
+  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI) {
+    throw new Error("Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, VITE_OAUTH_REDIRECT_URI.");
   }
-
-  // Only meaningful on native; on web you likely use approuter login.
-  if (!Capacitor.isNativePlatform()) {
-    throw new Error("PKCE login is intended for native mobile builds.");
-  }
+  if (!Capacitor.isNativePlatform()) throw new Error("PKCE login is intended for native mobile builds.");
 
   const verifier = randomString(64);
   const challenge = b64urlFromArrayBuffer(await sha256(verifier));
   const state = randomString(16);
 
-  localStorage.setItem("pkce_verifier", verifier);
-  localStorage.setItem("pkce_state", state);
+  await prefSet(K_PKCE_VERIFIER, verifier);
+  await prefSet(K_PKCE_STATE, state);
 
   const authUrl =
     `${XSUAA_BASE}/oauth/authorize` +
@@ -176,80 +221,47 @@ export async function startPkceLogin() {
 }
 
 export async function exchangeCodeForToken(callbackUrl) {
-  if (!XSUAA_BASE || !OAUTH_CLIENT_ID || !OAUTH_REDIRECT_URI || !OAUTH_SCOPE) {
-    throw new Error(
-      "Missing OAuth env vars. Set VITE_XSUAA_BASE, VITE_OAUTH_CLIENT_ID, VITE_OAUTH_REDIRECT_URI, and VITE_OAUTH_SCOPE in .env"
-    );
-  }
-
   const parsed = new URL(callbackUrl);
   const code = parsed.searchParams.get("code");
   const returnedState = parsed.searchParams.get("state");
 
-  const expectedState = localStorage.getItem("pkce_state");
-  const verifier = localStorage.getItem("pkce_verifier");
+  const expectedState = await prefGet(K_PKCE_STATE);
+  const verifier = await prefGet(K_PKCE_VERIFIER);
 
   if (!code) throw new Error("Login failed: no authorization code returned.");
   if (!verifier) throw new Error("Login failed: missing PKCE verifier.");
   if (returnedState !== expectedState) throw new Error("Login failed: invalid state.");
 
-  const tokenUrl = `${XSUAA_BASE}/oauth/token`;
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: OAUTH_CLIENT_ID,
-    code,
-    redirect_uri: OAUTH_REDIRECT_URI,
-    code_verifier: verifier,
+  // ✅ exchange happens on CAP backend, not directly with XSUAA
+  const url = apiUrl("/api/auth/exchange");
+  const json = await httpJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: {
+      code,
+      code_verifier: verifier,
+      redirect_uri: OAUTH_REDIRECT_URI,
+    },
   });
 
-  let json;
+  if (!json?.access_token) throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
 
-  if (Capacitor.isNativePlatform()) {
-    const resp = await CapacitorHttp.request({
-      url: tokenUrl,
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      // Send the form body as a raw string
-      data: body.toString(),
-    });
+  await setAccessToken(json.access_token);
+  if (json.refresh_token) await setRefreshToken(json.refresh_token);
 
-    // CapacitorHttp returns parsed JSON for application/json responses
-    json = typeof resp.data === "string" ? JSON.parse(resp.data) : resp.data;
-
-    if (resp.status < 200 || resp.status >= 300) {
-      throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
-    }
-  } else {
-    const res = await fetch(tokenUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
-
-    json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
-    }
-  }
-
-  if (json.access_token) localStorage.setItem("access_token", json.access_token);
-  if (json.refresh_token) localStorage.setItem("refresh_token", json.refresh_token);
+  // ✅ THIS is what makes TrackingService.java finally work
+  await persistNativeAuth(json.access_token, json.refresh_token);
 
   return json.access_token;
 }
 
 // Call this once at app startup to capture OAuth redirect deep links
 export function initPkceRedirectListener() {
-  // No-op on web
   if (!Capacitor.isNativePlatform()) return;
 
   CapApp.addListener("appUrlOpen", async (event) => {
     const url = event?.url || "";
     if (!url) return;
-
-    console.log("OAuth redirect received:", url);
-
-    // Only handle our redirect
     if (!OAUTH_REDIRECT_URI || !url.startsWith(OAUTH_REDIRECT_URI)) return;
 
     try {

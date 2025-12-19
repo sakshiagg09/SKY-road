@@ -7,6 +7,8 @@ import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.BridgeActivity;
 
+import com.example.app.AuthStorePlugin;
+
 public class MainActivity extends BridgeActivity {
 
     @Override
@@ -25,4 +27,9 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         setIntent(intent);
     }
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+    registerPlugin(AuthStorePlugin.class);
 }

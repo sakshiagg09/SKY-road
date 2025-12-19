@@ -22,7 +22,7 @@ const BASE = isNative
   ? APROUTER_BASE
   : isBrowserLocalDev
   ? ""
-  : (import.meta.env.VITE_API_BASE || ""); // optional
+  : (import.meta.env.VITE_API_BASE_URL || ""); // optional
 
 export const apiUrl = (path) => {
   const base = String(BASE || "").replace(/\/+$/, ""); // remove trailing /
