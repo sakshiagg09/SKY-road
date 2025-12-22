@@ -7,29 +7,24 @@ import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.BridgeActivity;
 
-import com.example.app.AuthStorePlugin;
-
 public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 🔁 Ensure tracking service is running whenever app is opened
+        // ✅ Register plugin once
+        registerPlugin(AuthStorePlugin.class);
+
+        // 🔁 Start tracking service whenever app opens
         Intent serviceIntent = new Intent(this, TrackingService.class);
         ContextCompat.startForegroundService(this, serviceIntent);
     }
 
-    // Required for OAuth redirect deep links when activity is singleTask.
-    // Ensures the new intent is propagated to Capacitor so App.addListener('appUrlOpen', ...) receives it.
+    // ✅ Required for OAuth deep link when activity is singleTask/singleTop
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
     }
-
-    @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-    registerPlugin(AuthStorePlugin.class);
 }
