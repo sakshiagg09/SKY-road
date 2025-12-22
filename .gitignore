@@ -37,3 +37,8 @@ approuter/default-env.json
 
 index-*.js
 index-*.css
+package-lock.json
+package-lock.yaml
+
+*.mta
+web*.js

@@ -27,6 +27,7 @@ cds.on("bootstrap", (app) => {
   // ---------------------------------------------------------
   app.post("/api/auth/exchange", async (req, res) => {
     try {
+      console.log("Exchange request received", req,":", res);
       const { code, code_verifier, redirect_uri } = req.body || {};
       if (!code || !code_verifier || !redirect_uri) {
         return res.status(400).json({

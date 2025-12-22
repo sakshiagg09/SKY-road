@@ -25,27 +25,18 @@ const BASE = isNative
   : (import.meta.env.VITE_API_BASE_URL || ""); // optional
 
 export const apiUrl = (path) => {
-  const base = String(BASE || "").replace(/\/+$/, ""); // remove trailing /
+  const base = String(BASE || ""); // remove trailing /
+  console.log(base);
+  return `${base}${path}`;
 
-  // Normalize path:
-  // - ensure it starts with exactly one leading slash
-  // - collapse any accidental multiple leading slashes (e.g., "//odata/..." -> "/odata/...")
-  // - treat null/undefined as empty
-  const raw = String(path ?? "");
-  const normalizedPath = `/${raw}`.replace(/^\/+(?=\/)/, "/").replace(/^\/{2,}/, "/");
-
-  // If base is empty (browser local dev), return just the normalized path
-  if (!base) return normalizedPath;
-
-  return `${base}${normalizedPath}`;
 };
 
 // Helper to build URLs with query params safely
 export const apiUrlWithParams = (path, params) => {
-  const url = new URL(apiUrl(path), BASE ? undefined : window.location.origin);
-  Object.entries(params || {}).forEach(([k, v]) => {
-    if (v === undefined || v === null) return;
-    url.searchParams.set(k, String(v));
-  });
-  return url.toString();
+const url = new URL(apiUrl(path), BASE ? undefined : window.location.origin);
+Object.entries(params || {}).forEach(([k, v]) => {
+  if (v == null) return;
+  url.searchParams.set(k, String(v));
+});
+return url.toString().replace(/\+/g, "%20");
 };
