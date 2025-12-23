@@ -83,5 +83,11 @@ service GTT {
     licenseNumber : String;
     confidence    : Decimal(5,4);
   };
-
+ // ---- PKCE exchange (server-side)
+  action exchangeToken(
+    code         : String,
+    verifier     : String,
+    redirect_uri : String
+  ) returns LargeString;
+  
 }

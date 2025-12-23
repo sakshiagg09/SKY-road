@@ -3,6 +3,8 @@ import { Browser } from "@capacitor/browser";
 import { App } from "@capacitor/app";
 import { createPKCE } from "./pkce";
 
+const API_BASE = import.meta.env.VITE_API_BASE || window.location.origin;
+
 const XSUAA_URL =
   "https://nav-payg-btp-3oqfixeo.authentication.us10.hana.ondemand.com";
 const CLIENT_ID = "sb-sky-road!t262458";
@@ -12,7 +14,7 @@ let listenerRegistered = false;
 let tokenCallback = null;
 
 export async function loginPKCE(onToken) {
-  console.log("AUTH: loginPKCE called");  
+  console.log("AUTH: loginPKCE called");
   tokenCallback = onToken;
 
   const { verifier, challenge } = await createPKCE();
@@ -30,42 +32,66 @@ export async function loginPKCE(onToken) {
     listenerRegistered = true;
 
     App.addListener("appUrlOpen", async ({ url }) => {
-      if (!url?.startsWith(REDIRECT_URI)) return;
+      console.log("AUTH: appUrlOpen =", url);
+      if (!url) return;
 
-      await Browser.close();
+      let u;
+      try {
+        u = new URL(url);
+      } catch (e) {
+        console.log("AUTH: Invalid URL", e);
+        return;
+      }
 
-      const code = new URL(url).searchParams.get("code");
+      // ✅ Robust match for: com.example.app://login/callback
+      if (u.protocol !== "com.example.app:") return;
+      if (u.host !== "login") return;
+      if (u.pathname !== "/callback") return;
+
+      const code = u.searchParams.get("code");
+      console.log("AUTH: code =", code);
+
+      // close browser if opened
+      try {
+        await Browser.close();
+      } catch (e) {
+        // ignore
+      }
+
       if (!code) return;
 
-      const verifier = sessionStorage.getItem("pkce_verifier");
-      const token = await exchangeCode(code, verifier);
+      const verifierStored = sessionStorage.getItem("pkce_verifier");
+      console.log("AUTH: verifier exists =", !!verifierStored);
+      if (!verifierStored) return;
 
-      tokenCallback?.(token);
+      try {
+        const token = await exchangeCode(code, verifierStored);
+        console.log("AUTH: token received");
+        tokenCallback?.(token);
+      } catch (e) {
+        console.log("AUTH: exchangeCode failed:", String(e));
+      }
     });
   }
-  
+
   console.log("AUTH: Opening SAP login", authUrl);
-  await Browser.open({ url: authUrl });
+  await Browser.open({ url: authUrl }).catch((e) =>
+    console.log("AUTH: Browser.open error", e)
+  );
 }
 
+
 async function exchangeCode(code, verifier) {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: CLIENT_ID,
-    code,
-    redirect_uri: REDIRECT_URI,
-    code_verifier: verifier,
-  });
-
-  const res = await fetch(`${XSUAA_URL}/oauth/token`, {
+  const res = await fetch(`${API_BASE}/auth/exchange`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      code,
+      verifier,
+      redirect_uri: REDIRECT_URI,
+    }),
   });
 
-  if (!res.ok) {
-    throw new Error(await res.text());
-  }
-
-  return res.json(); // access_token, expires_in, refresh_token (if enabled)
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }

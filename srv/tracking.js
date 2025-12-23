@@ -2,6 +2,7 @@
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 const licenseOcr = require("./licenseOcrService"); // 👈 NEW
+const authExchange = require("./auth-exchange");
 
 const { UPSERT } = cds.ql;
 
@@ -97,6 +98,8 @@ async function s4Post(url, payload) {
 }
 
 module.exports = cds.service.impl(async function () {
+   // ✅ Register token exchange action handler FIRST
+    authExchange(this);
   // Open DB service once so the pool is ready before first request
   const db = await cds.connect.to("db");
   const run = (...args) => db.run(...args);
@@ -267,4 +270,5 @@ module.exports = cds.service.impl(async function () {
       return req.reject(500, e.message || "OCR failed");
     }
   });
-});
+})
+  
