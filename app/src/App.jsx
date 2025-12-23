@@ -1,23 +1,47 @@
 // src/App.jsx
-import React, { useState } from "react";
+import { useState, useEffect } from "react";
+
 import ShipmentSearchPage from "./pages/ShipmentSearchPage";
 import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
 import BottomBar from "./components/BottomBar";
 import ReportEventDialog from "./components/ReportEventDialog";
-
-// ⭐ NEW import
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
+
+// 🔐 PKCE login
+import { loginPKCE } from "./auth/auth";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
   const [selectedShipment, setSelectedShipment] = useState(null);
 
+  const [authenticated, setAuthenticated] = useState(false);
+
   // Report Event dialog control (global)
   const [reportOpen, setReportOpen] = useState(false);
-  const [reportMode, setReportMode] = useState("unplanned"); // or "planned"
+  const [reportMode, setReportMode] = useState("unplanned");
 
   const BAR_HEIGHT = 64;
   const contentPaddingBottom = BAR_HEIGHT + 70;
+
+  // 🔐 AUTH BOOTSTRAP (RUNS ONCE)
+  useEffect(() => {
+  console.log("AUTH: App mounted");
+
+  const token = localStorage.getItem("access_token");
+  console.log("AUTH: Existing token =", token);
+
+  if (!token) {
+    console.log("AUTH: No token, starting PKCE login");
+    loginPKCE(({ access_token }) => {
+      console.log("AUTH: Token received");
+      localStorage.setItem("access_token", access_token);
+      setAuthenticated(true);
+    });
+  } else {
+    setAuthenticated(true);
+  }
+}, []);
+
 
   const handleOpenReport = (mode = "unplanned") => {
     setReportMode(mode);
@@ -28,11 +52,8 @@ export default function App() {
     setReportOpen(false);
   };
 
-  // This receives actions from ShipmentDetailsPage/RouteTimeline
-  // (items, arrival, departure, pod, progress, …)
   const handleTimelineAction = (action, payload) => {
     console.log("Timeline action:", action, payload);
-    // POD flow is now fully handled inside ShipmentDetailsPage (PodFlowDialog there)
   };
 
   const renderPage = () => {
@@ -56,9 +77,7 @@ export default function App() {
       case "alerts":
         return (
           <div className="px-4 pt-6">
-            <h2
-              style={{ color: "#071e54", fontSize: 18, fontWeight: 600 }}
-            >
+            <h2 style={{ color: "#071e54", fontSize: 18, fontWeight: 600 }}>
               Alerts (coming soon)
             </h2>
           </div>
@@ -67,9 +86,7 @@ export default function App() {
       case "profile":
         return (
           <div className="px-4 pt-6">
-            <h2
-              style={{ color: "#071e54", fontSize: 18, fontWeight: 600 }}
-            >
+            <h2 style={{ color: "#071e54", fontSize: 18, fontWeight: 600 }}>
               Profile (coming soon)
             </h2>
           </div>
@@ -85,6 +102,23 @@ export default function App() {
     }
   };
 
+  // ⛔ Block UI until login completes
+  if (!authenticated) {
+    return (
+      <div
+        style={{
+          height: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 16,
+        }}
+      >
+        Signing you in…
+      </div>
+    );
+  }
+
   return (
     <div
       className="min-h-screen"
@@ -95,7 +129,7 @@ export default function App() {
         flexDirection: "column",
       }}
     >
-      {/* ⭐ Tracking manager runs in background, safe & invisible */}
+      {/* 🚚 Background tracking (safe after auth) */}
       <DriverTrackingManager selectedShipment={selectedShipment} />
 
       <div
@@ -108,14 +142,12 @@ export default function App() {
         {renderPage()}
       </div>
 
-      {/* BottomBar can always open ReportEvent dialog */}
       <BottomBar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onReportClick={() => handleOpenReport("unplanned")}
       />
 
-      {/* Global Report Event dialog */}
       <ReportEventDialog
         selectedShipment={selectedShipment}
         open={reportOpen}

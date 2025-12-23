@@ -4,7 +4,9 @@
   "description": "XSUAA security for sky-road CAP application",
   "oauth2-configuration": {
   "redirect-uris": [
-    "https://*.cfapps.us10-001.hana.ondemand.com/login/callback"
+    "https://*.cfapps.us10-001.hana.ondemand.com/login/callback",
+    "https://nav-it-consulting-gmbh-nav-payg-btp-3oqfixeo-dev-sky-ro70256e00.cfapps.us10-001.hana.ondemand.com/login/callback",
+    "com.example.app://login/callback"
   ]
 },
   "scopes": [
