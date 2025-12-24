@@ -4,7 +4,8 @@ import { App } from "@capacitor/app";
 import { CapacitorHttp } from "@capacitor/core"; // ✅ native HTTP (no CORS)
 import { createPKCE } from "./pkce";
 
-const API_BASE = import.meta.env.VITE_API_BASE || window.location.origin;
+const API_BASE = import.meta.env.VITE_API_BASE;
+if (!API_BASE) throw new Error("VITE_API_BASE is missing (must be approuter URL)");
 
 const XSUAA_URL =
   "https://nav-payg-btp-3oqfixeo.authentication.us10.hana.ondemand.com";
