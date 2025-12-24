@@ -63,12 +63,11 @@ export async function loginPKCE(onToken) {
       console.log("AUTH: verifier exists =", !!verifierStored);
       if (!verifierStored) return;
 
-      if (exchanging) return; // ✅ prevents double exchange
-      exchanging = true;
+       exchanging = true;
 
       try {
         const token = await exchangeCode(code, verifierStored);
-        console.log("AUTH: token received");
+        console.log("AUTH: token received", token);
         tokenCallback?.(token);
       } catch (e) {
         console.log("AUTH: exchangeCode failed:", String(e));

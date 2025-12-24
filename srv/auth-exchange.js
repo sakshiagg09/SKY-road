@@ -3,6 +3,7 @@ const fetch = require("node-fetch"); // ✅ REQUIRED
 
 module.exports = (srv) => {
   srv.on("exchangeToken", async (req) => {
+    console.log("AUTH-EXCHANGE: exchangeToken called", req.data );
     const { code, verifier, redirect_uri } = req.data || {};
     if (!code || !verifier || !redirect_uri) {
       return req.reject(400, "Missing code/verifier/redirect_uri");
