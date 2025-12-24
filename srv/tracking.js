@@ -99,6 +99,7 @@ async function s4Post(url, payload) {
 
 module.exports = cds.service.impl(async function () {
    // ✅ Register token exchange action handler FIRST
+   console.log("Registering exchangeToken action handler");
     authExchange(this);
   // Open DB service once so the pool is ready before first request
   const db = await cds.connect.to("db");

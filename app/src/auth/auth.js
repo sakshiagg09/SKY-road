@@ -1,6 +1,7 @@
 // src/auth/auth.js
 import { Browser } from "@capacitor/browser";
 import { App } from "@capacitor/app";
+import { CapacitorHttp } from "@capacitor/core"; // ✅ native HTTP (no CORS)
 import { createPKCE } from "./pkce";
 
 const API_BASE = import.meta.env.VITE_API_BASE || window.location.origin;
@@ -12,6 +13,7 @@ const REDIRECT_URI = "com.example.app://login/callback";
 
 let listenerRegistered = false;
 let tokenCallback = null;
+let exchanging = false; // ✅ guard
 
 export async function loginPKCE(onToken) {
   console.log("AUTH: loginPKCE called");
@@ -43,7 +45,6 @@ export async function loginPKCE(onToken) {
         return;
       }
 
-      // ✅ Robust match for: com.example.app://login/callback
       if (u.protocol !== "com.example.app:") return;
       if (u.host !== "login") return;
       if (u.pathname !== "/callback") return;
@@ -51,12 +52,9 @@ export async function loginPKCE(onToken) {
       const code = u.searchParams.get("code");
       console.log("AUTH: code =", code);
 
-      // close browser if opened
       try {
         await Browser.close();
-      } catch (e) {
-        // ignore
-      }
+      } catch (_) {}
 
       if (!code) return;
 
@@ -64,12 +62,17 @@ export async function loginPKCE(onToken) {
       console.log("AUTH: verifier exists =", !!verifierStored);
       if (!verifierStored) return;
 
+      if (exchanging) return; // ✅ prevents double exchange
+      exchanging = true;
+
       try {
         const token = await exchangeCode(code, verifierStored);
         console.log("AUTH: token received");
         tokenCallback?.(token);
       } catch (e) {
         console.log("AUTH: exchangeCode failed:", String(e));
+      } finally {
+        exchanging = false;
       }
     });
   }
@@ -80,18 +83,24 @@ export async function loginPKCE(onToken) {
   );
 }
 
-
 async function exchangeCode(code, verifier) {
-  const res = await fetch(`${API_BASE}/auth/exchange`, {
-    method: "POST",
+  const url = `${API_BASE}/auth/exchange`;
+
+  const res = await CapacitorHttp.post({
+    url,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    data: {
       code,
       verifier,
       redirect_uri: REDIRECT_URI,
-    }),
+    },
   });
 
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  if (res.status < 200 || res.status >= 300) {
+    const msg =
+      typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+    throw new Error(msg);
+  }
+
+  return res.data; // ✅ already JSON
 }

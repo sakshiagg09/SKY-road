@@ -4,7 +4,7 @@
   "routes": [
     {
       "source": "^/auth/exchange$",
-      "target": "/odata/v4/GTT/exchangeToken",
+      "target": "/auth/exchange",
       "destination": "srv-api",
       "authenticationType": "none",
       "csrfProtection": false
