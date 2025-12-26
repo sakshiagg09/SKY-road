@@ -150,6 +150,8 @@ export default function RouteTimeline({
         idx,
         stopid: s.stopId ?? s.stopid ?? String(idx),
         locid: s.locId ?? s.locid ?? "",
+        latitude: s.latitude ?? null,
+        longitude: s.longitude ?? null,
         stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "")
           .toString()
           .toUpperCase(),
@@ -321,6 +323,8 @@ export default function RouteTimeline({
       FoId: FoId ?? selectedShipment.FoId,
       Action: networkActionCode,
       StopId: stop.locid || stop.stopid || "",
+      EventLat: stop.latitude ?? null,
+      EventLong: stop.longitude ?? null,
     };
     const sendKey = `${stopKey}_${networkActionCode}`;
 

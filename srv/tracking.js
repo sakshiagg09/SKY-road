@@ -2,6 +2,7 @@
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 const licenseOcr = require("./licenseOcrService"); // 👈 NEW
+const {postSkyPlusEvent} = require("./SkyPlusClient");
 
 const { UPSERT } = cds.ql;
 
@@ -211,10 +212,43 @@ module.exports = cds.service.impl(async function () {
   // ---------------------------------------------------------------------------
   // CREATE handlers (unchanged)
   // ---------------------------------------------------------------------------
-  this.on("CREATE", eventReporting, async (req) => {
-    // IMPORTANT: use your real entity set name
-    return await s4Post("/EventsReportingSet", req.data);
-  });
+//   this.on("CREATE", eventReporting, async (req) => {
+//   // 1) Primary: post to SAP TM/S4 (unchanged behavior)
+//   const sapRes = await s4Post("/EventsReportingSet", req.data);
+
+//   // 2) Secondary: mirror to SKY Plus (non-blocking)
+//   const FoId = req.data?.FoId;
+//   const StopId = req.data?.StopId;
+//   const Action_Name = req.data?.Action; // ARRV / DEPT / POD
+
+//   if (FoId && StopId && Action_Name) {
+//     postSkyPlusEvent({ FoId, StopId, Action_Name }); // fire-and-forget
+//   }
+
+//   // 3) Return SAP response to SKY App
+//   return sapRes;
+// });
+this.on("CREATE", eventReporting, async (req) => {
+  const FoId = req.data?.FoId;
+  const StopId = req.data?.StopId;
+  const Action_Name = req.data?.Action; // ARRV / DEPT / POD
+  const EventLat = req.data?.EventLat ?? null;
+  const EventLong = req.data?.EventLong ?? null;
+
+  if (!FoId) return req.reject(400, "FoId required");
+  if (!StopId) return req.reject(400, "StopId required");
+  if (!Action_Name) return req.reject(400, "Action required");
+  if (!EventLat) return req.reject(400, "EventLat required");
+  if (!EventLong) return req.reject(400, "EventLong required");
+
+  // ✅ ONLY SKY+ posting (SAP disabled for now)
+  const skyRes = await postSkyPlusEvent({ FoId, StopId, Action_Name, EventLat, EventLong });
+
+  // ✅ return something that your UI can still use
+  // Your UI expects { Event: "ARRIVAL"/"DEPARTURE"/"POD" } sometimes.
+  // SKY+ returns { status: "STORED", foId: ... }
+  return skyRes || { status: "STORED", FoId, StopId, Event: Action_Name };
+});
 
   this.on("CREATE", updatesPOD, async (req) => {
     // IMPORTANT: use your real entity set name
