@@ -83,20 +83,5 @@ service GTT {
     licenseNumber : String;
     confidence    : Decimal(5,4);
   };
- // ---- PKCE exchange (server-side)
-   @requires: 'any'
-  action exchangeToken(
-    code         : String,
-    verifier     : String,
-    redirect_uri : String
-  ) returns {
-    access_token  : String;
-    token_type    : String;
-    expires_in    : Integer;
-    refresh_token : String;
-    id_token      : String;
-    scope         : String;
-  };
-
 
 }
