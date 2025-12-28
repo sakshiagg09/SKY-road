@@ -7,7 +7,7 @@ import BottomBar from "./components/BottomBar";
 import ReportEventDialog from "./components/ReportEventDialog";
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
 
-import { loginPKCE } from "./auth/auth";
+import { loginPKCE, loadToken  } from "./auth/auth";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
@@ -20,24 +20,29 @@ export default function App() {
   const BAR_HEIGHT = 64;
   const contentPaddingBottom = BAR_HEIGHT + 70;
 
-  useEffect(() => {
-    console.log("AUTH: App mounted");
+useEffect(() => {
+  console.log("AUTH: App mounted");
 
-    const token = localStorage.getItem("access_token");
-    console.log("AUTH: Existing token =", token);
+  (async () => {
+    const tokenObj = await loadToken();
+    const token = tokenObj?.access_token || null;
+
+    console.log("AUTH: Existing token =", token ? "present" : "null");
 
     if (!token) {
       console.log("AUTH: No token, starting PKCE login");
 
-      loginPKCE(({ access_token }) => {
+      await loginPKCE((t) => {
         console.log("AUTH: Token received");
-        localStorage.setItem("access_token", access_token);
+        // token is already stored inside auth.js (saveToken)
         setAuthenticated(true);
-      }).catch((e) => console.log("AUTH: loginPKCE error", String(e)));
+      });
     } else {
       setAuthenticated(true);
     }
-  }, []);
+  })().catch((e) => console.log("AUTH: init auth error", String(e)));
+}, []);
+
 
   const handleOpenReport = (mode = "unplanned") => {
     setReportMode(mode);

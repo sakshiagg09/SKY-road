@@ -5,6 +5,7 @@ import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
 import DocumentScannerRoundedIcon from "@mui/icons-material/DocumentScannerRounded"; // ✅ NEW
 import { LinearProgress } from "@mui/material";
+import { apiGet } from "../auth/api";
 
 import logo from "../assets/logo.png.png";
 import BarcodeScanner from "../components/BarcodeScanner";
@@ -76,8 +77,8 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
 
   // --- API: trackingDetails now requires FoId + DriverLicense ----------
   async function loadTrackingDetails(trackingId, licenseNumber) {
-    const res = await fetch(
-      `odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`
+    const res = await apiGet(
+      `/odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`
     );
     if (!res.ok) throw new Error("Failed to load tracking details");
     return await res.json();

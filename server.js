@@ -1,5 +1,4 @@
 const cds = require("@sap/cds");
-const fetch = require("node-fetch");
 
 cds.on("bootstrap", (app) => {
   const bodyParser = require("body-parser");
