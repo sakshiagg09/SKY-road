@@ -48,6 +48,54 @@ cds.on("bootstrap", (app) => {
       return res.status(500).json({ error: String(e?.message || e) });
     }
   });
+  app.post("/auth/refresh", async (req, res) => {
+  try {
+    console.log("AUTH-REFRESH (express): called");
+
+    const { refresh_token } = req.body || {};
+    if (!refresh_token) {
+      return res.status(400).json({ error: "Missing refresh_token" });
+    }
+
+    const xsuaa =
+      process.env.VCAP_SERVICES &&
+      JSON.parse(process.env.VCAP_SERVICES).xsuaa?.[0];
+    const creds = xsuaa?.credentials;
+
+    if (!creds?.url || !creds?.clientid || !creds?.clientsecret) {
+      return res.status(500).json({ error: "XSUAA credentials missing" });
+    }
+
+    const basic = Buffer.from(
+      `${creds.clientid}:${creds.clientsecret}`
+    ).toString("base64");
+
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token,
+    });
+
+    const r = await fetch(`${creds.url}/oauth/token`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basic}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body,
+    });
+
+    const text = await r.text();
+    if (!r.ok) return res.status(r.status).send(text);
+
+    // XSUAA may rotate refresh_token; return exactly what XSUAA returns
+    return res.status(200).json(JSON.parse(text));
+  } catch (e) {
+    console.error("AUTH-REFRESH (express) failed:", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 });
 
 module.exports = cds.server;

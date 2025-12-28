@@ -27,20 +27,12 @@ useEffect(() => {
     const tokenObj = await loadToken();
     const token = tokenObj?.access_token || null;
 
-    console.log("AUTH: Existing token =", token ? "present" : "null");
-
     if (!token) {
-      console.log("AUTH: No token, starting PKCE login");
-
-      await loginPKCE((t) => {
-        console.log("AUTH: Token received");
-        // token is already stored inside auth.js (saveToken)
-        setAuthenticated(true);
-      });
+      await loginPKCE(() => setAuthenticated(true));
     } else {
       setAuthenticated(true);
     }
-  })().catch((e) => console.log("AUTH: init auth error", String(e)));
+  })().catch((e) => console.log("AUTH init error", e));
 }, []);
 
 

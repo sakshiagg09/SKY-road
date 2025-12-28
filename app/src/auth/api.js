@@ -1,60 +1,98 @@
 // src/auth/api.js
-import { Capacitor } from "@capacitor/core";
-import { CapacitorHttp } from "@capacitor/core";
-import { loadToken } from "./auth";
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { getValidAccessToken } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
-
-// Detect native platform
 const isNative = Capacitor.isNativePlatform();
 
-// Resolve URL correctly
 function resolveUrl(path) {
   if (path.startsWith("http")) return path;
+
+  // Native must hit full approuter URL
   if (isNative) return `${API_BASE}${path}`;
-  return path; // browser / approuter
+
+  // Browser (running under approuter) uses relative URLs
+  return path;
 }
 
-// Helper to get access token
-async function getAccessToken() {
-  const token = await loadToken();
-  return token?.access_token || null;
+async function buildHeaders(extra = {}, token = null) {
+  // In browser/approuter mode you normally don't need Authorization header
+  // but leaving it empty avoids any side effects.
+  if (!isNative) return { ...extra };
+
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+function throwHttpError(res) {
+  const msg = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+  throw new Error(msg);
 }
 
 export async function apiGet(path) {
-  const token = await getAccessToken();
+  const url = resolveUrl(path);
 
-  const res = await CapacitorHttp.get({
-    url: resolveUrl(path),
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  // Native: token + refresh logic
+  if (isNative) {
+    let token = await getValidAccessToken();
 
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(
-      typeof res.data === "string" ? res.data : JSON.stringify(res.data)
-    );
+    let res = await CapacitorHttp.get({
+      url,
+      headers: await buildHeaders({}, token),
+    });
+
+    // If token got expired mid-flight, retry once after refresh
+    if (res.status === 401) {
+      token = await getValidAccessToken(); // refresh happens inside
+      res = await CapacitorHttp.get({
+        url,
+        headers: await buildHeaders({}, token),
+      });
+    }
+
+    if (res.status < 200 || res.status >= 300) throwHttpError(res);
+    return res.data;
   }
 
+  // Browser: keep existing behavior
+  const res = await CapacitorHttp.get({ url, headers: {} });
+  if (res.status < 200 || res.status >= 300) throwHttpError(res);
   return res.data;
 }
 
 export async function apiPost(path, body) {
-  const token = await getAccessToken();
+  const url = resolveUrl(path);
 
-  const res = await CapacitorHttp.post({
-    url: resolveUrl(path),
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    data: body,
-  });
+  if (isNative) {
+    let token = await getValidAccessToken();
 
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(
-      typeof res.data === "string" ? res.data : JSON.stringify(res.data)
-    );
+    let res = await CapacitorHttp.post({
+      url,
+      headers: await buildHeaders({ "Content-Type": "application/json" }, token),
+      data: body,
+    });
+
+    if (res.status === 401) {
+      token = await getValidAccessToken();
+      res = await CapacitorHttp.post({
+        url,
+        headers: await buildHeaders({ "Content-Type": "application/json" }, token),
+        data: body,
+      });
+    }
+
+    if (res.status < 200 || res.status >= 300) throwHttpError(res);
+    return res.data;
   }
 
+  // Browser: keep existing behavior
+  const res = await CapacitorHttp.post({
+    url,
+    headers: { "Content-Type": "application/json" },
+    data: body,
+  });
+  if (res.status < 200 || res.status >= 300) throwHttpError(res);
   return res.data;
 }
