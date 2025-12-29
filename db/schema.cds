@@ -128,3 +128,17 @@ entity StopEventSequenceConfig : managed {
         // Optional: how you want to map to reporting action codes
         ActionCode    : String(10); // ARRV / DEPT / POD
 }
+
+entity DriverLocations {
+  key ID        : UUID;
+      FoId      : String;
+      DriverId  : String;
+      Latitude  : Double;
+      Longitude : Double;
+      Accuracy  : Double;
+      Timestamp : Integer64; // epoch millis
+      Speed     : Double;
+      Bearing   : Double;
+
+  createdAt : Timestamp;
+}

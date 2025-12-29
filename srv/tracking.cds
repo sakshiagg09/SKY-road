@@ -1,4 +1,5 @@
 using { sky.db.Items as Items } from '../db/schema';
+using { sky.db.DriverLocations as DriverLocations } from '../db/schema';
 
 service GTT {
 
@@ -74,6 +75,7 @@ service GTT {
   entity shipmentItems   as projection on Items;
   entity attachmentUpload  as projection on attachmentPayload;
   entity delayEvents   as projection on delayEvent;
+  entity driverLocations as projection on DriverLocations;  
   
 
     // ----- OCR ACTION (for license scanning from frontend)

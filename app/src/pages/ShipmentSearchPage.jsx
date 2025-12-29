@@ -76,13 +76,14 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
   };
 
   // --- API: trackingDetails now requires FoId + DriverLicense ----------
-  async function loadTrackingDetails(trackingId, licenseNumber) {
-    const res = await apiGet(
-      `/odata/v4/GTT/trackingDetails?$filter=FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`
-    );
-    if (!res.ok) throw new Error("Failed to load tracking details");
-    return await res.json();
-  }
+ async function loadTrackingDetails(trackingId, licenseNumber) {
+  const filter = `FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`;
+  const data = await apiGet(
+    `/odata/v4/GTT/trackingDetails?$filter=${encodeURIComponent(filter)}`
+  );
+  console.log("trackingDetails payload:", JSON.stringify(data));
+  return data;
+}
 
   // ✅ OCR call (CAP action) – returns { licenseNumber, confidence }
   async function extractLicenseNumberFromImage(base64) {

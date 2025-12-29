@@ -68,7 +68,7 @@
         <!-- 🔁 Boot receiver to start service after reboot -->
         <receiver
             android:name="com.example.app.BootReceiver"
-            android:enabled="false" 
+            android:enabled="true" 
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

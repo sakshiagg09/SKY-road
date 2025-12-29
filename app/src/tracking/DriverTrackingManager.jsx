@@ -1,84 +1,71 @@
 // src/tracking/DriverTrackingManager.jsx
 import React, { useEffect, useCallback } from "react";
 import { useBackgroundLocation } from "../hooks/useBackgroundLocation";
-import { enqueue, drain } from "./locationQueue";
-
-const BACKEND =
-  "https://nav-it-consulting-gmbh-nav-payg-btp-3oqfixeo-dev-sky-ro70256e00.cfapps.us10-001.hana.ondemand.com";
+import { enqueue, peek, markSent } from "./locationQueue";
+import { apiPost } from "../auth/api";
 
 export default function DriverTrackingManager({ authenticated, selectedShipment }) {
-  // ✅ STOP everything until token exists
-  const token = localStorage.getItem("access_token");
-  if (!authenticated || !token) return null;
+  if (!authenticated) return null;
 
   const getContext = () => ({
-    foId: selectedShipment?.FreightOrderId || selectedShipment?.FoId || "UNKNOWN_FO",
-    driverId: "DRIVER_001", // TODO: derive from token later
+    FoId: selectedShipment?.FoId || selectedShipment?.FreightOrderId || "UNKNOWN_FO",
+    DriverId: "DRIVER_001",
   });
 
   const flushQueue = useCallback(async () => {
-    const queue = drain();
-    if (!queue.length) return;
+    const batch = peek(20);
+    if (!batch.length) return;
 
-    console.log("SKY: flushing queue:", queue.length);
-
-    for (const point of queue) {
+    for (const point of batch) {
       try {
-        await fetch(`${BACKEND}/api/tracking/location`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${localStorage.getItem("access_token")}`,
-          },
-          body: JSON.stringify(point),
-        });
+        // ✅ This uses your resolveUrl():
+        // Native -> SRV + /api/tracking/location (with Bearer token)
+        // Web    -> /api/tracking/location (relative)
+        await apiPost("/api/tracking/location", point);
+
+        markSent(point._id);
       } catch (e) {
-        enqueue(point); // requeue failed
-        throw e;
+        // stop; keep the remaining queued
+        console.log("SKY: location POST failed, will retry later:", e?.message || e);
+        break;
       }
     }
   }, []);
 
   useEffect(() => {
-    const handler = () => {
-      console.log("SKY: Network online → flushing queue");
-      flushQueue();
-    };
+    const handler = () => flushQueue();
     window.addEventListener("online", handler);
     return () => window.removeEventListener("online", handler);
   }, [flushQueue]);
 
   const handleLocation = useCallback(
     async (loc) => {
-      // ✅ extra guard (in case token gets cleared later)
-      const t = localStorage.getItem("access_token");
-      if (!t) return;
-
-      const { foId, driverId } = getContext();
+      const { FoId, DriverId } = getContext();
 
       const payload = {
-        FoId: foId,
-        DriverId: driverId,
+        FoId,
+        DriverId,
         Latitude: loc.latitude,
         Longitude: loc.longitude,
-        Accuracy: loc.accuracy,
-        Timestamp: loc.timestamp,
+        Accuracy: loc.accuracy ?? null,
+        // ✅ keep numeric timestamp in ms (backend-friendly)
+        Timestamp: loc.timestamp ? Date.parse(loc.timestamp) : Date.now(),
+        Speed: loc.speed ?? null,
+        Bearing: loc.bearing ?? null,
       };
 
-      console.log("SKY: New location:", payload);
+      // optional: store last known point for UI/ETA
+      localStorage.setItem("sky_last_loc", JSON.stringify(payload));
 
       enqueue(payload);
 
       try {
         await flushQueue();
-      } catch (e) {
-        console.log("SKY: failed to send, will retry later");
-      }
+      } catch {}
     },
     [selectedShipment, flushQueue]
   );
 
-  // ✅ only start native watcher AFTER auth
   useBackgroundLocation({ onLocation: handleLocation });
 
   return null;

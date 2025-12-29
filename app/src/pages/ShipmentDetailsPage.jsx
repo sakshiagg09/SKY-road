@@ -1,5 +1,5 @@
 // app/src/pages/ShipmentDetailsPage.jsx
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import LocalMallOutlinedIcon from "@mui/icons-material/LocalMallOutlined";
@@ -29,6 +29,10 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
 
   // 🔹 Info about last successfully completed POD (to update timeline)
   const [podCompletedInfo, setPodCompletedInfo] = useState(null);
+
+  // ✅ LIVE tracking UI (non-breaking: only affects ETA display if we can compute)
+  const [liveEtaText, setLiveEtaText] = useState(null);
+  const [liveMeta, setLiveMeta] = useState({ distanceKm: null, updatedAt: null });
 
   if (!selectedShipment) {
     return (
@@ -74,11 +78,108 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
       }${lastStop.country ? `, ${lastStop.country}` : ""}`
     : "-";
 
+  // Planned ETA (existing behavior)
   const eta = lastStop
     ? new Date(
         lastStop.dateTime || lastStop.dateTimeString || lastStop.plannedDateTime
       ).toLocaleString("en-GB", { timeZone: "Asia/Kolkata" })
     : "-";
+
+  // ==========================
+  // ✅ Live ETA helpers (safe)
+  // ==========================
+  const haversineKm = (a, b) => {
+    if (!a || !b) return null;
+    const R = 6371;
+    const toRad = (x) => (x * Math.PI) / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLon = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+
+    const s =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+
+    return 2 * R * Math.asin(Math.sqrt(s));
+  };
+
+  const formatEta = (ms) =>
+    new Date(ms).toLocaleString("en-GB", { timeZone: "Asia/Kolkata" });
+
+  // Best-effort destination coordinates (does NOT break if missing)
+  const destinationCoords = useMemo(() => {
+    // 1) last stop coords (if your backend provides)
+    const lat = lastStop?.Latitude ?? lastStop?.latitude ?? lastStop?.lat ?? null;
+    const lng = lastStop?.Longitude ?? lastStop?.longitude ?? lastStop?.lng ?? null;
+
+    if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {
+      return { lat: Number(lat), lng: Number(lng) };
+    }
+
+    // 2) try raw destination coords (adjust later if your payload uses different names)
+    const rLat = raw?.DestLatitude ?? raw?.DestinationLatitude ?? raw?.ToLat ?? null;
+    const rLng = raw?.DestLongitude ?? raw?.DestinationLongitude ?? raw?.ToLng ?? null;
+
+    if (Number.isFinite(Number(rLat)) && Number.isFinite(Number(rLng))) {
+      return { lat: Number(rLat), lng: Number(rLng) };
+    }
+
+    return null;
+  }, [lastStop, raw]);
+
+  // Compute live ETA from last location stored by DriverTrackingManager
+  useEffect(() => {
+    const tick = () => {
+      try {
+        const rawLoc = localStorage.getItem("sky_last_loc");
+        if (!rawLoc) return;
+
+        const p = JSON.parse(rawLoc);
+        if (!p?.Latitude || !p?.Longitude) return;
+
+        const cur = { lat: Number(p.Latitude), lng: Number(p.Longitude) };
+        const updatedAt = p.Timestamp ? Number(p.Timestamp) : Date.now();
+
+        // if no destination coords, keep planned ETA (no changes)
+        if (!destinationCoords) {
+          setLiveEtaText(null);
+          setLiveMeta({ distanceKm: null, updatedAt });
+          return;
+        }
+
+        const distanceKm = haversineKm(cur, destinationCoords);
+        if (distanceKm == null) {
+          setLiveEtaText(null);
+          setLiveMeta({ distanceKm: null, updatedAt });
+          return;
+        }
+
+        // Speed best-effort:
+        // - if Speed <= 60 treat as m/s -> convert to km/h
+        // - else treat as km/h
+        let speedKmh = null;
+        if (p.Speed != null) {
+          const s = Number(p.Speed);
+          if (Number.isFinite(s)) speedKmh = s <= 60 ? s * 3.6 : s;
+        }
+
+        // fallback to reasonable speed if missing/too low
+        if (!speedKmh || speedKmh < 5) speedKmh = 45;
+
+        const etaMs = Date.now() + (distanceKm / speedKmh) * 3600 * 1000;
+
+        setLiveEtaText(formatEta(etaMs));
+        setLiveMeta({ distanceKm, updatedAt });
+      } catch {
+        // ignore
+      }
+    };
+
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => clearInterval(id);
+  }, [destinationCoords]);
 
   // Handler to receive callbacks from RouteTimeline
   const handleChildAction = useCallback(
@@ -112,8 +213,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
     const stopIdFromResponse = response && response.StopId;
 
     const fallbackFoId =
-      (payload && payload.FoId) ||
-      String(selectedShipment.FoId || selectedShipment.foId || "");
+      (payload && payload.FoId) || String(selectedShipment.FoId || selectedShipment.foId || "");
     const fallbackStopId = payload && payload.StopId;
 
     const effectiveFoId = foIdFromResponse || fallbackFoId;
@@ -143,16 +243,10 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
     >
       {/* TITLE */}
       <div className="mb-3">
-        <p
-          className="text-[10px] uppercase tracking-[0.2em]"
-          style={{ color: TEXT_SECONDARY }}
-        >
+        <p className="text-[10px] uppercase tracking-[0.2em]" style={{ color: TEXT_SECONDARY }}>
           Shipment overview
         </p>
-        <h2
-          className="font-semibold"
-          style={{ fontSize: 20, color: TEXT_PRIMARY, marginTop: 4 }}
-        >
+        <h2 className="font-semibold" style={{ fontSize: 20, color: TEXT_PRIMARY, marginTop: 4 }}>
           Shipment #{FoId || "-"}
         </h2>
       </div>
@@ -161,8 +255,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
       <div
         className="rounded-3xl p-4 mb-5"
         style={{
-          background:
-            "linear-gradient(135deg, #ffffff 0%, #f3f6ff 40%, #e0ebff 100%)",
+          background: "linear-gradient(135deg, #ffffff 0%, #f3f6ff 40%, #e0ebff 100%)",
           boxShadow: "10px 10px 20px #d7dae2, -10px -10px 20px #ffffff",
         }}
       >
@@ -199,8 +292,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
               style={{
                 width: 1,
                 height: 24,
-                background:
-                  "linear-gradient(to bottom, rgba(25,118,210,0.3), transparent)",
+                background: "linear-gradient(to bottom, rgba(25,118,210,0.3), transparent)",
               }}
             />
           </div>
@@ -230,8 +322,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
               className="h-full rounded-full"
               style={{
                 width: `${progress}%`,
-                background:
-                  "linear-gradient(90deg, #1976D2 0%, #42A5F5 60%, #90CAF9 100%)",
+                background: "linear-gradient(90deg, #1976D2 0%, #42A5F5 60%, #90CAF9 100%)",
               }}
             />
           </div>
@@ -247,21 +338,27 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
           </div>
           <div className="flex items-center gap-1.5">
             <ScaleOutlinedIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            <span style={{ color: TEXT_SECONDARY }}>
-              {raw?.TotalWeight || "—"} t
-            </span>
+            <span style={{ color: TEXT_SECONDARY }}>{raw?.TotalWeight || "—"} t</span>
           </div>
           <div className="flex items-center gap-1.5">
             <LocalMallOutlinedIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            <span style={{ color: TEXT_SECONDARY }}>
-              {raw?.TotalPackages || "—"} packages
-            </span>
+            <span style={{ color: TEXT_SECONDARY }}>{raw?.TotalPackages || "—"} packages</span>
           </div>
           <div className="flex items-center gap-1.5">
             <AccessTimeIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            <span style={{ color: TEXT_SECONDARY }}>ETA {eta}</span>
+            {/* ✅ Non-breaking: show live ETA if available, else planned ETA */}
+            <span style={{ color: TEXT_SECONDARY }}>ETA {liveEtaText || eta}</span>
           </div>
         </div>
+
+        {/* ✅ Optional: small live tracking meta (safe, won't break anything) */}
+        {liveMeta?.updatedAt && (
+          <p className="text-[10px] mt-2" style={{ color: TEXT_SECONDARY, opacity: 0.8 }}>
+            Live tracking: last update{" "}
+            {new Date(liveMeta.updatedAt).toLocaleTimeString("en-GB")}{" "}
+            {liveMeta.distanceKm != null ? `• ${liveMeta.distanceKm.toFixed(1)} km to destination` : ""}
+          </p>
+        )}
       </div>
 
       {/* TIMELINE SECTION */}

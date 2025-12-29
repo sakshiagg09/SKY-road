@@ -3,13 +3,14 @@ import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { getValidAccessToken } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
+const SRV  = import.meta.env.VITE_API_SRV;
 const isNative = Capacitor.isNativePlatform();
 
 function resolveUrl(path) {
   if (path.startsWith("http")) return path;
 
   // Native must hit full approuter URL
-  if (isNative) return `${API_BASE}${path}`;
+  if (isNative) return `${SRV}${path}`;
 
   // Browser (running under approuter) uses relative URLs
   return path;
@@ -34,31 +35,58 @@ function throwHttpError(res) {
 export async function apiGet(path) {
   const url = resolveUrl(path);
 
-  // Native: token + refresh logic
+  // ============================
+  // Native (Android / iOS)
+  // ============================
   if (isNative) {
     let token = await getValidAccessToken();
+
+    console.log("[API GET] URL:", url);
+    console.log("[API GET] Has token:", !!token);
 
     let res = await CapacitorHttp.get({
       url,
       headers: await buildHeaders({}, token),
     });
 
-    // If token got expired mid-flight, retry once after refresh
+    console.log("[API GET] First response status:", res.status);
+    console.log("[API GET] First response data:", JSON.stringify(res.data));
+
+    // Retry once on 401 (token refresh happens inside)
     if (res.status === 401) {
-      token = await getValidAccessToken(); // refresh happens inside
+      console.warn("[API GET] 401 received, retrying after refresh");
+
+      token = await getValidAccessToken();
+
       res = await CapacitorHttp.get({
         url,
         headers: await buildHeaders({}, token),
       });
+
+      console.log("[API GET] Retry response status:", res.status);
+      console.log("[API GET] Retry response data:", res.data);
     }
 
-    if (res.status < 200 || res.status >= 300) throwHttpError(res);
+    if (res.status < 200 || res.status >= 300) {
+      console.error("[API GET] Final error response:", res);
+      throwHttpError(res);
+    }
+
     return res.data;
   }
 
-  // Browser: keep existing behavior
+  // ============================
+  // Browser (Approuter / Web)
+  // ============================
+  console.log("[API GET][WEB] URL:", url);
+
   const res = await CapacitorHttp.get({ url, headers: {} });
+
+  console.log("[API GET][WEB] Status:", res.status);
+  console.log("[API GET][WEB] Data:", res.data);
+
   if (res.status < 200 || res.status >= 300) throwHttpError(res);
+
   return res.data;
 }
 

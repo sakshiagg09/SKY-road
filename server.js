@@ -95,7 +95,39 @@ cds.on("bootstrap", (app) => {
     return res.status(500).json({ error: String(e?.message || e) });
   }
 });
+ app.post("/api/tracking/location", async (req, res) => {
+    try {
+      const p = req.body || {};
 
+      // Minimal validation (don’t block your app)
+      if (!p.FoId || !p.DriverId || p.Latitude == null || p.Longitude == null) {
+        return res.status(400).json({ error: "FoId, DriverId, Latitude, Longitude are required" });
+      }
+
+      // Persist to DB
+      const db = await cds.connect.to("db");
+      await db.run(
+        INSERT.into("sky.db.DriverLocations").entries({
+          ID: cds.utils.uuid(),
+          FoId: String(p.FoId),
+          DriverId: String(p.DriverId),
+          Latitude: Number(p.Latitude),
+          Longitude: Number(p.Longitude),
+          Accuracy: p.Accuracy == null ? null : Number(p.Accuracy),
+          Timestamp: p.Timestamp == null ? Date.now() : Number(p.Timestamp),
+          Speed: p.Speed == null ? null : Number(p.Speed),
+          Bearing: p.Bearing == null ? null : Number(p.Bearing),
+          createdAt: new Date(),
+        })
+      );
+
+      // Respond quickly
+      return res.status(204).end();
+    } catch (e) {
+      console.error("TRACKING: /api/tracking/location failed:", e);
+      return res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
 });
 
 module.exports = cds.server;

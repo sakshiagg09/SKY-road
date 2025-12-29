@@ -1,22 +1,28 @@
-const KEY = "sky_location_queue_v2";
+// src/tracking/locationQueue.js
+const KEY = "sky_loc_queue_v1";
 
 function load() {
   try {
-    return JSON.parse(localStorage.getItem(KEY)) || [];
+    const raw = localStorage.getItem(KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
   } catch {
     return [];
   }
 }
 
-function save(data) {
-  localStorage.setItem(KEY, JSON.stringify(data));
+function save(arr) {
+  localStorage.setItem(KEY, JSON.stringify(arr));
 }
 
 export function enqueue(point) {
   const q = load();
-  q.push(point);
-  if (q.length > 2000) q.shift();
-  save(q);
+  const withId = { _id: `${Date.now()}_${Math.random()}`, ...point };
+  q.push(withId);
+
+  // keep last 500 points max
+  const trimmed = q.slice(-500);
+  save(trimmed);
 }
 
 export function drain() {
@@ -25,6 +31,13 @@ export function drain() {
   return q;
 }
 
-export function getQueue() {
-  return load();
+export function peek(n = 20) {
+  const q = load();
+  return q.slice(0, n);
+}
+
+export function markSent(id) {
+  if (!id) return;
+  const q = load().filter((p) => p._id !== id);
+  save(q);
 }

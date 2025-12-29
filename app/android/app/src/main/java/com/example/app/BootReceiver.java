@@ -17,12 +17,12 @@ public class BootReceiver extends BroadcastReceiver {
         if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
             Log.d(TAG, "BOOT_COMPLETED → starting TrackingService");
 
-          /*   Intent serviceIntent = new Intent(context, TrackingService.class);
+            Intent serviceIntent = new Intent(context, TrackingService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, serviceIntent);
             } else {
                 context.startService(serviceIntent);
-            }*/
+            }
         }
     }
 }

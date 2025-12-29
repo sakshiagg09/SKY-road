@@ -14,7 +14,7 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
 
         // 🔁 Ensure tracking service is running whenever app is opened
-        // Intent serviceIntent = new Intent(this, TrackingService.class);
-        // ContextCompat.startForegroundService(this, serviceIntent);
+        Intent serviceIntent = new Intent(this, TrackingService.class);
+        ContextCompat.startForegroundService(this, serviceIntent);
     }
 }
