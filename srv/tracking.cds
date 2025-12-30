@@ -7,8 +7,10 @@ service GTT {
   @cds.persistence.skip
   entity shipmentDetails {
     key FoId           : String;
-        DriverLicense : String;
+        DriverLicense  : String;
         FinalInfo      : String;
+        ReturnInfo     : String;
+        Message        : String;
         DirectionsInfo : String;
         StopInfo       : String;
   }

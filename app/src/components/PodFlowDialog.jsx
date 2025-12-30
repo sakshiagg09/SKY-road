@@ -117,20 +117,17 @@ export default function PodFlowDialog({
     "Selected Stop";
 
   // Prefer Location (like "1000000000") as StopId for POD API
-  const stopIdValue = String(
-    stop?.Location ||
-      effectiveStop?.Location ||
-      effectiveStop?.locid ||
-      effectiveStop?.locId ||
-      effectiveStop?.LOCID ||
-      effectiveStop?.location ||
-      effectiveStop?.stopid ||
-      effectiveStop?.stopId ||
-      effectiveStop?.STOPID ||
-      effectiveStop?.LocId ||
-      effectiveStop?.StopId ||
-      ""
-  );
+const stopIdValue = String(
+  stop?.stopid ||
+    stop?.stopId ||
+    stop?.StopId ||
+    effectiveStop?.stopid ||
+    effectiveStop?.stopId ||
+    effectiveStop?.StopId ||
+    stop?.STOPID ||
+    effectiveStop?.STOPID ||
+    ""
+);
 
   // ----------------- normalise shipmentItems -----------------
   const normaliseItem = (raw, index) => {

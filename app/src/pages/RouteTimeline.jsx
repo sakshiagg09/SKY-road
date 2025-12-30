@@ -7,6 +7,7 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import EventAvailableIcon from "@mui/icons-material/EventAvailable";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
+import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded"; // Return placeholder
 
 import {
   IconButton,
@@ -23,23 +24,34 @@ import {
 import MaterialItemList from "../components/MaterialItemList";
 
 /**
- * RouteTimeline — UI same as before, logic updated:
- * - Events enabled strictly one-by-one
- * - A step is marked done ONLY based on backend Event
- * - For last stop (stopseqpos = 'L'): Items -> Arrival -> POD (no Departure)
+ * RouteTimeline — updated (final):
+ * ✅ Backend datetime is UTC -> show in user's phone timezone (with tz name)
+ * ✅ Actual Reported time is from eventReporting response Timestamp (SAP UTC 14-digit)
+ * ✅ Event payload sends StopId (stop.stopid) (NOT locid)
+ * ✅ Badge only for reported events:
+ *    ARRIVAL -> Arrived, POD -> Delivered, DEPARTURE -> Departed, else blank
+ * ✅ Color coding:
+ *    - Any event (arrival / pod / return etc.) => ORANGE
+ *    - DEPARTURE only => GREEN
+ *    - Not reached => BLUE
+ * ✅ Card border color and left accent bar follow event color (orange/green)
+ * ✅ totalLoadedPack/totalUnloadedPack drive Material Load/Unload
+ * ✅ Return action appears if selectedShipment.returnLocIds contains stop.locid (logic only, action later)
  */
 export default function RouteTimeline({
   selectedShipment,
   onAction,
   eventsUrl = "/odata/v4/GTT/eventReporting",
-  podCompletedInfo, // 👈 NEW
+  podCompletedInfo,
 }) {
   const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";
   const TEXT_PRIMARY = "#071E54";
   const TEXT_SECONDARY = "#6B6C6E";
-  const GREEN = "#2E7D32";
-  const BLUE = "#42A5F5";
+
+  const BLUE = "#42A5F5";     // not reached
+  const ORANGE = "#ED6C02";   // any event
+  const GREEN = "#2E7D32";    // departure only
 
   // menu state
   const [anchorEl, setAnchorEl] = useState(null);
@@ -66,12 +78,23 @@ export default function RouteTimeline({
     );
   }
 
-  const { stops: rawStops = [], FoId } = selectedShipment;
+  const { stops: rawStops = [], FoId, returnLocIds = [] } = selectedShipment;
+  const returnLocSet = useMemo(
+    () => new Set((returnLocIds || []).map((x) => String(x))),
+    [returnLocIds]
+  );
 
-  // ----------------- helpers -----------------
-  const parseSapDateTimeToDate = (dt) => {
+  // ======================
+  // Date/time helpers
+  // ======================
+
+  // Parse SAP UTC datetime:
+  // - if 14 digits: YYYYMMDDHHmmss (UTC)
+  // - interpret as UTC (Date.UTC), then display in device timezone
+  const parseSapUtcDateTimeToDate = (dt) => {
     if (dt === null || typeof dt === "undefined") return null;
     const s = String(dt).trim();
+
     if (/^\d{14}$/.test(s)) {
       const yyyy = Number(s.slice(0, 4));
       const mm = Number(s.slice(4, 6));
@@ -79,26 +102,26 @@ export default function RouteTimeline({
       const hh = Number(s.slice(8, 10));
       const min = Number(s.slice(10, 12));
       const ss = Number(s.slice(12, 14));
-      const d = new Date(yyyy, mm - 1, dd, hh, min, ss);
+      const d = new Date(Date.UTC(yyyy, mm - 1, dd, hh, min, ss));
       return isNaN(d) ? null : d;
     }
+
     const maybe = new Date(s);
     return isNaN(maybe) ? null : maybe;
   };
 
-  const formatDateTime = (d) => {
+  // Display with device timezone + timezone abbreviation
+  const formatDateTimeLocalWithTz = (d) => {
     if (!d) return "-";
-    const date = d.toLocaleDateString("en-GB");
-    const time = d.toLocaleTimeString([], {
+    return d.toLocaleString(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short",
     });
-    return `${date}, ${time}`;
-  };
-
-  const addMinutes = (date, minutes) => {
-    if (!date) return null;
-    return new Date(date.getTime() + minutes * 60 * 1000);
   };
 
   const buildAddress = (s) => {
@@ -116,105 +139,122 @@ export default function RouteTimeline({
 
   const getStopKey = (s) => s.stopid || s.locid || String(s.idx);
 
-  // allowed sequence per stop
-  const allowedSequenceForStop = (stop) => {
-    const seq = (stop.stopseqpos || "").toUpperCase();
-    const typeLoc = (stop.typeLoc || "").toString().toLowerCase();
-    if (seq === "F") return ["items", "departure"];
-    if (seq === "I") {
-      if (typeLoc === "shipper") return ["items", "arrival", "departure"];
-      return ["items", "arrival", "pod", "departure"];
-    }
-    if (seq === "L") return ["items", "arrival", "pod"]; // LAST stop: POD is final
-    return ["items", "arrival", "pod", "departure"];
+  // ======================
+  // Sequence helpers
+  // ======================
+
+  // new mapping:
+  // totalLoadedPack > 0 => shipping point
+  // totalUnloadedPack > 0 => drop
+  const getLocationRole = (stop) => {
+    const loaded = Number(stop.totalLoadedPack || 0);
+    const unloaded = Number(stop.totalUnloadedPack || 0);
+    if (loaded > 0) return "ship";
+    if (unloaded > 0) return "drop";
+    return "unknown";
   };
 
-  // compute flags for all actions up to lastKey (arrival/pod/departure)
+  const allowedSequenceForStop = (stop) => {
+  const seq = (stop.stopseqpos || "").toUpperCase();
+  const role = getLocationRole(stop);
+
+  // helper: last stop = no departure
+  const isLastStop = (() => {
+    const last = derivedStops[derivedStops.length - 1];
+    return last && String(getStopKey(last)) === String(getStopKey(stop));
+  })();
+
+  // If stopseqpos empty (new payload), use role + last-stop rule:
+  if (!seq) {
+    if (role === "ship") return ["items", "departure"]; // load point
+    if (role === "drop") return isLastStop  ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
+    return isLastStop ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
+  }
+
+  // fallback for older payloads
+  if (seq === "F") return ["items", "departure"];
+  if (seq === "I") return ["items", "arrival", "pod", "departure"];
+  if (seq === "L") return ["items", "arrival", "pod"];
+  return ["items", "arrival", "pod", "departure"];
+};
   const computeFlagsUpTo = (seq, lastKey) => {
     const idx = seq.indexOf(lastKey);
     if (idx === -1) return {};
     const flags = {};
     for (let i = 1; i <= idx; i++) {
       const k = seq[i];
-      if (k && k !== "items") {
-        flags[k] = true;
-      }
+      if (k && k !== "items") flags[k] = true;
     }
     return flags;
   };
 
-  // normalize stops to stable fields
+  // ✅ your response includes: Timestamp: "20251230124316 "
+  // interpret as UTC 14 digit -> ms
+  const extractServerTimestampMs = (body) => {
+    const v = body?.Timestamp ?? body?.timestamp ?? null;
+    if (!v) return null;
+
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (/^\d{14}$/.test(s)) return parseSapUtcDateTimeToDate(s)?.getTime() ?? null;
+      const d = new Date(s);
+      return isNaN(d) ? null : d.getTime();
+    }
+
+    if (typeof v === "number") {
+      // if looks like 14-digit
+      if (v > 10_000_000_000_000) return parseSapUtcDateTimeToDate(String(v))?.getTime() ?? null;
+      // epoch ms
+      if (v > 1_000_000_000_000) return v;
+      // epoch sec
+      if (v > 1_000_000_000) return v * 1000;
+    }
+
+    return null;
+  };
+
+  // ======================
+  // Normalize stops
+  // ======================
   const stops = useMemo(
     () =>
       rawStops.map((s, idx) => ({
         idx,
         stopid: s.stopId ?? s.stopid ?? String(idx),
         locid: s.locId ?? s.locid ?? "",
-        stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "")
-          .toString()
-          .toUpperCase(),
-        dateTime: parseSapDateTimeToDate(
-          s.dateTime ?? s.dateTimeString ?? s.dateTime
-        ),
+        stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "").toString().toUpperCase(),
+        dateTime: parseSapUtcDateTimeToDate(s.dateTime ?? s.dateTimeString ?? s.dateTime),
         name1: s.name1 ?? s.name ?? "",
         street: s.street ?? "",
         postCode1: s.postCode1 ?? s.postCode ?? "",
         city1: s.city1 ?? s.city ?? "",
         region: s.region ?? "",
         country: s.country ?? "",
-        typeLoc: (s.typeLoc ?? s.typeLoc ?? s.locationType ?? "").toString(),
         eventRaw: (s.event ?? s.Event ?? "") || "",
-        materialLoad:
-          Number(
-            s.materialLoad ??
-              s.materialLoadQty ??
-              s.loadQty ??
-              s.load ??
-              0
-          ) || 0,
-        materialUnload:
-          Number(
-            s.materialUnload ??
-              s.materialUnloadQty ??
-              s.unloadQty ??
-              s.unload ??
-              0
-          ) || 0,
+
+        totalLoadedPack: Number(s.totalLoadedPack ?? s.TotalLoadedPack ?? 0) || 0,
+        totalUnloadedPack: Number(s.totalUnloadedPack ?? s.TotalUnloadedPack ?? 0) || 0,
       })),
     [rawStops]
   );
 
-  // derive display load/unload (first two = load, rest = unload)
   const derivedStops = useMemo(() => {
-    const out = [];
-    let totalLoaded = 0;
-    let totalUnloaded = 0;
     const sorted = [...stops].sort(
       (a, b) => (a.dateTime?.getTime() ?? 0) - (b.dateTime?.getTime() ?? 0)
     );
-    for (let i = 0; i < sorted.length; i++) {
-      const s = { ...sorted[i] };
-      const baseLoad = Number(s.materialLoad) || 0;
-      const baseUnload = Number(s.materialUnload) || 0;
-      let displayLoad = 0;
-      let displayUnload = 0;
-      if (i <= 1) {
-        displayLoad = baseLoad;
-        displayUnload = 0;
-      } else {
-        if (baseUnload > 0) displayUnload = baseUnload;
-        else displayUnload = Math.max(0, totalLoaded - totalUnloaded);
-        displayLoad = 0;
-      }
-      totalLoaded += displayLoad;
-      totalUnloaded += displayUnload;
-      out.push({ ...s, displayLoad, displayUnload });
-    }
-    return out;
-  }, [stops]);
+    return sorted.map((s) => ({
+      ...s,
+      displayLoad: s.totalLoadedPack,
+      displayUnload: s.totalUnloadedPack,
+      isReturnLocation: returnLocSet.has(String(s.locid || "")),
+    }));
+  }, [stops, returnLocSet]);
 
-  // reportedMap seeded from FinalInfo.event
-  // shape: { stopKey: { arrival: true, departure: true, pod: true, items: true } }
+  // ======================
+  // reportedMap:
+  // { stopKey: { items?:true, arrival?:true, departure?:true, pod?:true,
+  //              arrivalAt?:ms, departureAt?:ms, podAt?:ms } }
+  // ======================
   const [reportedMap, setReportedMap] = useState(() => {
     const m = {};
     derivedStops.forEach((s) => {
@@ -225,13 +265,9 @@ export default function RouteTimeline({
       const seq = allowedSequenceForStop(s);
       let flags = {};
 
-      if (ev.includes("DEPART")) {
-        flags = computeFlagsUpTo(seq, "departure");
-      } else if (ev.includes("POD")) {
-        flags = computeFlagsUpTo(seq, "pod");
-      } else if (ev.includes("ARRIV")) {
-        flags = computeFlagsUpTo(seq, "arrival");
-      }
+      if (ev.includes("DEPART")) flags = computeFlagsUpTo(seq, "departure");
+      else if (ev.includes("POD")) flags = computeFlagsUpTo(seq, "pod");
+      else if (ev.includes("ARRIV")) flags = computeFlagsUpTo(seq, "arrival");
 
       if (Object.keys(flags).length) {
         m[key] = { ...(m[key] || {}), ...flags };
@@ -240,12 +276,11 @@ export default function RouteTimeline({
     return m;
   });
 
-  // 🔹 When POD (or other event) is successfully completed via POD dialog,
-  // update reportedMap based on the backend Event ("POD").
+  // POD dialog callback updates map
   useEffect(() => {
     if (!podCompletedInfo) return;
 
-    const { event, stopId } = podCompletedInfo;
+    const { event, stopId, ts } = podCompletedInfo;
     if (!stopId) return;
 
     const ev = String(event || "").toUpperCase();
@@ -253,15 +288,13 @@ export default function RouteTimeline({
     if (ev.includes("ARRIV")) mapped = "arrival";
     else if (ev.includes("DEPART")) mapped = "departure";
     else if (ev.includes("POD")) mapped = "pod";
-
     if (!mapped) return;
 
     setReportedMap((prev) => {
       const copy = { ...prev };
 
-      // find matching stop by locid/stopid
       const matchingStop = derivedStops.find(
-        (s) => (s.locid || s.stopid || "").toString() === stopId.toString()
+        (s) => (s.stopid || "").toString() === stopId.toString()
       );
       if (!matchingStop) return prev;
 
@@ -269,18 +302,25 @@ export default function RouteTimeline({
       const seq = allowedSequenceForStop(matchingStop);
       const flags = computeFlagsUpTo(seq, mapped);
 
-      copy[key] = { ...(copy[key] || {}), ...flags };
+      const atKey =
+        mapped === "arrival" ? "arrivalAt" : mapped === "departure" ? "departureAt" : "podAt";
+
+      copy[key] = {
+        ...(copy[key] || {}),
+        ...flags,
+        [atKey]: Number.isFinite(Number(ts)) ? Number(ts) : copy[key]?.[atKey] ?? Date.now(),
+      };
       return copy;
     });
   }, [podCompletedInfo, derivedStops]);
 
-  // completedCount and progress (arrival OR departure closes a stop)
+  // progress
   const completedCount = useMemo(
     () =>
       derivedStops.reduce((acc, s) => {
         const key = getStopKey(s);
         const r = reportedMap[key] || {};
-        return acc + (r.arrival || r.departure ? 1 : 0);
+        return acc + (r.arrival || r.departure || r.pod ? 1 : 0);
       }, 0),
     [derivedStops, reportedMap]
   );
@@ -293,34 +333,35 @@ export default function RouteTimeline({
     if (typeof onAction === "function") onAction("progress", progressPercent);
   }, [progressPercent, onAction]);
 
-  // nextPendingIndex = first stop missing arrival or departure
+  // next pending stop = first stop without any reported event
   const nextPendingIndex = useMemo(() => {
     for (let i = 0; i < derivedStops.length; i++) {
       const s = derivedStops[i];
       const key = getStopKey(s);
       const r = reportedMap[key] || {};
-      if (!(r.arrival || r.departure)) return i;
+      if (!(r.arrival || r.departure || r.pod)) return i;
     }
     return derivedStops.length;
   }, [derivedStops, reportedMap]);
 
-  // map server Event string -> action key (used for ARRV/DEPT API)
+  // server Event string -> action key
   const mapServerEventToActionKey = (ev) => {
     if (!ev) return null;
     const e = String(ev).toUpperCase();
     if (e.includes("ARRIV")) return "arrival";
     if (e.includes("DEPART")) return "departure";
     if (e.includes("POD")) return "pod";
+    if (e.includes("RETURN")) return "return";
     return null;
   };
 
-  // POST event and update reportedMap ONLY when backend returns a valid Event
+  // POST event; sends StopId = stop.stopid
   const sendEventReport = async (networkActionCode, stop) => {
     const stopKey = getStopKey(stop);
     const payload = {
       FoId: FoId ?? selectedShipment.FoId,
       Action: networkActionCode,
-      StopId: stop.locid || stop.stopid || "",
+      StopId: stop.stopid || "",
     };
     const sendKey = `${stopKey}_${networkActionCode}`;
 
@@ -335,40 +376,51 @@ export default function RouteTimeline({
 
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        alert(
-          `Failed to report event — server returned ${res.status}: ${txt}`
-        );
+        alert(`Failed to report event — server returned ${res.status}: ${txt}`);
         return { ok: false };
       }
 
       let body = null;
       try {
         body = await res.json();
-      } catch (e) {
+      } catch {
         body = null;
       }
 
       const serverEvent =
-        body && (body.Event ?? body.event)
-          ? String(body.Event ?? body.event)
-          : null;
-      const mapped = mapServerEventToActionKey(serverEvent);
+        body && (body.Event ?? body.event) ? String(body.Event ?? body.event) : null;
 
+      const mapped = mapServerEventToActionKey(serverEvent);
       if (!mapped) {
         alert("Backend did not return a valid Event. Cannot move to next step.");
         return { ok: false, body };
       }
 
-      // mark all steps up to mapped event
+      // timestamp from server
+      const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
+      const atKey =
+        mapped === "arrival"
+          ? "arrivalAt"
+          : mapped === "departure"
+          ? "departureAt"
+          : mapped === "pod"
+          ? "podAt"
+          : null;
+
       setReportedMap((prev) => {
         const copy = { ...prev };
         const seq = allowedSequenceForStop(stop);
         const flags = computeFlagsUpTo(seq, mapped);
-        copy[stopKey] = { ...(copy[stopKey] || {}), ...flags };
+
+        copy[stopKey] = {
+          ...(copy[stopKey] || {}),
+          ...flags,
+          ...(atKey ? { [atKey]: serverTsMs } : {}),
+        };
         return copy;
       });
 
-      return { ok: true, body, mapped };
+      return { ok: true, body, mapped, ts: serverTsMs };
     } catch (err) {
       alert(`Failed to report event: ${err.message || err}`);
       return { ok: false, error: err };
@@ -381,7 +433,7 @@ export default function RouteTimeline({
     }
   };
 
-  // mark items as done when list successfully fetched
+  // items call unchanged
   const fetchItemsForStop = async (stop) => {
     setItemsStop(stop);
     setShowItems(true);
@@ -404,11 +456,7 @@ export default function RouteTimeline({
 
       const res = await fetch(url);
       if (!res.ok) {
-        console.error(
-          "shipmentItems call failed",
-          res.status,
-          res.statusText
-        );
+        console.error("shipmentItems call failed", res.status, res.statusText);
         setItemsStop((s) => ({ ...s, items: [] }));
         return;
       }
@@ -442,12 +490,11 @@ export default function RouteTimeline({
 
   const handleAction = async (actionKey) => {
     handleMenuClose();
+
     const stop = derivedStops.find((s) => getStopKey(s) === activeStopKey);
     if (!stop) return;
 
-    const stopIndex = derivedStops.findIndex(
-      (s) => getStopKey(s) === activeStopKey
-    );
+    const stopIndex = derivedStops.findIndex((s) => getStopKey(s) === activeStopKey);
 
     if (actionKey === "items") {
       await fetchItemsForStop(stop);
@@ -455,26 +502,27 @@ export default function RouteTimeline({
       return;
     }
 
-    // POD -> open POD dialog (actual POD posting happens there)
+    // POD opens dialog (posting happens in PodFlowDialog)
     if (actionKey === "pod") {
-      if (typeof onAction === "function") {
-        onAction("pod", { stop });
-      }
+      if (typeof onAction === "function") onAction("pod", { stop });
       return;
     }
 
-    // cross-stop rule (same as before)
+    // Return placeholder
+    if (actionKey === "return") {
+      alert("Return functionality will be added later. UI is ready.");
+      return;
+    }
+
+    // stop order enforcement
     const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
-    const allowedToAct =
-      stopIndex === nextPendingIndex || stopIndex === recentlyStartedIndex;
+    const allowedToAct = stopIndex === nextPendingIndex || stopIndex === recentlyStartedIndex;
     if (!allowedToAct) {
-      alert(
-        "Please report stops in order. Please report the next stop first."
-      );
+      alert("Please report stops in order. Please report the next stop first.");
       return;
     }
 
-    // per-stop sequence enforcement (strict one-by-one)
+    // per-stop sequence enforcement
     const seq = allowedSequenceForStop(stop);
     const key = getStopKey(stop);
     const reported = reportedMap[key] || {};
@@ -483,12 +531,11 @@ export default function RouteTimeline({
       alert("Action not available for this stop.");
       return;
     }
-    const priorActions = seq.slice(1, actionIndex); // skip 'items'
+
+    const priorActions = seq.slice(1, actionIndex);
     const priorAllReported = priorActions.every((pa) => Boolean(reported[pa]));
     if (!priorAllReported) {
-      alert(
-        "Please follow the event sequence for this stop. Report earlier events first."
-      );
+      alert("Please follow the event sequence for this stop. Report earlier events first.");
       return;
     }
 
@@ -496,7 +543,7 @@ export default function RouteTimeline({
       const code = actionKey === "arrival" ? "ARRV" : "DEPT";
       const r = await sendEventReport(code, stop);
       if (r.ok && typeof onAction === "function") {
-        onAction(actionKey, { stop, response: r.body });
+        onAction(actionKey, { stop, response: r.body, ts: r.ts });
       }
       return;
     }
@@ -504,29 +551,34 @@ export default function RouteTimeline({
     if (typeof onAction === "function") onAction(actionKey, stop);
   };
 
-  // ---- badge logic: prefer runtime reportedMap state ----
+  // Badge ONLY for reported events
   const badgeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
-    if (r.departure) return "Departure";
-    if (r.pod) return "POD";
-    if (r.arrival) return "Arrival";
+    if (r.pod) return "Delivered";
+    if (r.departure) return "Departed";
+    if (r.arrival) return "Arrived";
+    return "";
+  };
 
-    // fallback to original FinalInfo.event if present
-    const ev = (stop.eventRaw ?? "").toString().trim().toUpperCase();
-    if (ev) {
-      if (ev.includes("DEPART")) return "Departure";
-      if (ev.includes("ARRIV")) return "Arrival";
-      if (ev.includes("POD")) return "POD";
-      return ev;
-    }
+  // ✅ Color coding requested:
+  // - Every event => ORANGE
+  // - Departure only => GREEN
+  // - Not reached => BLUE
+  const colorForStop = (stop) => {
+    const key = getStopKey(stop);
+    const r = reportedMap[key] || {};
+    if (r.departure) return GREEN;              // departure wins
+    if (r.arrival || r.pod) return ORANGE;      // any other event
+    return BLUE;                                // none
+  };
 
-    // sequence fallback
-    if ((stop.stopseqpos || "").toUpperCase() === "F") return "Departure";
-    if ((stop.stopseqpos || "").toUpperCase() === "I") return "Arrival";
-    const idx = stop.idx;
-    if (idx >= derivedStops.length - 2) return "ETA";
-    return "Arrival";
+  // Actual reported time per stop (prefer departureAt, then podAt, then arrivalAt)
+  const actualReportedTimeForStop = (stop) => {
+    const key = getStopKey(stop);
+    const r = reportedMap[key] || {};
+    const ms = r.departureAt ?? r.podAt ?? r.arrivalAt ?? null;
+    return ms ? new Date(ms) : null;
   };
 
   if (showItems) {
@@ -540,7 +592,6 @@ export default function RouteTimeline({
     );
   }
 
-  // ----------------- render timeline UI -----------------
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -556,68 +607,57 @@ export default function RouteTimeline({
         {derivedStops.map((stop, idx) => {
           const key = getStopKey(stop);
           const reported = reportedMap[key] || {};
-          const isCompleted = Boolean(reported.arrival || reported.departure);
-          const color = isCompleted ? GREEN : BLUE;
+
           const badge = badgeForStop(stop);
+          const color = colorForStop(stop);
+
+          // ✅ check icon only for departure (green)
+          const departed = Boolean(reported.departure);
 
           const seq = allowedSequenceForStop(stop);
-          const allowPod = seq.includes("pod");
 
-          // build menu: items always; show remaining unreported actions
           const menuOptions = [
             { key: "items", label: "Items", Icon: Inventory2OutlinedIcon },
           ];
+
           if (seq.includes("arrival") && !reported.arrival)
-            menuOptions.push({
-              key: "arrival",
-              label: "Arrival",
-              Icon: EventAvailableIcon,
-            });
-          if (seq.includes("pod") && !reported.pod && allowPod)
-            menuOptions.push({
-              key: "pod",
-              label: "Proof of Delivery",
-              Icon: AssignmentTurnedInIcon,
-            });
+            menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
+
+          if (seq.includes("pod") && !reported.pod)
+            menuOptions.push({ key: "pod", label: "Proof of Delivery", Icon: AssignmentTurnedInIcon });
+
           if (seq.includes("departure") && !reported.departure)
-            menuOptions.push({
-              key: "departure",
-              label: "Departure",
-              Icon: LocalShippingIcon,
-            });
+            menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
 
-          // cross-stop enabling
-          const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
-          const allowedStopToAct =
-            idx === nextPendingIndex || idx === recentlyStartedIndex;
+          if (stop.isReturnLocation)
+            menuOptions.push({ key: "return", label: "Return (Coming soon)", Icon: ReplayRoundedIcon });
 
-          const plannedDate = stop.dateTime;
-          let actualDate = null;
-          let etaDate = null;
-          if (idx <= 1 && !actualDate && plannedDate)
-            actualDate = addMinutes(plannedDate, (idx + 1) * 5);
-          if (idx >= derivedStops.length - 2 && !etaDate && plannedDate)
-            etaDate = addMinutes(plannedDate, (idx + 1) * 10);
-          const plannedText = formatDateTime(plannedDate);
-          const actualText = formatDateTime(actualDate);
-          const etaText = formatDateTime(etaDate);
+          // planned datetime (UTC from backend -> local display)
+          const plannedText = formatDateTimeLocalWithTz(stop.dateTime);
+
+          // actual reported time
+          const actualReportedDate = actualReportedTimeForStop(stop);
+          const actualText = actualReportedDate ? formatDateTimeLocalWithTz(actualReportedDate) : "-";
+
+          // load/unload
+          const load = Number(stop.displayLoad || 0);
+          const unload = Number(stop.displayUnload || 0);
+
+          // border + shadow enhancement based on event color
 
           return (
             <div key={key} className="flex items-start mb-4 min-w-0">
+              {/* Left icon column */}
               <div className="flex flex-col items-center mr-3 w-10 flex-shrink-0">
                 <div
                   className="h-9 w-9 rounded-full border-2 flex items-center justify-center"
                   style={{
                     borderColor: color,
-                    backgroundColor: isCompleted ? color : CARD,
+                    backgroundColor: departed ? color : CARD,
                   }}
                 >
-                  {isCompleted ? (
-                    <CheckCircleOutlineIcon
-                      sx={{ fontSize: 16, color: "#ffffff" }}
-                    />
-                  ) : stop.stopseqpos === "F" ? (
-                    <LocalShippingIcon sx={{ fontSize: 18, color }} />
+                  {departed ? (
+                    <CheckCircleOutlineIcon sx={{ fontSize: 16, color: "#ffffff" }} />
                   ) : (
                     <LocationOnIcon sx={{ fontSize: 18, color }} />
                   )}
@@ -628,14 +668,14 @@ export default function RouteTimeline({
                     style={{
                       width: 2,
                       flex: 1,
-                      background:
-                        "linear-gradient(to bottom, #e2e8f0, transparent)",
+                      background: "linear-gradient(to bottom, #e2e8f0, transparent)",
                       marginTop: 8,
                     }}
                   />
                 )}
               </div>
 
+              {/* Stop card */}
               <div
                 className="flex-1 rounded-2xl p-4 border min-w-0"
                 style={{
@@ -646,121 +686,48 @@ export default function RouteTimeline({
                   overflow: "visible",
                 }}
               >
+                {/* Left accent bar to match event color */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: 12,
+                    bottom: 12,
+                    width: 4,
+                    borderRadius: 4,
+                    backgroundColor: badge ? color : "transparent",
+                    opacity: badge ? 0.95 : 0,
+                  }}
+                />
+
                 <div style={{ paddingRight: 72, minWidth: 0 }}>
-                  <p
-                    className="text-sm font-semibold"
-                    style={{ color: TEXT_PRIMARY }}
-                  >
+                  <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>
                     {stop.name1
                       ? `${stop.name1} (${stop.locid || stop.stopid || "-"})`
                       : `${stop.locid || stop.stopid || "-"}`}
                   </p>
 
-                  {idx <= 1 ? (
-                    <>
-                      <p
-                        className="text-[12px] mt-1"
-                        style={{ color: TEXT_SECONDARY }}
-                      >
-                        Actual Reported At
-                      </p>
-                      <p
-                        className="text-[12px] mt-0"
-                        style={{
-                          color: TEXT_SECONDARY,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {actualText}
-                      </p>
+                  <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY }}>
+                    Actual Reported At
+                  </p>
+                  <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>
+                    {actualText}
+                  </p>
 
-                      <p
-                        className="text-[12px] mt-2"
-                        style={{ color: TEXT_SECONDARY }}
-                      >
-                        Planned Arrival
-                      </p>
-                      <p
-                        className="text-[12px] mt-0"
-                        style={{
-                          color: TEXT_SECONDARY,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {plannedText}
-                      </p>
-                    </>
-                  ) : idx >= derivedStops.length - 2 ? (
-                    <>
-                      <p
-                        className="text-[12px] mt-1"
-                        style={{ color: TEXT_SECONDARY }}
-                      >
-                        Planned Arrival
-                      </p>
-                      <p
-                        className="text-[12px] mt-0"
-                        style={{
-                          color: TEXT_SECONDARY,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {plannedText}
-                      </p>
+                  <p className="text-[12px] mt-2" style={{ color: TEXT_SECONDARY }}>
+                    Planned Arrival
+                  </p>
+                  <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>
+                    {plannedText}
+                  </p>
 
-                      <p
-                        className="text-[12px] mt-2"
-                        style={{ color: TEXT_SECONDARY }}
-                      >
-                        Estimated Arrival
-                      </p>
-                      <p
-                        className="text-[12px] mt-0"
-                        style={{
-                          color: TEXT_SECONDARY,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {etaText}
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <p
-                        className="text-[12px] mt-1"
-                        style={{ color: TEXT_SECONDARY }}
-                      >
-                        Planned Arrival
-                      </p>
-                      <p
-                        className="text-[12px] mt-0"
-                        style={{
-                          color: TEXT_SECONDARY,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {plannedText}
-                      </p>
-                    </>
-                  )}
-
-                  <div
-                    style={{
-                      marginTop: 8,
-                      color: TEXT_SECONDARY,
-                      fontSize: 13,
-                    }}
-                  >
-                    {idx <= 1 ? (
-                      <div>
-                        Material Load :{" "}
-                        {stop.displayLoad ?? stop.materialLoad} Packages
-                      </div>
+                  <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13 }}>
+                    {load > 0 ? (
+                      <div>Material Load : {load} Packages</div>
+                    ) : unload > 0 ? (
+                      <div>Material Unload : {unload} Packages</div>
                     ) : (
-                      <div>
-                        Material Unload :{" "}
-                        {stop.displayUnload ?? stop.materialUnload} Packages
-                      </div>
+                      <div>Material : —</div>
                     )}
                   </div>
 
@@ -773,27 +740,14 @@ export default function RouteTimeline({
                       backgroundColor: "#eaf4ff",
                       borderRadius: 1.5,
                       padding: "10px 12px",
-                      borderLeft: `4px solid ${color}`,
+                      borderLeft: `4px solid ${badge ? color : BLUE}`,
                       width: "100%",
                       boxSizing: "border-box",
                     }}
                   >
-                    <LocationOnIcon
-                      sx={{
-                        fontSize: 18,
-                        color,
-                        marginTop: "2px",
-                        flexShrink: 0,
-                      }}
-                    />
+                    <LocationOnIcon sx={{ fontSize: 18, color: badge ? color : BLUE, marginTop: "2px", flexShrink: 0 }} />
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <Typography
-                        variant="caption"
-                        sx={{
-                          color: TEXT_SECONDARY,
-                          display: "block",
-                        }}
-                      >
+                      <Typography variant="caption" sx={{ color: TEXT_SECONDARY, display: "block" }}>
                         Address
                       </Typography>
                       <Typography
@@ -813,7 +767,7 @@ export default function RouteTimeline({
                   </Box>
                 </div>
 
-                {/* badge + menu */}
+                {/* Badge + menu */}
                 <div
                   style={{
                     position: "absolute",
@@ -826,18 +780,42 @@ export default function RouteTimeline({
                     pointerEvents: "none",
                   }}
                 >
-                  <div style={{ pointerEvents: "auto" }}>
-                    <span
-                      className="px-2 py-1 rounded-full text-[10px] font-semibold"
-                      style={{
-                        backgroundColor: `${color}15`,
-                        color,
-                        display: "inline-block",
-                      }}
-                    >
-                      {badge}
-                    </span>
+                  <div
+                    style={{
+                      pointerEvents: "auto",
+                      display: "flex",
+                      gap: 6,
+                      flexWrap: "wrap",
+                      justifyContent: "flex-end",
+                    }}
+                  >
+                    {badge ? (
+                      <span
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold"
+                        style={{
+                          backgroundColor: `${color}15`,
+                          color,
+                          display: "inline-block",
+                        }}
+                      >
+                        {badge}
+                      </span>
+                    ) : null}
+
+                    {stop.isReturnLocation ? (
+                      <span
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold"
+                        style={{
+                          backgroundColor: "rgba(0,0,0,0.05)",
+                          color: TEXT_PRIMARY,
+                          display: "inline-block",
+                        }}
+                      >
+                        Return
+                      </span>
+                    ) : null}
                   </div>
+
                   <div style={{ pointerEvents: "auto" }}>
                     <IconButton
                       size="small"
@@ -849,9 +827,7 @@ export default function RouteTimeline({
                         "&:hover": { bgcolor: "#f0f0f0" },
                       }}
                     >
-                      <MoreVertIcon
-                        sx={{ fontSize: 18, color: "#6b6c6e" }}
-                      />
+                      <MoreVertIcon sx={{ fontSize: 18, color: "#6b6c6e" }} />
                     </IconButton>
                   </div>
                 </div>
@@ -862,17 +838,11 @@ export default function RouteTimeline({
                 anchorEl={anchorEl}
                 open={menuOpen && activeStopKey === key}
                 onClose={handleMenuClose}
-                anchorOrigin={{
-                  vertical: "bottom",
-                  horizontal: "right",
-                }}
-                transformOrigin={{
-                  vertical: "top",
-                  horizontal: "right",
-                }}
+                anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+                transformOrigin={{ vertical: "top", horizontal: "right" }}
                 PaperProps={{
                   sx: {
-                    minWidth: 160,
+                    minWidth: 180,
                     p: 0.5,
                     borderRadius: 2,
                     boxShadow: "0 8px 24px rgba(16,24,40,0.12)",
@@ -885,17 +855,9 @@ export default function RouteTimeline({
                   },
                 }}
               >
-                <Box
-                  sx={{
-                    px: 1.25,
-                    py: 0.75,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                  }}
-                >
+                <Box sx={{ px: 1.25, py: 0.75, display: "flex", alignItems: "center", gap: 1 }}>
                   <Chip
-                    label={badge}
+                    label={badge || "—"}
                     size="small"
                     sx={{
                       backgroundColor: `${color}20`,
@@ -905,10 +867,7 @@ export default function RouteTimeline({
                       borderRadius: 1,
                     }}
                   />
-                  <Typography
-                    variant="body2"
-                    sx={{ color: TEXT_SECONDARY, fontSize: 13 }}
-                  >
+                  <Typography variant="body2" sx={{ color: TEXT_SECONDARY, fontSize: 13 }}>
                     Actions
                   </Typography>
                 </Box>
@@ -916,6 +875,7 @@ export default function RouteTimeline({
 
                 {menuOptions.map((opt) => {
                   const Icon = opt.Icon;
+
                   const codeForNetwork =
                     opt.key === "arrival"
                       ? "ARRV"
@@ -923,26 +883,27 @@ export default function RouteTimeline({
                       ? "DEPT"
                       : opt.key === "pod"
                       ? "POD"
+                      : opt.key === "return"
+                      ? "RETURN"
                       : null;
-                  const isSending = Boolean(
-                    sending[`${key}_${codeForNetwork ?? opt.key}`]
-                  );
 
+                  const isSending = Boolean(sending[`${key}_${codeForNetwork ?? opt.key}`]);
+
+                  // sequence enable logic
                   const reportedForStop = reportedMap[key] || {};
                   const seqForStop = allowedSequenceForStop(stop);
                   const idxOfThisAction = seqForStop.indexOf(opt.key);
-                  const priorActions = seqForStop.slice(
-                    1,
-                    Math.max(1, idxOfThisAction)
-                  ); // actions before this one, skip 'items'
-                  const priorAllReported = priorActions.every((pa) =>
-                    Boolean(reportedForStop[pa])
-                  );
+
+                  const priorActions = seqForStop.slice(1, Math.max(1, idxOfThisAction));
+                  const priorAllReported = priorActions.every((pa) => Boolean(reportedForStop[pa]));
+
                   const allowedStop =
-                    idx === nextPendingIndex ||
-                    idx === Math.max(0, nextPendingIndex - 1);
+                    idx === nextPendingIndex || idx === Math.max(0, nextPendingIndex - 1);
+
                   const enabled =
                     opt.key === "items"
+                      ? true
+                      : opt.key === "return"
                       ? true
                       : allowedStop && priorAllReported;
 
@@ -951,9 +912,7 @@ export default function RouteTimeline({
                       key={opt.key}
                       onClick={() => {
                         if (!enabled) {
-                          alert(
-                            "Please follow the reporting sequence. This action is not yet available."
-                          );
+                          alert("Please follow the reporting sequence. This action is not yet available.");
                           return;
                         }
                         handleAction(opt.key);
@@ -964,28 +923,11 @@ export default function RouteTimeline({
                         <Icon fontSize="small" sx={{ color: PRIMARY }} />
                       </ListItemIcon>
                       <ListItemText
-                        primary={
-                          <Typography
-                            variant="body2"
-                            sx={{ fontWeight: 600 }}
-                          >
-                            {opt.label}
-                          </Typography>
-                        }
+                        primary={<Typography variant="body2" sx={{ fontWeight: 600 }}>{opt.label}</Typography>}
                         secondary={
                           isSending ? (
-                            <Typography
-                              variant="caption"
-                              sx={{ color: TEXT_SECONDARY }}
-                            >
+                            <Typography variant="caption" sx={{ color: TEXT_SECONDARY }}>
                               Sending…
-                            </Typography>
-                          ) : opt.key === "pod" ? (
-                            <Typography
-                              variant="caption"
-                              sx={{ color: TEXT_SECONDARY }}
-                            >
-                              Record POD
                             </Typography>
                           ) : null
                         }

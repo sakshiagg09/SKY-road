@@ -3,7 +3,7 @@ import { useEffect, useState, useRef } from "react";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
-import DocumentScannerRoundedIcon from "@mui/icons-material/DocumentScannerRounded"; // ✅ NEW
+import DocumentScannerRoundedIcon from "@mui/icons-material/DocumentScannerRounded";
 import { LinearProgress } from "@mui/material";
 import { apiGet } from "../auth/api";
 
@@ -23,7 +23,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
   const [apiError, setApiError] = useState("");
   const [showScanner, setShowScanner] = useState(false);
 
-  // ✅ hidden input for OCR image capture
+  // hidden input for OCR image capture
   const licenseFileRef = useRef(null);
 
   const ICON_KEY_DEFAULT = "truck";
@@ -75,17 +75,34 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
-  // --- API: trackingDetails now requires FoId + DriverLicense ----------
- async function loadTrackingDetails(trackingId, licenseNumber) {
-  const filter = `FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`;
-  const data = await apiGet(
-    `/odata/v4/GTT/trackingDetails?$filter=${encodeURIComponent(filter)}`
-  );
-  console.log("trackingDetails payload:", JSON.stringify(data));
-  return data;
-}
+  // ✅ NEW: parse ReturnInfo -> array of locIds
+  const parseReturnInfoLocIds = (returnInfoValue) => {
+    if (!returnInfoValue) return [];
+    try {
+      const arr =
+        typeof returnInfoValue === "string" ? JSON.parse(returnInfoValue) : returnInfoValue;
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .map((x) => x?.locId || x?.locid || x?.Location || x?.location)
+        .filter(Boolean)
+        .map(String);
+    } catch (e) {
+      console.error("Failed to parse ReturnInfo:", e, returnInfoValue);
+      return [];
+    }
+  };
 
-  // ✅ OCR call (CAP action) – returns { licenseNumber, confidence }
+  // --- API: trackingDetails requires FoId + DriverLicense ----------
+  async function loadTrackingDetails(trackingId, licenseNumber) {
+    const filter = `FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`;
+    const data = await apiGet(
+      `/odata/v4/GTT/trackingDetails?$filter=${encodeURIComponent(filter)}`
+    );
+    console.log("trackingDetails payload:", JSON.stringify(data));
+    return data;
+  }
+
+  // OCR call (CAP action) – returns { licenseNumber, confidence }
   async function extractLicenseNumberFromImage(base64) {
     const res = await fetch("/odata/v4/GTT/extractLicenseNumber", {
       method: "POST",
@@ -99,7 +116,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     return await res.json();
   }
 
-  // ✅ file -> base64 (without data:image/... prefix)
+  // file -> base64 (without data:image/... prefix)
   const fileToBase64 = (file) =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -112,16 +129,14 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
       reader.readAsDataURL(file);
     });
 
-  // ✅ click OCR icon
   const handleLicenseOcrClick = () => {
     setApiError("");
     if (licenseFileRef.current) licenseFileRef.current.click();
   };
 
-  // ✅ when user selects / captures image
   const handleLicenseFilePicked = async (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ""; // allow same file again next time
+    e.target.value = "";
     if (!file) return;
 
     try {
@@ -153,7 +168,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
-  // update recent list — now also stores licenseNumber
+  // update recent list — stores licenseNumber
   const addToRecent = (entry) => {
     try {
       const raw = localStorage.getItem("sr_recent_shipments");
@@ -209,6 +224,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
       }
 
       const stops = parseFinalInfo(first.FinalInfo);
+      const returnLocIds = parseReturnInfoLocIds(first.ReturnInfo); // ✅ NEW
 
       const shipmentPayload = {
         FoId: first.FoId || fo,
@@ -217,6 +233,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         latitude: first.Latitude,
         longitude: first.Longitude,
         licenseNumber: license,
+        returnLocIds, // ✅ NEW: passed to RouteTimeline
       };
 
       const recentEntry = {
@@ -268,7 +285,10 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         setApiError("No shipment found for this FO + License combination.");
         return;
       }
+
       const stops = parseFinalInfo(first?.FinalInfo);
+      const returnLocIds = parseReturnInfoLocIds(first?.ReturnInfo); // ✅ NEW
+
       const shipmentPayload = {
         FoId: first?.FoId || s.id,
         raw: first,
@@ -276,7 +296,9 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         latitude: first.Latitude,
         longitude: first.Longitude,
         licenseNumber: s.licenseNumber,
+        returnLocIds, // ✅ NEW
       };
+
       setSelectedShipment(shipmentPayload);
       setActiveTab("track");
     } catch (e) {
@@ -342,7 +364,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
           )}
         </div>
 
-        {/* LICENSE INPUT + ✅ OCR ICON */}
+        {/* LICENSE INPUT + OCR ICON */}
         <div
           className="flex items-center rounded-full px-4 py-3"
           style={{
@@ -361,7 +383,6 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           />
 
-          {/* ✅ OCR scan icon */}
           <button
             onClick={handleLicenseOcrClick}
             disabled={loading}
@@ -377,7 +398,6 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
             <DocumentScannerRoundedIcon sx={{ color: "#1976D2", fontSize: 20 }} />
           </button>
 
-          {/* ✅ hidden file input */}
           <input
             ref={licenseFileRef}
             type="file"
@@ -412,7 +432,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
       )}
 
       {/* RECENT */}
-      <div className="w-full px-4 mt-4 text.center">
+      <div className="w-full px-4 mt-4 text-center">
         <p className="text-[18px] font-bold" style={{ color: "#071e54" }}>
           Recent
         </p>
@@ -461,7 +481,6 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         </div>
       </div>
 
-      {/* FO BARCODE SCANNER */}
       <BarcodeScanner open={showScanner} onClose={() => setShowScanner(false)} onScan={handleScannedCode} />
     </div>
   );

@@ -161,6 +161,8 @@ module.exports = cds.service.impl(async function () {
       {
         FoId: row.FoId,
         DriverLicense: row.DriverLicense || driverLicense,
+        Message: row.Message,
+        ReturnInfo: row.ReturnInfo,
         FinalInfo: row.FinalInfo,
         DirectionsInfo: row.DirectionsInfo,
         StopInfo: row.StopInfo,
