@@ -3,22 +3,19 @@ import React, { useState } from "react";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
 import MapOutlinedIcon from "@mui/icons-material/MapOutlined";
-import { Menu, MenuItem, IconButton } from "@mui/material";
+import { Menu, MenuItem } from "@mui/material";
 
 const BAR_HEIGHT = 64;
 
-export default function BottomBar({ activeTab, setActiveTab, onReportClick }) {
-  // optional: small menu on Report to choose planned vs unplanned
+export default function BottomBar({ activeTab, setActiveTab, onReportClick, onMapClick }) {
   const [anchorEl, setAnchorEl] = useState(null);
   const menuOpen = Boolean(anchorEl);
 
   const handleReportMenuOpen = (e) => {
     if (typeof onReportClick !== "function") {
-      // fallback behaviour: route to alerts
       setActiveTab("alerts");
       return;
     }
-    // open a small menu so user can choose planned or unplanned
     setAnchorEl(e.currentTarget);
   };
 
@@ -26,7 +23,15 @@ export default function BottomBar({ activeTab, setActiveTab, onReportClick }) {
 
   const handleChooseReport = (mode) => {
     handleReportMenuClose();
-    onReportClick(mode); // e.g. "planned" or "unplanned"
+    onReportClick(mode);
+  };
+
+  const handleMapClick = () => {
+    // ✅ If map logic provided -> open native maps
+    if (typeof onMapClick === "function") return onMapClick();
+
+    // fallback: old behavior
+    setActiveTab("track");
   };
 
   return (
@@ -61,20 +66,30 @@ export default function BottomBar({ activeTab, setActiveTab, onReportClick }) {
           <span style={{ fontSize: 11, marginTop: 2 }}>Home</span>
         </button>
 
-        <div style={{ width: "33%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", marginTop: 12 }}>
+        <div
+          style={{
+            width: "33%",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            marginTop: 12,
+          }}
+        >
           <button
             className="flex flex-col items-center"
             style={{ color: activeTab === "track" ? "#1976D2" : "#6b6c6e" }}
-            onClick={() => setActiveTab("track")}
+            onClick={handleMapClick}
           >
             <MapOutlinedIcon sx={{ fontSize: 20 }} />
             <span style={{ fontSize: 11, marginTop: 2 }}>Map</span>
           </button>
 
-          <span style={{ fontSize: 10, color: "#9aa0ab", marginTop: 0, whiteSpace: "nowrap" }}>© NAV IT Consulting</span>
+          <span style={{ fontSize: 10, color: "#9aa0ab", marginTop: 0, whiteSpace: "nowrap" }}>
+            © NAV IT Consulting
+          </span>
         </div>
 
-        {/* REPORT - opens small menu to choose planned/unplanned (calls onReportClick(mode)) */}
         <div style={{ width: "33%", display: "flex", justifyContent: "center" }}>
           <button
             className="flex flex-col items-center"
@@ -86,7 +101,7 @@ export default function BottomBar({ activeTab, setActiveTab, onReportClick }) {
           </button>
 
           <Menu anchorEl={anchorEl} open={menuOpen} onClose={handleReportMenuClose}>
-            <MenuItem onClick={() => handleChooseReport("unplanned")}> Unplanned Event</MenuItem>
+            <MenuItem onClick={() => handleChooseReport("unplanned")}>Unplanned Event</MenuItem>
           </Menu>
         </div>
       </div>

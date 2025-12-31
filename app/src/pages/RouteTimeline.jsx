@@ -231,6 +231,9 @@ export default function RouteTimeline({
         region: s.region ?? "",
         country: s.country ?? "",
         eventRaw: (s.event ?? s.Event ?? "") || "",
+        // ✅ ADD THIS
+      latitude: s.Latitude ?? s.latitude ?? s.lat ?? null,
+      longitude: s.Longitude ?? s.longitude ?? s.lng ?? null,
 
         totalLoadedPack: Number(s.totalLoadedPack ?? s.TotalLoadedPack ?? 0) || 0,
         totalUnloadedPack: Number(s.totalUnloadedPack ?? s.TotalUnloadedPack ?? 0) || 0,
@@ -343,6 +346,14 @@ export default function RouteTimeline({
     }
     return derivedStops.length;
   }, [derivedStops, reportedMap]);
+
+useEffect(() => {
+  if (typeof onAction !== "function") return;
+
+  const nextStop = derivedStops[nextPendingIndex] || null;
+  onAction("nextStop", { stop: nextStop });
+}, [nextPendingIndex]);
+
 
   // server Event string -> action key
   const mapServerEventToActionKey = (ev) => {

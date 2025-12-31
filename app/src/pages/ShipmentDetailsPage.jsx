@@ -198,6 +198,11 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         setPodOpen(true);
       }
 
+      if (action === "nextStop") {
+        if (typeof onAction === "function") onAction("nextStop", payload);
+        return;
+      }
+
       // still bubble up to parent if they passed onAction
       if (typeof onAction === "function") onAction(action, payload);
     },
@@ -335,14 +340,6 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
             <span style={{ color: TEXT_SECONDARY }}>
               {stopsCount > 1 ? `${Math.max(0, stopsCount - 1)} legs` : "1 leg"}
             </span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <ScaleOutlinedIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            <span style={{ color: TEXT_SECONDARY }}>{raw?.TotalWeight || "—"} t</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <LocalMallOutlinedIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            <span style={{ color: TEXT_SECONDARY }}>{raw?.TotalPackages || "—"} packages</span>
           </div>
           <div className="flex items-center gap-1.5">
             <AccessTimeIcon sx={{ fontSize: 16, color: PRIMARY }} />

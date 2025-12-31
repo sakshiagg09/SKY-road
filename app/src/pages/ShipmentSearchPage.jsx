@@ -36,6 +36,29 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
+  // ✅ Detect "business error" payloads returned with 200 OK
+  const getTrackingError = (row) => {
+    if (!row) return "No shipment found. Please verify FO & License.";
+
+    const msg = String(row.Message || "").trim();
+    const fo = String(row.FoId || "").trim();
+    const finalInfo = row.FinalInfo;
+
+    // backend explicitly says invalid
+    if (msg && /invalid/i.test(msg)) return msg;
+
+    // FoId missing => error
+    if (!fo) return msg || "No shipment found for this FO + License combination.";
+
+    // FinalInfo empty => no stops => error
+    const finalStr = typeof finalInfo === "string" ? finalInfo.trim() : "";
+    if (!finalInfo || finalStr === "" || finalStr === "[]") {
+      return msg || "Shipment found but stop information is missing.";
+    }
+
+    return "";
+  };
+
   // load recent from localStorage on mount (and sanitize)
   useEffect(() => {
     try {
@@ -62,6 +85,12 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   }, []);
 
+  // ✅ Optional UX: clear error when user edits inputs
+  useEffect(() => {
+    if (apiError) setApiError("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackingInput, licenseInput]);
+
   // Helper: parse FinalInfo -> array of stops
   const parseFinalInfo = (finalInfoValue) => {
     if (!finalInfoValue) return [];
@@ -75,7 +104,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     }
   };
 
-  // ✅ NEW: parse ReturnInfo -> array of locIds
+  // ✅ parse ReturnInfo -> array of locIds
   const parseReturnInfoLocIds = (returnInfoValue) => {
     if (!returnInfoValue) return [];
     try {
@@ -95,9 +124,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
   // --- API: trackingDetails requires FoId + DriverLicense ----------
   async function loadTrackingDetails(trackingId, licenseNumber) {
     const filter = `FoId eq '${trackingId}' and DriverLicense eq '${licenseNumber}'`;
-    const data = await apiGet(
-      `/odata/v4/GTT/trackingDetails?$filter=${encodeURIComponent(filter)}`
-    );
+    const data = await apiGet(`/odata/v4/GTT/trackingDetails?$filter=${encodeURIComponent(filter)}`);
     console.log("trackingDetails payload:", JSON.stringify(data));
     return data;
   }
@@ -148,11 +175,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
 
       const out = await extractLicenseNumberFromImage(base64);
 
-      const lic =
-        out?.licenseNumber ||
-        out?.d?.licenseNumber ||
-        out?.value?.licenseNumber ||
-        "";
+      const lic = out?.licenseNumber || out?.d?.licenseNumber || out?.value?.licenseNumber || "";
 
       if (!lic) {
         setApiError("OCR could not detect License Number. Please try again.");
@@ -218,13 +241,21 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     try {
       const data = await loadTrackingDetails(fo, license);
       const first = data && Array.isArray(data.value) ? data.value[0] : data;
-      if (!first) {
-        setApiError("No shipment found for this FO + License combination.");
+
+      // ✅ NEW: handle business error response (FoId="" + Message)
+      const businessErr = getTrackingError(first);
+      if (businessErr) {
+        setApiError(businessErr);
         return;
       }
 
       const stops = parseFinalInfo(first.FinalInfo);
-      const returnLocIds = parseReturnInfoLocIds(first.ReturnInfo); // ✅ NEW
+      if (!Array.isArray(stops) || stops.length === 0) {
+        setApiError(first.Message || "No stops found for this shipment.");
+        return;
+      }
+
+      const returnLocIds = parseReturnInfoLocIds(first.ReturnInfo);
 
       const shipmentPayload = {
         FoId: first.FoId || fo,
@@ -233,7 +264,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         latitude: first.Latitude,
         longitude: first.Longitude,
         licenseNumber: license,
-        returnLocIds, // ✅ NEW: passed to RouteTimeline
+        returnLocIds,
       };
 
       const recentEntry = {
@@ -249,7 +280,6 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
       };
 
       addToRecent(recentEntry);
-
       setSelectedShipment(shipmentPayload);
       setActiveTab("track");
     } catch (err) {
@@ -281,13 +311,21 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
     try {
       const data = await loadTrackingDetails(s.id, s.licenseNumber);
       const first = data && Array.isArray(data.value) ? data.value[0] : data;
-      if (!first) {
-        setApiError("No shipment found for this FO + License combination.");
+
+      // ✅ NEW: handle business error response
+      const businessErr = getTrackingError(first);
+      if (businessErr) {
+        setApiError(businessErr);
         return;
       }
 
       const stops = parseFinalInfo(first?.FinalInfo);
-      const returnLocIds = parseReturnInfoLocIds(first?.ReturnInfo); // ✅ NEW
+      if (!Array.isArray(stops) || stops.length === 0) {
+        setApiError(first?.Message || "No stops found for this shipment.");
+        return;
+      }
+
+      const returnLocIds = parseReturnInfoLocIds(first?.ReturnInfo);
 
       const shipmentPayload = {
         FoId: first?.FoId || s.id,
@@ -296,7 +334,7 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         latitude: first.Latitude,
         longitude: first.Longitude,
         licenseNumber: s.licenseNumber,
-        returnLocIds, // ✅ NEW
+        returnLocIds,
       };
 
       setSelectedShipment(shipmentPayload);
@@ -416,7 +454,8 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
             className="h-9 px-4 flex items-center justify-center rounded-full text-white font-semibold text-[12px]"
             style={{
               background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 60%, #90CAF9 100%)",
-              boxShadow: "inset 1px 1px 3px rgba(255,255,255,0.2), inset -2px -2px 4px rgba(0,0,0,0.08)",
+              boxShadow:
+                "inset 1px 1px 3px rgba(255,255,255,0.2), inset -2px -2px 4px rgba(0,0,0,0.08)",
               opacity: loading || !trackingInput.trim() || !licenseInput.trim() ? 0.6 : 1,
             }}
           >
@@ -453,7 +492,10 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
               onClick={() => openFromRecent(s)}
             >
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full flex items-center justify-center" style={{ backgroundColor: s.color, color: "white" }}>
+                <div
+                  className="h-10 w-10 rounded-full flex items-center justify-center"
+                  style={{ backgroundColor: s.color, color: "white" }}
+                >
                   {renderIconForKey(s.iconKey)}
                 </div>
 
@@ -481,7 +523,11 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
         </div>
       </div>
 
-      <BarcodeScanner open={showScanner} onClose={() => setShowScanner(false)} onScan={handleScannedCode} />
+      <BarcodeScanner
+        open={showScanner}
+        onClose={() => setShowScanner(false)}
+        onScan={handleScannedCode}
+      />
     </div>
   );
 }
