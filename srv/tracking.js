@@ -2,8 +2,35 @@
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 const licenseOcr = require("./licenseOcrService"); // 👈 NEW
+const application  = process.env.EVENT_API_BASE
 
 const { UPSERT } = cds.ql;
+
+function getTarget() {
+  return (process.env.EVENT_TARGET || "TM").toUpperCase(); // TM | SKY_PLUS
+}
+
+function skyPlusBase() {
+  return (process.env.SKY_PLUS_BASE_URL || "http://localhost:5000").replace(/\/$/, "");
+}
+
+// Node 18+ has global fetch. If not, install node-fetch.
+async function postSkyPlus(path, payload) {
+  const url = `${skyPlusBase()}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`SKY+ POST failed (${res.status}): ${txt}`);
+  }
+
+  // expect JSON response same shape as TM (Event, Timestamp, StopId, FoId...)
+  return await res.json().catch(() => ({}));
+}
 
 // Robust extraction of $filter values from CAP query AST
 function getFilterVal(req, prop) {
@@ -215,23 +242,29 @@ module.exports = cds.service.impl(async function () {
   // CREATE handlers (unchanged)
   // ---------------------------------------------------------------------------
   this.on("CREATE", eventReporting, async (req) => {
-    // IMPORTANT: use your real entity set name
-    return await s4Post("/EventsReportingSet", req.data);
-  });
+  if (getTarget() === "SKY_PLUS") {
+    return await postSkyPlus("/api/events", req.data);
+  }
+  return await s4Post("/EventsReportingSet", req.data);
+});
 
-  this.on("CREATE", updatesPOD, async (req) => {
-    // IMPORTANT: use your real entity set name
-    return await s4Post("/ProofOfDeliverySet", req.data);
-  });
+ this.on("CREATE", updatesPOD, async (req) => {
+  if (getTarget() === "SKY_PLUS") {
+    return await postSkyPlus("/api/pod", req.data); // change path if your sky+ uses different route
+  }
+  return await s4Post("/ProofOfDeliverySet", req.data);
+});
 
   this.on("CREATE", attachmentUpload, async (req) => {
-    // Forward to S/4 AttachmentsSet
-    return await s4Post("/AttachmentsSet", req.data);
-  });
+  return await s4Post("/AttachmentsSet", req.data);
+});
 
   this.on("CREATE", delayEvents, async (req) => {
-    return await s4Post("/DelaySet", req.data);
-  });
+  if (getTarget() === "SKY_PLUS") {
+    return await postSkyPlus("/api/delay", req.data); // change path if needed
+  }
+  return await s4Post("/DelaySet", req.data);
+});
 
   this.on("READ", delayEvents, async (req) => {
     const data = await s4Get("/DelaySet");

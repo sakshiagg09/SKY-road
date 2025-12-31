@@ -598,9 +598,6 @@ export default function RouteTimeline({
         <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>
           Route timeline
         </p>
-        <p className="text-[11px]" style={{ color: PRIMARY }}>
-          View on map ▸
-        </p>
       </div>
 
       <div className="mt-2">
