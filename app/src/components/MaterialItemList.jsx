@@ -252,7 +252,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
                       }
                     >
                       {item.packageId
-                        ? `Id:${item.packageId} (${item.name})`
+                        ? `Pkg Id:${item.packageId} (${item.name})`
                         : item.name}
                     </Typography>
                   </Box>

@@ -36,7 +36,16 @@ import MaterialItemList from "../components/MaterialItemList";
  *    - Not reached => BLUE
  * ✅ Card border color and left accent bar follow event color (orange/green)
  * ✅ totalLoadedPack/totalUnloadedPack drive Material Load/Unload
- * ✅ Return action appears if selectedShipment.returnLocIds contains stop.locid (logic only, action later)
+ * ✅ Return action appears if ReturnInfo exists -> show Return on sourceLoc (not destLoc)
+ *
+ * ✅ FIXES ADDED NOW:
+ * 1) STRICT stop order: cannot report later stop until current stop is COMPLETE (based on last action in its sequence)
+ * 2) Persist Actual Reported Time after re-search:
+ *    - Use stop.actDateTime from backend to initialize reported timestamps (arrivalAt/departureAt/podAt)
+ *    - Also fallback to stop.actDateTime when reportedMap timestamps are missing
+ * 3) Return mapping:
+ *    - Parse selectedShipment.raw.ReturnInfo and/or selectedShipment.returnLocIds
+ *    - Mark stop as Return if stop.locid matches sourceLoc (or sourceLocId) entries
  */
 export default function RouteTimeline({
   selectedShipment,
@@ -49,9 +58,9 @@ export default function RouteTimeline({
   const TEXT_PRIMARY = "#071E54";
   const TEXT_SECONDARY = "#6B6C6E";
 
-  const BLUE = "#42A5F5";     // not reached
-  const ORANGE = "#ED6C02";   // any event
-  const GREEN = "#2E7D32";    // departure only
+  const BLUE = "#42A5F5"; // not reached
+  const ORANGE = "#ED6C02"; // any event
+  const GREEN = "#2E7D32"; // departure only
 
   // menu state
   const [anchorEl, setAnchorEl] = useState(null);
@@ -78,11 +87,7 @@ export default function RouteTimeline({
     );
   }
 
-  const { stops: rawStops = [], FoId, returnLocIds = [] } = selectedShipment;
-  const returnLocSet = useMemo(
-    () => new Set((returnLocIds || []).map((x) => String(x))),
-    [returnLocIds]
-  );
+  const { stops: rawStops = [], FoId, returnLocIds = [], raw = {} } = selectedShipment;
 
   // ======================
   // Date/time helpers
@@ -91,46 +96,54 @@ export default function RouteTimeline({
   // Parse SAP UTC datetime:
   // - if 14 digits: YYYYMMDDHHmmss (UTC)
   // - interpret as UTC (Date.UTC), then display in device timezone
-  const parseSapUtcDateTimeToDate = (dt) => {
-    if (dt === null || typeof dt === "undefined") return null;
-    const s = String(dt).trim();
+const parseSapUtcDateTimeToDate = (dt) => {
+  if (dt === null || typeof dt === "undefined") return null;
 
-    if (/^\d{14}$/.test(s)) {
-      const yyyy = Number(s.slice(0, 4));
-      const mm = Number(s.slice(4, 6));
-      const dd = Number(s.slice(6, 8));
-      const hh = Number(s.slice(8, 10));
-      const min = Number(s.slice(10, 12));
-      const ss = Number(s.slice(12, 14));
-      const d = new Date(Date.UTC(yyyy, mm - 1, dd, hh, min, ss));
-      return isNaN(d) ? null : d;
-    }
+  // ✅ handle backend "0" / 0 meaning "not reported"
+  if (dt === 0) return null;
 
-    const maybe = new Date(s);
-    return isNaN(maybe) ? null : maybe;
-  };
+  const s = String(dt).trim();
+  if (!s || s === "0") return null;
+
+  if (/^\d{14}$/.test(s)) {
+    const yyyy = Number(s.slice(0, 4));
+    const mm = Number(s.slice(4, 6));
+    const dd = Number(s.slice(6, 8));
+    const hh = Number(s.slice(8, 10));
+    const min = Number(s.slice(10, 12));
+    const ss = Number(s.slice(12, 14));
+
+    // ✅ guard against weird zeros like 00000000000000
+    if (!yyyy || !mm || !dd) return null;
+
+    const d = new Date(Date.UTC(yyyy, mm - 1, dd, hh, min, ss));
+    return isNaN(d) ? null : d;
+  }
+
+  const maybe = new Date(s);
+  return isNaN(maybe) ? null : maybe;
+};
+
 
   // Display with device timezone + timezone abbreviation
-  const formatDateTimeLocalWithTz = (d) => {
-    if (!d) return "-";
-    return d.toLocaleString(undefined, {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      timeZoneName: "short",
-    });
-  };
+  const formatDateTimeLocal = (d) => {
+  if (!d) return "-";
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true, // ✅ AM/PM
+  });
+};
 
   const buildAddress = (s) => {
     if (!s) return "-";
     const parts = [];
     if (s.street) parts.push(s.street);
-    const cityLine = [s.postCode1 ?? s.postCode, s.city1 ?? s.city]
-      .filter(Boolean)
-      .join(" ");
+    const cityLine = [s.postCode1 ?? s.postCode, s.city1 ?? s.city].filter(Boolean).join(" ");
     if (cityLine) parts.push(cityLine);
     const regionCountry = [s.region, s.country].filter(Boolean).join(", ");
     if (regionCountry) parts.push(regionCountry);
@@ -138,6 +151,35 @@ export default function RouteTimeline({
   };
 
   const getStopKey = (s) => s.stopid || s.locid || String(s.idx);
+
+  // ======================
+  // ReturnInfo parsing (sourceLoc based)
+  // ======================
+  const parseReturnSourceLocs = (returnInfoValue) => {
+    if (!returnInfoValue) return [];
+    try {
+      const arr =
+        typeof returnInfoValue === "string" ? JSON.parse(returnInfoValue) : returnInfoValue;
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .map((x) => x?.sourceLoc || x?.sourceLocId || x?.source || x?.SourceLoc || x?.SOURCELOC)
+        .filter(Boolean)
+        .map(String);
+    } catch (e) {
+      console.warn("Failed to parse ReturnInfo in RouteTimeline:", e, returnInfoValue);
+      return [];
+    }
+  };
+
+  // Build return loc set:
+  // - keep backward compatibility with returnLocIds (if already passed)
+  // - add parsed sourceLocs from raw.ReturnInfo (new payload)
+  const returnLocSet = useMemo(() => {
+    const base = new Set((returnLocIds || []).map((x) => String(x)));
+    const fromRaw = parseReturnSourceLocs(raw?.ReturnInfo);
+    fromRaw.forEach((x) => base.add(String(x)));
+    return base;
+  }, [returnLocIds, raw?.ReturnInfo]);
 
   // ======================
   // Sequence helpers
@@ -155,28 +197,30 @@ export default function RouteTimeline({
   };
 
   const allowedSequenceForStop = (stop) => {
-  const seq = (stop.stopseqpos || "").toUpperCase();
-  const role = getLocationRole(stop);
+    const seq = (stop.stopseqpos || "").toUpperCase();
+    const role = getLocationRole(stop);
 
-  // helper: last stop = no departure
-  const isLastStop = (() => {
-    const last = derivedStops[derivedStops.length - 1];
-    return last && String(getStopKey(last)) === String(getStopKey(stop));
-  })();
+    // helper: last stop = no departure
+    const isLastStop = (() => {
+      const last = derivedStops[derivedStops.length - 1];
+      return last && String(getStopKey(last)) === String(getStopKey(stop));
+    })();
 
-  // If stopseqpos empty (new payload), use role + last-stop rule:
-  if (!seq) {
-    if (role === "ship") return ["items", "departure"]; // load point
-    if (role === "drop") return isLastStop  ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
-    return isLastStop ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
-  }
+    // If stopseqpos empty (new payload), use role + last-stop rule:
+    if (!seq) {
+      if (role === "ship") return ["items", "departure"]; // load point
+      if (role === "drop")
+        return isLastStop ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
+      return isLastStop ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
+    }
 
-  // fallback for older payloads
-  if (seq === "F") return ["items", "departure"];
-  if (seq === "I") return ["items", "arrival", "pod", "departure"];
-  if (seq === "L") return ["items", "arrival", "pod"];
-  return ["items", "arrival", "pod", "departure"];
-};
+    // fallback for older payloads
+    if (seq === "F") return ["items", "departure"];
+    if (seq === "I") return ["items", "arrival", "pod", "departure"];
+    if (seq === "L") return ["items", "arrival", "pod"];
+    return ["items", "arrival", "pod", "departure"];
+  };
+
   const computeFlagsUpTo = (seq, lastKey) => {
     const idx = seq.indexOf(lastKey);
     if (idx === -1) return {};
@@ -231,10 +275,10 @@ export default function RouteTimeline({
         region: s.region ?? "",
         country: s.country ?? "",
         eventRaw: (s.event ?? s.Event ?? "") || "",
-        // ✅ ADD THIS
-      latitude: s.Latitude ?? s.latitude ?? s.lat ?? null,
-      longitude: s.Longitude ?? s.longitude ?? s.lng ?? null,
-
+        latitude: s.Latitude ?? s.latitude ?? s.lat ?? null,
+        longitude: s.Longitude ?? s.longitude ?? s.lng ?? null,
+        // ✅ NEW: persist actual-reported time from backend
+        actDateTime: parseSapUtcDateTimeToDate(s.actDateTime ?? s.ActDateTime ?? null),
         totalLoadedPack: Number(s.totalLoadedPack ?? s.TotalLoadedPack ?? 0) || 0,
         totalUnloadedPack: Number(s.totalUnloadedPack ?? s.TotalUnloadedPack ?? 0) || 0,
       })),
@@ -249,6 +293,7 @@ export default function RouteTimeline({
       ...s,
       displayLoad: s.totalLoadedPack,
       displayUnload: s.totalUnloadedPack,
+      // ✅ Return shown on sourceLoc: stop.locid must match sourceLoc set
       isReturnLocation: returnLocSet.has(String(s.locid || "")),
     }));
   }, [stops, returnLocSet]);
@@ -267,17 +312,42 @@ export default function RouteTimeline({
 
       const seq = allowedSequenceForStop(s);
       let flags = {};
+      let lastKey = null;
 
-      if (ev.includes("DEPART")) flags = computeFlagsUpTo(seq, "departure");
-      else if (ev.includes("POD")) flags = computeFlagsUpTo(seq, "pod");
-      else if (ev.includes("ARRIV")) flags = computeFlagsUpTo(seq, "arrival");
+      if (ev.includes("DEPART")) {
+        lastKey = "departure";
+        flags = computeFlagsUpTo(seq, "departure");
+      } else if (ev.includes("POD")) {
+        lastKey = "pod";
+        flags = computeFlagsUpTo(seq, "pod");
+      } else if (ev.includes("ARRIV")) {
+        lastKey = "arrival";
+        flags = computeFlagsUpTo(seq, "arrival");
+      }
 
       if (Object.keys(flags).length) {
-        m[key] = { ...(m[key] || {}), ...flags };
+        const atKey =
+          lastKey === "arrival" ? "arrivalAt" : lastKey === "departure" ? "departureAt" : "podAt";
+        const actMs = s.actDateTime?.getTime?.() ?? null;
+
+        m[key] = {
+          ...(m[key] || {}),
+          ...flags,
+          ...(actMs ? { [atKey]: actMs } : {}),
+        };
       }
     });
     return m;
   });
+
+  // ✅ Helper: stop is COMPLETE only when last required step of its seq is reported
+  const isStopComplete = (stop) => {
+    const key = getStopKey(stop);
+    const r = reportedMap[key] || {};
+    const seq = allowedSequenceForStop(stop).filter((x) => x !== "items");
+    const last = seq[seq.length - 1]; // "departure" or "pod"
+    return Boolean(r[last]);
+  };
 
   // POD dialog callback updates map
   useEffect(() => {
@@ -328,32 +398,25 @@ export default function RouteTimeline({
     [derivedStops, reportedMap]
   );
 
-  const progressPercent = Math.round(
-    (completedCount / Math.max(1, derivedStops.length)) * 100
-  );
+  const progressPercent = Math.round((completedCount / Math.max(1, derivedStops.length)) * 100);
 
   useEffect(() => {
     if (typeof onAction === "function") onAction("progress", progressPercent);
   }, [progressPercent, onAction]);
 
-  // next pending stop = first stop without any reported event
+  // ✅ FIX: next pending stop = first INCOMPLETE stop (not "no event")
   const nextPendingIndex = useMemo(() => {
     for (let i = 0; i < derivedStops.length; i++) {
-      const s = derivedStops[i];
-      const key = getStopKey(s);
-      const r = reportedMap[key] || {};
-      if (!(r.arrival || r.departure || r.pod)) return i;
+      if (!isStopComplete(derivedStops[i])) return i;
     }
     return derivedStops.length;
   }, [derivedStops, reportedMap]);
 
-useEffect(() => {
-  if (typeof onAction !== "function") return;
-
-  const nextStop = derivedStops[nextPendingIndex] || null;
-  onAction("nextStop", { stop: nextStop });
-}, [nextPendingIndex]);
-
+  useEffect(() => {
+    if (typeof onAction !== "function") return;
+    const nextStop = derivedStops[nextPendingIndex] || null;
+    onAction("nextStop", { stop: nextStop });
+  }, [nextPendingIndex, derivedStops, onAction]);
 
   // server Event string -> action key
   const mapServerEventToActionKey = (ev) => {
@@ -525,11 +588,10 @@ useEffect(() => {
       return;
     }
 
-    // stop order enforcement
-    const recentlyStartedIndex = Math.max(0, nextPendingIndex - 1);
-    const allowedToAct = stopIndex === nextPendingIndex || stopIndex === recentlyStartedIndex;
+    // ✅ FIX: strict stop order enforcement (ONLY current pending stop can be reported)
+    const allowedToAct = stopIndex === nextPendingIndex;
     if (!allowedToAct) {
-      alert("Please report stops in order. Please report the next stop first.");
+      alert("Please report stops in order. Complete the current stop first.");
       return;
     }
 
@@ -572,24 +634,39 @@ useEffect(() => {
     return "";
   };
 
-  // ✅ Color coding requested:
-  // - Every event => ORANGE
+  // Color coding:
   // - Departure only => GREEN
+  // - Any other event => ORANGE
   // - Not reached => BLUE
-  const colorForStop = (stop) => {
-    const key = getStopKey(stop);
-    const r = reportedMap[key] || {};
-    if (r.departure) return GREEN;              // departure wins
-    if (r.arrival || r.pod) return ORANGE;      // any other event
-    return BLUE;                                // none
-  };
 
-  // Actual reported time per stop (prefer departureAt, then podAt, then arrivalAt)
+  const isLastStop = (stop) => {
+  const last = derivedStops[derivedStops.length - 1];
+  if (!last) return false;
+  return String(getStopKey(last)) === String(getStopKey(stop));
+};
+
+ const colorForStop = (stop) => {
+  const key = getStopKey(stop);
+  const r = reportedMap[key] || {};
+
+  const last = isLastStop(stop);
+
+  if (last && (r.pod || (r.arrival && r.pod))) return GREEN;
+
+  // existing rules
+  if (r.departure) return GREEN;              
+  if (r.arrival || r.pod) return ORANGE;      
+  return BLUE;                               
+};
+
+  // Actual reported time per stop:
+  // prefer reportedMap timestamps, else fallback to backend actDateTime (persist across re-search)
   const actualReportedTimeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
     const ms = r.departureAt ?? r.podAt ?? r.arrivalAt ?? null;
-    return ms ? new Date(ms) : null;
+    if (ms) return new Date(ms);
+    return stop.actDateTime || null;
   };
 
   if (showItems) {
@@ -619,39 +696,43 @@ useEffect(() => {
           const badge = badgeForStop(stop);
           const color = colorForStop(stop);
 
-          // ✅ check icon only for departure (green)
+          // check icon only for departure (green)
           const departed = Boolean(reported.departure);
 
           const seq = allowedSequenceForStop(stop);
 
-          const menuOptions = [
-            { key: "items", label: "Items", Icon: Inventory2OutlinedIcon },
-          ];
+          const menuOptions = [{ key: "items", label: "Items", Icon: Inventory2OutlinedIcon }];
 
           if (seq.includes("arrival") && !reported.arrival)
             menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
 
           if (seq.includes("pod") && !reported.pod)
-            menuOptions.push({ key: "pod", label: "Proof of Delivery", Icon: AssignmentTurnedInIcon });
+            menuOptions.push({
+              key: "pod",
+              label: "Proof of Delivery",
+              Icon: AssignmentTurnedInIcon,
+            });
 
           if (seq.includes("departure") && !reported.departure)
             menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
 
           if (stop.isReturnLocation)
-            menuOptions.push({ key: "return", label: "Return (Coming soon)", Icon: ReplayRoundedIcon });
+            menuOptions.push({
+              key: "return",
+              label: "Return",
+              Icon: ReplayRoundedIcon,
+            });
 
           // planned datetime (UTC from backend -> local display)
-          const plannedText = formatDateTimeLocalWithTz(stop.dateTime);
+          const plannedText = formatDateTimeLocal(stop.dateTime);
 
           // actual reported time
           const actualReportedDate = actualReportedTimeForStop(stop);
-          const actualText = actualReportedDate ? formatDateTimeLocalWithTz(actualReportedDate) : "-";
+         const actualText = actualReportedDate ? formatDateTimeLocal(actualReportedDate) : "-";
 
           // load/unload
           const load = Number(stop.displayLoad || 0);
           const unload = Number(stop.displayUnload || 0);
-
-          // border + shadow enhancement based on event color
 
           return (
             <div key={key} className="flex items-start mb-4 min-w-0">
@@ -694,7 +775,7 @@ useEffect(() => {
                   overflow: "visible",
                 }}
               >
-                {/* Left accent bar to match event color */}
+                {/* Left accent bar */}
                 <div
                   style={{
                     position: "absolute",
@@ -718,14 +799,20 @@ useEffect(() => {
                   <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY }}>
                     Actual Reported At
                   </p>
-                  <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>
+                  <p
+                    className="text-[12px] mt-0"
+                    style={{ color: TEXT_SECONDARY, fontWeight: 600 }}
+                  >
                     {actualText}
                   </p>
 
                   <p className="text-[12px] mt-2" style={{ color: TEXT_SECONDARY }}>
                     Planned Arrival
                   </p>
-                  <p className="text-[12px] mt-0" style={{ color: TEXT_SECONDARY, fontWeight: 600 }}>
+                  <p
+                    className="text-[12px] mt-0"
+                    style={{ color: TEXT_SECONDARY, fontWeight: 600 }}
+                  >
                     {plannedText}
                   </p>
 
@@ -753,9 +840,19 @@ useEffect(() => {
                       boxSizing: "border-box",
                     }}
                   >
-                    <LocationOnIcon sx={{ fontSize: 18, color: badge ? color : BLUE, marginTop: "2px", flexShrink: 0 }} />
+                    <LocationOnIcon
+                      sx={{
+                        fontSize: 18,
+                        color: badge ? color : BLUE,
+                        marginTop: "2px",
+                        flexShrink: 0,
+                      }}
+                    />
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <Typography variant="caption" sx={{ color: TEXT_SECONDARY, display: "block" }}>
+                      <Typography
+                        variant="caption"
+                        sx={{ color: TEXT_SECONDARY, display: "block" }}
+                      >
                         Address
                       </Typography>
                       <Typography
@@ -905,8 +1002,8 @@ useEffect(() => {
                   const priorActions = seqForStop.slice(1, Math.max(1, idxOfThisAction));
                   const priorAllReported = priorActions.every((pa) => Boolean(reportedForStop[pa]));
 
-                  const allowedStop =
-                    idx === nextPendingIndex || idx === Math.max(0, nextPendingIndex - 1);
+                  // ✅ STRICT stop gating: only current pending stop can execute events
+                  const allowedStop = idx === nextPendingIndex;
 
                   const enabled =
                     opt.key === "items"
@@ -931,7 +1028,11 @@ useEffect(() => {
                         <Icon fontSize="small" sx={{ color: PRIMARY }} />
                       </ListItemIcon>
                       <ListItemText
-                        primary={<Typography variant="body2" sx={{ fontWeight: 600 }}>{opt.label}</Typography>}
+                        primary={
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {opt.label}
+                          </Typography>
+                        }
                         secondary={
                           isSending ? (
                             <Typography variant="caption" sx={{ color: TEXT_SECONDARY }}>

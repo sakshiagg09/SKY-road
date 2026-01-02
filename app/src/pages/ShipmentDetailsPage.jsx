@@ -78,12 +78,17 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
       }${lastStop.country ? `, ${lastStop.country}` : ""}`
     : "-";
 
-  // Planned ETA (existing behavior)
+  // Planned ETA ✅ timezone name for consistency
   const eta = lastStop
-    ? new Date(
-        lastStop.dateTime || lastStop.dateTimeString || lastStop.plannedDateTime
-      ).toLocaleString("en-GB", { timeZone: "Asia/Kolkata" })
-    : "-";
+  ? new Date(lastStop.dateTime || lastStop.dateTimeString || lastStop.plannedDateTime).toLocaleString("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true, // ✅ AM/PM
+    })
+  : "-";
 
   // ==========================
   // ✅ Live ETA helpers (safe)
@@ -105,11 +110,17 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   };
 
   const formatEta = (ms) =>
-    new Date(ms).toLocaleString("en-GB", { timeZone: "Asia/Kolkata" });
+  new Date(ms).toLocaleString("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true, // ✅ AM/PM
+  });
 
   // Best-effort destination coordinates (does NOT break if missing)
   const destinationCoords = useMemo(() => {
-    // 1) last stop coords (if your backend provides)
     const lat = lastStop?.Latitude ?? lastStop?.latitude ?? lastStop?.lat ?? null;
     const lng = lastStop?.Longitude ?? lastStop?.longitude ?? lastStop?.lng ?? null;
 
@@ -117,7 +128,6 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
       return { lat: Number(lat), lng: Number(lng) };
     }
 
-    // 2) try raw destination coords (adjust later if your payload uses different names)
     const rLat = raw?.DestLatitude ?? raw?.DestinationLatitude ?? raw?.ToLat ?? null;
     const rLng = raw?.DestLongitude ?? raw?.DestinationLongitude ?? raw?.ToLng ?? null;
 
@@ -141,7 +151,6 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         const cur = { lat: Number(p.Latitude), lng: Number(p.Longitude) };
         const updatedAt = p.Timestamp ? Number(p.Timestamp) : Date.now();
 
-        // if no destination coords, keep planned ETA (no changes)
         if (!destinationCoords) {
           setLiveEtaText(null);
           setLiveMeta({ distanceKm: null, updatedAt });
@@ -155,16 +164,12 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
           return;
         }
 
-        // Speed best-effort:
-        // - if Speed <= 60 treat as m/s -> convert to km/h
-        // - else treat as km/h
         let speedKmh = null;
         if (p.Speed != null) {
           const s = Number(p.Speed);
           if (Number.isFinite(s)) speedKmh = s <= 60 ? s * 3.6 : s;
         }
 
-        // fallback to reasonable speed if missing/too low
         if (!speedKmh || speedKmh < 5) speedKmh = 45;
 
         const etaMs = Date.now() + (distanceKm / speedKmh) * 3600 * 1000;
@@ -180,6 +185,12 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
     const id = setInterval(tick, 5000);
     return () => clearInterval(id);
   }, [destinationCoords]);
+
+  // ✅ Status badge text + styling based on progress
+  const statusLabel = progress >= 100 ? "Completed" : "In Transit";
+  const statusBg =
+    progress >= 100 ? "rgba(46,125,50,0.10)" : "rgba(25,118,210,0.08)";
+  const statusColor = progress >= 100 ? "#2E7D32" : PRIMARY;
 
   // Handler to receive callbacks from RouteTimeline
   const handleChildAction = useCallback(
@@ -225,7 +236,6 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
     const effectiveStopId = stopIdFromResponse || fallbackStopId;
 
     if (!effectiveStopId) {
-      // If StopId is empty in response and payload, we can't map it to a stop.
       console.warn(
         "POD completed but StopId is missing in response/payload. Timeline cannot be updated.",
         { payload, response }
@@ -237,7 +247,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
       foId: effectiveFoId,
       stopId: effectiveStopId,
       event,
-      ts: Date.now(), // used to force React updates even for same stop
+      ts: Date.now(),
     });
   };
 
@@ -264,17 +274,18 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
           boxShadow: "10px 10px 20px #d7dae2, -10px -10px 20px #ffffff",
         }}
       >
-        <div className="flex items-start justify-between mb-3">
-          <span
-            className="px-3 py-1 rounded-full text-[11px] font-semibold"
-            style={{
-              backgroundColor: "rgba(25,118,210,0.08)",
-              color: PRIMARY,
-            }}
-          >
-            In Transit
-          </span>
-        </div>
+        {/* ✅ Badge centered initially, right when completed */}
+        <div className="flex items-start mb-3">
+            <span
+              className="px-3 py-1 rounded-full text-[11px] font-semibold"
+              style={{
+                backgroundColor: statusBg,
+                color: statusColor,
+              }}
+            >
+              {statusLabel}
+            </span>
+          </div>
 
         {/* Route row */}
         <div className="flex items-center gap-3 mt-2">
@@ -343,12 +354,11 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
           </div>
           <div className="flex items-center gap-1.5">
             <AccessTimeIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            {/* ✅ Non-breaking: show live ETA if available, else planned ETA */}
             <span style={{ color: TEXT_SECONDARY }}>ETA {liveEtaText || eta}</span>
           </div>
         </div>
 
-        {/* ✅ Optional: small live tracking meta (safe, won't break anything) */}
+        {/* Optional: small live tracking meta */}
         {liveMeta?.updatedAt && (
           <p className="text-[10px] mt-2" style={{ color: TEXT_SECONDARY, opacity: 0.8 }}>
             Live tracking: last update{" "}
@@ -363,11 +373,11 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         <RouteTimeline
           selectedShipment={selectedShipment}
           onAction={handleChildAction}
-          podCompletedInfo={podCompletedInfo} // 👈 NEW
+          podCompletedInfo={podCompletedInfo}
         />
       </div>
 
-      {/* 🔹 POD FLOW DIALOG */}
+      {/* POD FLOW DIALOG */}
       {podContext.stop && (
         <PodFlowDialog
           open={podOpen}

@@ -51,45 +51,49 @@ export default function App() {
 
   const handleCloseReport = () => setReportOpen(false);
 
-  // ==========================
-  // ✅ FULL ROUTE MAP OPENING
-  // ==========================
-
-  const isFiniteNum = (v) => Number.isFinite(Number(v));
-  const isZeroCoord = (lat, lng) => Number(lat) === 0 && Number(lng) === 0;
-
+  // Minimal lat/long extractor (numeric only)
   const stopLatLng = (s) => {
-    const lat = s?.Latitude ?? s?.latitude ?? s?.lat ?? null;
-    const lng = s?.Longitude ?? s?.longitude ?? s?.lng ?? null;
-    const ok = isFiniteNum(lat) && isFiniteNum(lng) && !isZeroCoord(lat, lng);
-    return ok ? { lat: Number(lat), lng: Number(lng) } : null;
+    const lat = Number(s?.latitude ?? s?.Latitude ?? s?.lat);
+    const lng = Number(s?.longitude ?? s?.Longitude ?? s?.lng ?? s?.long);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    if (lat === 0 || lng === 0) return null;
+
+    return `${lat},${lng}`;
   };
 
+  // Build a clean, Google-friendly address string (address-based routing only)
   const stopLabel = (s) => {
-    const parts = [
-      s?.name || s?.name1 || s?.locId || s?.locid || s?.stopId || s?.stopid || "",
-      s?.street || "",
-      [s?.postCode1 || s?.postCode || "", s?.city1 || s?.city || ""].filter(Boolean).join(" "),
-      s?.country || "",
-    ].filter(Boolean);
-    return parts.join(", ");
+    const street = s?.street || s?.street1 || s?.address || s?.address1 || "";
+    const city = s?.city || s?.city1 || "";
+    const state = s?.state || s?.region || s?.province || "";
+    const postal = s?.pincode || s?.pinCode || s?.postCode || s?.postalCode || s?.zip || "";
+    const country = s?.country || s?.countryCode || "";
+
+    return [street, city, state, postal, country]
+      .map((v) => String(v || "").trim())
+      .filter(Boolean)
+      .join(", ");
   };
 
-  // Google Maps Directions API URL supports waypoints (max ~23)
-  // We prefer coordinates; if missing, fall back to address label.
   const toMapsPoint = (s) => {
-    const ll = stopLatLng(s);
-    if (ll) return `${ll.lat},${ll.lng}`;
-    const lbl = stopLabel(s);
-    return lbl ? lbl : null;
+    return stopLatLng(s) || stopLabel(s) || null;
   };
 
-  // Sort stops in correct route order (same logic as your details page)
   const sortStops = (stops) => {
     if (!Array.isArray(stops)) return [];
+
+    const getSeq = (s) =>
+      s?.stopSequence ?? s?.sequence ?? s?.stopNo ?? s?.stopNumber ?? null;
+
     return [...stops].sort((a, b) => {
-      const ta = new Date(a?.dateTime || a?.dateTimeString || a?.plannedDateTime || 0).getTime() || 0;
-      const tb = new Date(b?.dateTime || b?.dateTimeString || b?.plannedDateTime || 0).getTime() || 0;
+      const sa = Number(getSeq(a));
+      const sb = Number(getSeq(b));
+
+      if (Number.isFinite(sa) && Number.isFinite(sb)) return sa - sb;
+
+      const ta = new Date(a?.dateTime || a?.plannedDateTime || 0).getTime() || 0;
+      const tb = new Date(b?.dateTime || b?.plannedDateTime || 0).getTime() || 0;
       return ta - tb;
     });
   };
@@ -104,13 +108,13 @@ export default function App() {
 
     const sorted = sortStops(shipment.stops);
 
-    // Convert to points (coords preferred)
+    // Convert to points (address only)
     const points = sorted
       .map(toMapsPoint)
       .filter(Boolean);
 
     if (points.length < 2) {
-      alert("Could not build a route: stops are missing coordinates/address.");
+      alert("Could not build a route: stops are missing valid latitude/longitude.");
       return;
     }
 
@@ -123,16 +127,18 @@ export default function App() {
     const MAX_WAYPOINTS = 23;
     const trimmedWaypoints = waypoints.slice(0, MAX_WAYPOINTS);
 
+    const waypointsParam = trimmedWaypoints.length
+      ? `&waypoints=${trimmedWaypoints.map((p) => encodeURIComponent(p)).join("|")}`
+      : "";
+
     const url =
       `https://www.google.com/maps/dir/?api=1` +
       `&origin=${encodeURIComponent(origin)}` +
       `&destination=${encodeURIComponent(destination)}` +
-      (trimmedWaypoints.length
-        ? `&waypoints=${encodeURIComponent(trimmedWaypoints.join("|"))}`
-        : "") +
+      waypointsParam +
       `&travelmode=driving`;
 
-    window.location.href = url;
+    window.open(url, "_blank", "noopener,noreferrer");
   }, [selectedShipment]);
 
   const renderPage = () => {

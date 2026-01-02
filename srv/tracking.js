@@ -242,16 +242,16 @@ module.exports = cds.service.impl(async function () {
   // CREATE handlers (unchanged)
   // ---------------------------------------------------------------------------
   this.on("CREATE", eventReporting, async (req) => {
-  if (getTarget() === "SKY_PLUS") {
-    return await postSkyPlus("/api/events", req.data);
-  }
+  // if (getTarget() === "SKY_PLUS") {
+  //   return await postSkyPlus("/api/events", req.data);
+  // }
   return await s4Post("/EventsReportingSet", req.data);
 });
 
  this.on("CREATE", updatesPOD, async (req) => {
-  if (getTarget() === "SKY_PLUS") {
-    return await postSkyPlus("/api/pod", req.data); // change path if your sky+ uses different route
-  }
+  // if (getTarget() === "SKY_PLUS") {
+  //   return await postSkyPlus("/api/pod", req.data); // change path if your sky+ uses different route
+  // }
   return await s4Post("/ProofOfDeliverySet", req.data);
 });
 
@@ -260,9 +260,9 @@ module.exports = cds.service.impl(async function () {
 });
 
   this.on("CREATE", delayEvents, async (req) => {
-  if (getTarget() === "SKY_PLUS") {
-    return await postSkyPlus("/api/delay", req.data); // change path if needed
-  }
+  // if (getTarget() === "SKY_PLUS") {
+  //   return await postSkyPlus("/api/delay", req.data); // change path if needed
+  // }
   return await s4Post("/DelaySet", req.data);
 });
 

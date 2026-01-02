@@ -1,7 +1,6 @@
 namespace sky.db;
 
 using {
-    cuid,
     managed
 } from '@sap/cds/common';
 
@@ -98,21 +97,17 @@ entity StopEvents : managed {
  *    NOTE: PackageId must be part of the key if you want multiple packages.
  */
 entity Items : managed {
-    key FoId           : String(35);
-    key Location       : String(60);
-    key PackageId      : String(60);
+  key FoId            : String(35);
 
-        ItemDescr      : String(255);
-        ItemCat        : String(20); // PKG etc.
-        Type           : String(20); // Shipper/Customer if you store that
-        Quantity       : Decimal(15, 3);
-        QuantityUom    : String(10);
-        GrossWeight    : Decimal(15, 3);
-        GrossWeightUom : String(10);
-        StopId        : String(20);
+  Location            : String(60);
 
-        toShipment     : Association to Shipments
-                             on toShipment.FoId = FoId;
+  LoadedItems         : LargeString;   // JSON string array
+  UnloadedItems       : LargeString;   // JSON string array
+  ReturnLoaded        : LargeString;   // JSON string array
+  ReturnUnloaded      : LargeString;   // JSON string array
+
+  toShipment          : Association to Shipments
+                          on toShipment.FoId = FoId;
 }
 
 /**
