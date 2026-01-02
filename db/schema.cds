@@ -100,7 +100,7 @@ entity Items : managed {
   key FoId            : String(35);
 
   Location            : String(60);
-
+  StopId              : String(20);
   LoadedItems         : LargeString;   // JSON string array
   UnloadedItems       : LargeString;   // JSON string array
   ReturnLoaded        : LargeString;   // JSON string array

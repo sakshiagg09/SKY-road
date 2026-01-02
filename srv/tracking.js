@@ -201,42 +201,31 @@ module.exports = cds.service.impl(async function () {
   // READ shipmentItems (unchanged)
   // ---------------------------------------------------------------------------
   this.on("READ", shipmentItems, async (req) => {
-    // Read FoId & Location from $filter (CAP query AST)
-    const foId = getFilterVal(req, "FoId") ?? req.query.SELECT.where?.[2]?.val;
-    const location =
-      getFilterVal(req, "Location") ?? req.query.SELECT.where?.[6]?.val;
+  const foId = getFilterVal(req, "FoId") ?? req.query.SELECT.where?.[2]?.val;
+  const location = getFilterVal(req, "Location") ?? req.query.SELECT.where?.[6]?.val;
 
-    if (!foId || !location) return [];
+  if (!foId || !location) return [];
 
-    const path =
-      `/ItemsSet?$filter=FoId eq '${foId}'` +
-      ` and Location eq '${location}'&$format=json`;
+  // ✅ READ BY KEY (not $filter)
+  const path =
+    `/ItemsSet(Location='${location}',FoId='${foId}')?$format=json`;
 
-    const v2 = await s4Get(path);
-    const rows = normalizeV2(v2);
+  const v2 = await s4Get(path);
 
-    // Map remote payload -> DB/service shape
-    const items = rows.map((r) => ({
-      FoId: r.FoId,
-      Location: r.Location,
-      PackageId: r.PackageId,
-      ItemDescr: r.ItemDescr,
-      ItemCat: r.ItemCat,
-      Type: r.Type,
-      Quantity: r.Quantity,
-      QuantityUom: r.QuantityUom,
-      GrossWeight: r.GrossWeight,
-      GrossWeightUom: r.GrossWeightUom,
-      StopId: r.StopId || "",
-    }));
+  // ✅ SEGW returns SINGLE ENTITY → v2.d
+  const d = v2;
+  if (!d) return [];
 
-    // Persist to HANA (UPSERT by composite key FoId+Location+PackageId)
-    if (items.length) {
-      safeRun(UPSERT.into(Items).entries(items), "Items");
-    }
-
-    return items;
-  });
+  // For now just return raw structure (you can map later)
+  return [{
+    FoId: d.FoId,
+    Location: d.Location,
+    ReturnLoaded: d.ReturnLoaded,
+    ReturnUnloaded: d.ReturnUnloaded,
+    UnloadedItems: d.UnloadedItems,
+    LoadedItems: d.LoadedItems
+  }];
+});
 
   // ---------------------------------------------------------------------------
   // CREATE handlers (unchanged)
