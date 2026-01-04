@@ -1,12 +1,6 @@
 // SignatureAttachmentsSection.jsx
 import React, { useRef, useEffect, useState } from "react";
-import {
-  Box,
-  Typography,
-  Button,
-  Chip,
-  IconButton,
-} from "@mui/material";
+import { Box, Typography, Button, Chip, IconButton } from "@mui/material";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 
@@ -19,7 +13,7 @@ const DEFAULT_CARD = "#FFFFFF";
 /**
  * Props:
  *  - hasDiscrepancy: boolean
- *  - signatureDataUrl: string (data:image/jpeg;base64,...)  // 👈 from parent
+ *  - signatureDataUrl: string (data:image/jpeg;base64,...)  // from parent
  *  - onSignatureChange: (dataUrl: string) => void
  *  - attachments: File[]
  *  - onAddAttachments: (event) => void
@@ -45,35 +39,71 @@ export default function SignatureAttachmentsSection({
   const fillCanvasWhite = (canvas, ctx) => {
     ctx.save();
     ctx.globalCompositeOperation = "source-over";
-    ctx.fillStyle = "#FFFFFF";           // WHITE BG
+    ctx.fillStyle = "#FFFFFF";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
   };
 
-  // init canvas: white background, black pen
-  useEffect(() => {
+  const initCanvas = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
 
-    // set dimensions (you can tweak)
+    // set dimensions
     canvas.width = canvas.offsetWidth || 300;
     canvas.height = 140;
 
-    // fill white ONCE at start
+    // white bg
     fillCanvasWhite(canvas, ctx);
 
     // pen style
     ctx.lineWidth = 2.5;
     ctx.lineCap = "round";
-    ctx.strokeStyle = "#000000";     // BLACK signature
+    ctx.strokeStyle = "#000000";
+  };
 
-    // if you want to restore existing signatureDataUrl, you can draw it back here
-    // but usually we only go from canvas -> dataUrl (not reverse)
+  // init canvas once
+  useEffect(() => {
+    initCanvas();
+
+    // handle resize (optional but helps on responsive dialogs)
+    const onResize = () => {
+      // re-init (will clear), then restore signature if present
+      initCanvas();
+      restoreSignature(signatureDataUrl);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- pointer events ----
+  // restore signatureDataUrl into canvas (if parent already has one)
+  const restoreSignature = (dataUrl) => {
+    if (!dataUrl) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    const img = new Image();
+    img.onload = () => {
+      // clear and fill white
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      fillCanvasWhite(canvas, ctx);
+
+      // fit image to canvas
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    };
+    img.src = dataUrl;
+  };
+
+  useEffect(() => {
+    // whenever parent signature changes externally, redraw it
+    if (signatureDataUrl) restoreSignature(signatureDataUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signatureDataUrl]);
+
+  // ---- pointer helpers ----
   const getPos = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -91,6 +121,7 @@ export default function SignatureAttachmentsSection({
 
   const handlePointerDown = (e) => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const pos = getPos(e);
 
@@ -102,52 +133,48 @@ export default function SignatureAttachmentsSection({
   const handlePointerMove = (e) => {
     if (!isDrawing) return;
     const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const pos = getPos(e);
 
     ctx.lineTo(pos.x, pos.y);
-    ctx.stroke();                 // draws black line
+    ctx.stroke();
+  };
+
+  // ✅ auto-save signature when user finishes stroke
+  const saveSignatureToParent = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // canvas already has white bg; export as JPG
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    onSignatureChange?.(dataUrl);
   };
 
   const endDrawing = () => {
     if (!isDrawing) return;
     setIsDrawing(false);
+    saveSignatureToParent();
   };
 
-  // ---- actions: clear & save ----
+  // ---- actions: clear only ----
   const handleClearSignature = () => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    // clear to transparent, then fill white again
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     fillCanvasWhite(canvas, ctx);
-    onSignatureChange?.("");       // clear in parent
+
+    onSignatureChange?.(""); // clear in parent
   };
-
-  const handleSaveSignature = () => {
-  const canvas = canvasRef.current;
-  if (!canvas) return;
-
-  // ✅ Do NOT call fillCanvasWhite here
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-  onSignatureChange?.(dataUrl);
-};
 
   return (
     <>
       {/* STATUS CHIP */}
-      <Box
-        sx={{
-          mb: 2.5,
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-        }}
-      >
+      <Box sx={{ mb: 2.5, display: "flex", alignItems: "center", gap: 1 }}>
         <Chip
-          label={
-            hasDiscrepancy ? "Discrepancy Reported" : "No Item Discrepancy"
-          }
+          label={hasDiscrepancy ? "Discrepancy Reported" : "No Item Discrepancy"}
           sx={{
             bgcolor: hasDiscrepancy
               ? "rgba(245, 158, 11, 0.15)"
@@ -177,7 +204,7 @@ export default function SignatureAttachmentsSection({
             mb: 1,
           }}
         >
-          Signature
+          Signature (Required)
         </Typography>
 
         <Box
@@ -187,7 +214,7 @@ export default function SignatureAttachmentsSection({
             borderRadius: 2,
             border: "1px dashed #CBD2E8",
             height: 140,
-            bgcolor: "#FFFFFF", // white visual background
+            bgcolor: "#FFFFFF",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -216,7 +243,7 @@ export default function SignatureAttachmentsSection({
         <Box
           sx={{
             display: "flex",
-            justifyContent: "space-between",
+            justifyContent: "flex-end",
             alignItems: "center",
             gap: 1.5,
           }}
@@ -231,20 +258,6 @@ export default function SignatureAttachmentsSection({
             }}
           >
             Clear
-          </Button>
-
-          <Button
-            size="small"
-            variant="contained"
-            onClick={handleSaveSignature}
-            sx={{
-              textTransform: "none",
-              fontSize: 12,
-              bgcolor: primaryColor,
-              "&:hover": { bgcolor: primaryDark },
-            }}
-          >
-            Save Signature
           </Button>
         </Box>
       </Box>
@@ -300,13 +313,7 @@ export default function SignatureAttachmentsSection({
             No files attached yet.
           </Typography>
         ) : (
-          <Box
-            sx={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 1,
-            }}
-          >
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
             {attachments.map((file, idx) => (
               <Box
                 key={`${file.name}_${idx}`}
@@ -320,38 +327,17 @@ export default function SignatureAttachmentsSection({
                   bgcolor: "#F8FAFF",
                 }}
               >
-                <Box
-                  sx={{
-                    display: "flex",
-                    flexDirection: "column",
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      fontSize: 13,
-                      fontWeight: 600,
-                      color: textPrimary,
-                    }}
-                  >
+                <Box sx={{ display: "flex", flexDirection: "column" }}>
+                  <Typography sx={{ fontSize: 13, fontWeight: 600, color: textPrimary }}>
                     {file.name}
                   </Typography>
-                  <Typography
-                    sx={{
-                      fontSize: 11,
-                      color: textSecondary,
-                    }}
-                  >
+                  <Typography sx={{ fontSize: 11, color: textSecondary }}>
                     {(file.size / 1024).toFixed(1)} KB
                   </Typography>
                 </Box>
 
-                <IconButton
-                  size="small"
-                  onClick={() => onRemoveAttachment?.(idx)}
-                >
-                  <DeleteOutlineIcon
-                    sx={{ fontSize: 18, color: textSecondary }}
-                  />
+                <IconButton size="small" onClick={() => onRemoveAttachment?.(idx)}>
+                  <DeleteOutlineIcon sx={{ fontSize: 18, color: textSecondary }} />
                 </IconButton>
               </Box>
             ))}

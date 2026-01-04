@@ -3,13 +3,23 @@ import React, { useState } from "react";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
 import MapOutlinedIcon from "@mui/icons-material/MapOutlined";
+import AttachFileOutlinedIcon from "@mui/icons-material/AttachFileOutlined";
 import { Menu, MenuItem } from "@mui/material";
 
 const BAR_HEIGHT = 64;
 
-export default function BottomBar({ activeTab, setActiveTab, onReportClick, onMapClick }) {
+export default function BottomBar({
+  activeTab,
+  setActiveTab,
+  onReportClick,
+  onMapClick,
+  onAttachmentsClick,
+  hasShipment = false,
+}) {
   const [anchorEl, setAnchorEl] = useState(null);
   const menuOpen = Boolean(anchorEl);
+
+  const tabColor = (tab) => (activeTab === tab ? "#1976D2" : "#6b6c6e");
 
   const handleReportMenuOpen = (e) => {
     if (typeof onReportClick !== "function") {
@@ -23,15 +33,21 @@ export default function BottomBar({ activeTab, setActiveTab, onReportClick, onMa
 
   const handleChooseReport = (mode) => {
     handleReportMenuClose();
-    onReportClick(mode);
+    onReportClick?.(mode);
   };
 
-  const handleMapClick = () => {
-    // ✅ If map logic provided -> open native maps
+  const handleMap = () => {
     if (typeof onMapClick === "function") return onMapClick();
-
-    // fallback: old behavior
     setActiveTab("track");
+  };
+
+  const handleAttachments = () => {
+    if (!hasShipment) {
+      alert("Please search and open a Freight Order first.");
+      return;
+    }
+    if (typeof onAttachmentsClick === "function") return onAttachmentsClick();
+    setActiveTab("attachments");
   };
 
   return (
@@ -45,64 +61,122 @@ export default function BottomBar({ activeTab, setActiveTab, onReportClick, onMa
           height: BAR_HEIGHT,
           borderRadius: 9999,
           zIndex: 50,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          paddingLeft: 32,
-          paddingRight: 32,
           backgroundColor: "rgba(255,255,255,0.98)",
-          boxShadow: "8px 8px 16px rgba(217,220,225,1), -8px -8px 16px rgba(255,255,255,1)",
-          color: "#6b6c6e",
-          fontSize: 12,
+          boxShadow:
+            "8px 8px 16px rgba(217,220,225,1), -8px -8px 16px rgba(255,255,255,1)",
           backdropFilter: "blur(6px)",
+
+          // ✅ make it a positioning context for the centered footer text
+          position: "fixed",
+          overflow: "hidden",
         }}
       >
-        <button
-          className="flex flex-col items-center"
-          style={{ color: activeTab === "home" ? "#1976D2" : "#6b6c6e", width: "33%" }}
-          onClick={() => setActiveTab("home")}
-        >
-          <HomeOutlinedIcon sx={{ fontSize: 20 }} />
-          <span style={{ fontSize: 11, marginTop: 2 }}>Home</span>
-        </button>
-
+        {/* ✅ 4 tabs grid (stable equal columns) */}
         <div
           style={{
-            width: "33%",
-            display: "flex",
-            flexDirection: "column",
+            height: "100%",
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
             alignItems: "center",
-            justifyContent: "center",
-            marginTop: 12,
+            paddingLeft: 10,
+            paddingRight: 10,
           }}
         >
+          {/* HOME */}
           <button
             className="flex flex-col items-center"
-            style={{ color: activeTab === "track" ? "#1976D2" : "#6b6c6e" }}
-            onClick={handleMapClick}
+            style={{
+              color: tabColor("home"),
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              padding: 0,
+            }}
+            onClick={() => setActiveTab("home")}
+          >
+            <HomeOutlinedIcon sx={{ fontSize: 20 }} />
+            <span style={{ fontSize: 11, marginTop: 2 }}>Home</span>
+          </button>
+
+          {/* MAP */}
+          <button
+            className="flex flex-col items-center"
+            style={{
+              color: tabColor("track"),
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              padding: 0,
+            }}
+            onClick={handleMap}
           >
             <MapOutlinedIcon sx={{ fontSize: 20 }} />
             <span style={{ fontSize: 11, marginTop: 2 }}>Map</span>
           </button>
 
-          <span style={{ fontSize: 10, color: "#9aa0ab", marginTop: 0, whiteSpace: "nowrap" }}>
-            © NAV IT Consulting
-          </span>
-        </div>
-
-        <div style={{ width: "33%", display: "flex", justifyContent: "center" }}>
+          {/* ATTACHMENTS */}
           <button
             className="flex flex-col items-center"
-            style={{ color: activeTab === "alerts" ? "#1976D2" : "#6b6c6e", width: "100%" }}
-            onClick={handleReportMenuOpen}
+            style={{
+              color: tabColor("attachments"),
+              opacity: hasShipment ? 1 : 0.45,
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              padding: 0,
+            }}
+            onClick={handleAttachments}
           >
-            <SummarizeOutlinedIcon sx={{ fontSize: 20 }} />
-            <span style={{ fontSize: 11, marginTop: 2 }}>Report</span>
+            <AttachFileOutlinedIcon sx={{ fontSize: 20 }} />
+            <span style={{ fontSize: 11, marginTop: 2 }}>Attachments</span>
           </button>
 
-          <Menu anchorEl={anchorEl} open={menuOpen} onClose={handleReportMenuClose}>
-            <MenuItem onClick={() => handleChooseReport("unplanned")}>Unplanned Event</MenuItem>
-          </Menu>
+          {/* REPORT */}
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <button
+              className="flex flex-col items-center"
+              style={{
+                color: tabColor("alerts"),
+                background: "transparent",
+                border: "none",
+                outline: "none",
+                padding: 0,
+              }}
+              onClick={handleReportMenuOpen}
+            >
+              <SummarizeOutlinedIcon sx={{ fontSize: 20 }} />
+              <span style={{ fontSize: 11, marginTop: 2 }}>Report</span>
+            </button>
+
+            <Menu
+              anchorEl={anchorEl}
+              open={menuOpen}
+              onClose={handleReportMenuClose}
+            >
+              <MenuItem onClick={() => handleChooseReport("unplanned")}>
+                Unplanned Event
+              </MenuItem>
+            </Menu>
+          </div>
+        </div>
+
+        {/* ✅ Company footer: ALWAYS centered, independent of tabs */}
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            transform: "translateX(-50%)",
+            bottom: 6,
+            fontSize: 9,
+            color: "#9aa0ab",
+            lineHeight: "2px",
+            whiteSpace: "nowrap",
+            pointerEvents: "none", // ✅ doesn't block clicks
+            width: "max-content",
+            textAlign: "center",
+          }}
+        >
+          © NAV IT Consulting
         </div>
       </div>
     </div>

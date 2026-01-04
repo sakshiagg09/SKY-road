@@ -1,5 +1,5 @@
+// src/components/BarcodeScanner.jsx
 import React, { useEffect, useRef, useState } from "react";
-import { Html5Qrcode } from "html5-qrcode";
 import {
   Dialog,
   DialogTitle,
@@ -11,117 +11,163 @@ import {
   IconButton,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
+import { Capacitor } from "@capacitor/core";
+
+// Web fallback
+import { Html5Qrcode } from "html5-qrcode";
 
 const BarcodeScanner = ({ open, onClose, onScan }) => {
+  const [error, setError] = useState("");
   const [scanning, setScanning] = useState(false);
-  const [error, setError] = useState(null);
+
+  // web scanner refs
   const html5QrCodeRef = useRef(null);
   const mountedRef = useRef(false);
+  const regionIdRef = useRef(`qr-reader-${Math.random().toString(16).slice(2)}`);
+
+  const isNative = Capacitor.isNativePlatform();
 
   useEffect(() => {
     mountedRef.current = true;
 
     if (open) {
-      startScanning();
+      setError("");
+      setScanning(true);
+
+      // start after dialog mounts
+      const t = setTimeout(() => {
+        isNative ? startNativeScan() : startWebScan();
+      }, 150);
+
+      return () => clearTimeout(t);
+    } else {
+      stopAll();
     }
 
     return () => {
       mountedRef.current = false;
-      stopScanning();
+      stopAll();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const startScanning = async () => {
-    try {
-      setError(null);
-      setScanning(true);
+  const stopAll = async () => {
+    if (!mountedRef.current) return;
+    setScanning(false);
 
-      const devices = await Html5Qrcode.getCameras();
-
-      if (!mountedRef.current) return;
-
-      if (devices && devices.length > 0) {
-        const config = {
-          fps: 10,
-          qrbox: { width: 250, height: 250 },
-          aspectRatio: 1.0,
-        };
-
-        const html5QrCode = new Html5Qrcode("qr-reader", /* verbose= */ false);
-        html5QrCodeRef.current = html5QrCode;
-
-        // Prefer back camera if label indicates so
-        const backCamera = devices.find((d) =>
-          /back|rear|environment/i.test(d.label)
-        );
-        const deviceId =
-          backCamera?.id ||
-          backCamera?.deviceId ||
-          devices[0].id ||
-          devices[0].deviceId;
-
-        // 🔴 FIX 1: pass a *single* cameraIdOrConfig value (string),
-        // not { deviceIdOrCameraId, facingMode }
-        await html5QrCode.start(
-          deviceId,
-          config,
-          (decodedText, decodedResult) => {
-            handleSuccessfulScan(decodedText);
-          },
-          (err) => {
-            // ignore common "no qr code" errors while scanning
-          }
-        );
-      } else {
-        setError("No camera found on device");
-        setScanning(false);
-      }
-    } catch (err) {
-      console.error("Error starting scanner:", err);
-      setError("Failed to start camera. Please check camera permissions.");
-      setScanning(false);
-    }
-  };
-
-  const stopScanning = async () => {
+    // stop web scanner if any
     try {
       if (html5QrCodeRef.current) {
         try {
           await html5QrCodeRef.current.stop();
-        } catch (e) {
-          // ignore "already stopped" errors
-        }
+        } catch (_) {}
         try {
           await html5QrCodeRef.current.clear();
-        } catch (e) {
-          // ignore
-        }
+        } catch (_) {}
         html5QrCodeRef.current = null;
       }
-    } catch (err) {
-      console.error("Error stopping scanner:", err);
-    }
+    } catch (_) {}
+  };
 
-    if (mountedRef.current) {
+  const handleClose = async () => {
+    await stopAll();
+    onClose && onClose();
+  };
+
+  // ---------------- NATIVE (Capacitor Android/iOS) ----------------
+  const startNativeScan = async () => {
+    try {
+      const { BarcodeScanner } = await import("@capacitor-mlkit/barcode-scanning");
+
+      // Ask permission
+      const perm = await BarcodeScanner.requestPermissions();
+      const ok =
+        perm?.camera === "granted" ||
+        perm?.camera === "limited" ||
+        perm === "granted";
+
+      if (!ok) {
+        throw new Error("Camera permission not granted.");
+      }
+
+      // Optional: make background transparent so camera view shows
+      // (Plugin uses native view overlay; on many apps this just works)
+      // If you face black screen, tell me and I’ll add the “hide background” approach.
+      const result = await BarcodeScanner.scan({
+        // supports barcodes + QR
+        // If you want only barcodes, we can restrict formats later.
+      });
+
+      const value = result?.barcodes?.[0]?.rawValue || result?.barcodes?.[0]?.displayValue;
+
+      if (!value) {
+        throw new Error("No barcode detected. Try again.");
+      }
+
+      onScan && onScan(value);
+      await stopAll();
+      onClose && onClose();
+    } catch (e) {
+      console.error("Native scan failed:", e);
+      if (!mountedRef.current) return;
+      setError(e?.message || "Native scanner failed.");
       setScanning(false);
     }
   };
 
-  const handleSuccessfulScan = (decodedText) => {
-    stopScanning();
+  // ---------------- WEB FALLBACK ----------------
+  const startWebScan = async () => {
     try {
-      onScan && onScan(decodedText);
-    } catch (e) {
-      console.error("onScan handler error:", e);
-    } finally {
-      onClose && onClose();
-    }
-  };
+      setError("");
+      setScanning(true);
 
-  const handleClose = () => {
-    stopScanning();
-    onClose && onClose();
+      const devices = await Html5Qrcode.getCameras();
+      if (!devices || devices.length === 0) throw new Error("No camera found.");
+
+      const backCamera = devices.find((d) => /back|rear|environment/i.test(d.label));
+      const deviceId =
+        backCamera?.id ||
+        backCamera?.deviceId ||
+        devices[0]?.id ||
+        devices[0]?.deviceId;
+
+      const html5QrCode = new Html5Qrcode(regionIdRef.current, false);
+      html5QrCodeRef.current = html5QrCode;
+
+      const config = {
+        fps: 12,
+        qrbox: { width: 260, height: 260 },
+        aspectRatio: 1.0,
+        formatsToSupport: [
+          Html5Qrcode.SUPPORTED_FORMATS.QR_CODE,
+          Html5Qrcode.SUPPORTED_FORMATS.CODE_128,
+          Html5Qrcode.SUPPORTED_FORMATS.CODE_39,
+          Html5Qrcode.SUPPORTED_FORMATS.EAN_13,
+          Html5Qrcode.SUPPORTED_FORMATS.EAN_8,
+          Html5Qrcode.SUPPORTED_FORMATS.UPC_A,
+          Html5Qrcode.SUPPORTED_FORMATS.UPC_E,
+          Html5Qrcode.SUPPORTED_FORMATS.ITF,
+          Html5Qrcode.SUPPORTED_FORMATS.CODABAR,
+          Html5Qrcode.SUPPORTED_FORMATS.PDF_417,
+        ],
+      };
+
+      await html5QrCode.start(
+        deviceId,
+        config,
+        async (decodedText) => {
+          await stopAll();
+          onScan && onScan(decodedText);
+          onClose && onClose();
+        },
+        () => {}
+      );
+    } catch (e) {
+      console.error("Web scan failed:", e);
+      if (!mountedRef.current) return;
+      setError(e?.message || "Web scanner failed.");
+      setScanning(false);
+    }
   };
 
   return (
@@ -130,14 +176,8 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
       onClose={handleClose}
       maxWidth="sm"
       fullWidth
-      PaperProps={{
-        sx: {
-          borderRadius: 2,
-          m: 2,
-        },
-      }}
+      PaperProps={{ sx: { borderRadius: 2, m: 2 } }}
     >
-      {/* 🔴 FIX 2: avoid <h2> wrapping <h6> */}
       <DialogTitle
         component="div"
         sx={{
@@ -156,36 +196,64 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
       </DialogTitle>
 
       <DialogContent>
-        <Box sx={{ position: "relative", width: "100%", minHeight: 300 }}>
+        <Box sx={{ width: "100%", minHeight: 320 }}>
           {error ? (
             <Box
               sx={{
+                minHeight: 320,
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
                 justifyContent: "center",
-                minHeight: 300,
-                p: 3,
+                gap: 1.5,
+                p: 2,
               }}
             >
-              <Typography color="error" align="center" sx={{ mb: 2 }}>
+              <Typography color="error" align="center">
                 {error}
               </Typography>
-              <Button variant="contained" onClick={startScanning}>
+
+              <Button
+                variant="contained"
+                onClick={() => (isNative ? startNativeScan() : startWebScan())}
+              >
                 Retry
               </Button>
             </Box>
           ) : (
             <>
-              <div id="qr-reader" style={{ width: "100%" }} />
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                align="center"
-                sx={{ mt: 2 }}
-              >
-                Position the barcode within the frame
-              </Typography>
+              {/* Web only preview box */}
+              {!isNative ? (
+                <>
+                  <div id={regionIdRef.current} style={{ width: "100%" }} />
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    align="center"
+                    sx={{ mt: 2 }}
+                  >
+                    Position the barcode within the frame
+                  </Typography>
+                </>
+              ) : (
+                <Box
+                  sx={{
+                    minHeight: 320,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexDirection: "column",
+                    gap: 1,
+                  }}
+                >
+                  <Typography align="center" color="text.secondary">
+                    Opening native scanner…
+                  </Typography>
+                  <Typography align="center" sx={{ fontSize: 12, color: "text.secondary" }}>
+                    If it doesn’t open, tap Retry.
+                  </Typography>
+                </Box>
+              )}
             </>
           )}
         </Box>
@@ -195,6 +263,15 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
         <Button onClick={handleClose} color="inherit">
           Cancel
         </Button>
+        {/* Optional manual start button */}
+        {!scanning && !error ? (
+          <Button
+            variant="contained"
+            onClick={() => (isNative ? startNativeScan() : startWebScan())}
+          >
+            Start
+          </Button>
+        ) : null}
       </DialogActions>
     </Dialog>
   );

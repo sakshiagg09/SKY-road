@@ -13,6 +13,7 @@ service GTT {
         Message        : String;
         DirectionsInfo : String;
         StopInfo       : String;
+        Stops          : String;
   }
 
   @cds.persistence.skip
@@ -54,7 +55,20 @@ service GTT {
         FileType  : String;
         PDFBase64 : LargeString;
   }
+    // ✅ NEW: Attachments (READ list by FoId)
+  @cds.persistence.skip
+  entity attachments {
+    key FoId        : String;
+    key FileName    : String;
 
+        Description : String;
+        CreatedBy   : String;
+        FileType    : String;
+        MimeCode    : String;
+
+        // optional (big) – return only when you really need it
+        PDFBase64   : LargeString;
+  }
     @cds.persistence.skip
   entity delayEvent {
   key FoId         : String;   
@@ -66,6 +80,26 @@ service GTT {
       EvtReasonCode: String;   
       Description  : String;   
 }
+// ✅ NEW: ReturnItemsSet (READ by key)
+  @cds.persistence.skip
+  entity returnItemsPayload {
+    key StopId     : String;
+    key Location   : String;
+    key FoId       : String;
+
+        LoadedItems : LargeString;  // JSON string e.g. "[{...}]"
+  }
+
+  // ✅ NEW: UnloadingSet (CREATE)
+  @cds.persistence.skip
+  entity unloadingPayload {
+    key FoId     : String;
+    key StopId   : String;
+
+        Event     : String;         // optional (if backend returns)
+        Timestamp : String;         // optional (if backend returns)
+  }
+
 
   // ----- SERVICE ENTITIES
   entity trackingDetails as projection on shipmentDetails;
@@ -78,6 +112,10 @@ service GTT {
   entity attachmentUpload  as projection on attachmentPayload;
   entity delayEvents   as projection on delayEvent;
   entity driverLocations as projection on DriverLocations;  
+    // ✅ Expose ReturnItemsSet + UnloadingSet as service entities
+  entity ReturnItemsSet      as projection on returnItemsPayload;
+  entity UnloadingSet        as projection on unloadingPayload;
+  entity AttachmentsSet      as projection on attachments;
   
 
     // ----- OCR ACTION (for license scanning from frontend)

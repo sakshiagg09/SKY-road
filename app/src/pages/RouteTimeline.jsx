@@ -7,7 +7,7 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import EventAvailableIcon from "@mui/icons-material/EventAvailable";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
-import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded"; // Return placeholder
+import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded"; // Return viewer
 
 import {
   IconButton,
@@ -24,28 +24,18 @@ import {
 import MaterialItemList from "../components/MaterialItemList";
 
 /**
- * RouteTimeline — updated (final):
- * ✅ Backend datetime is UTC -> show in user's phone timezone (with tz name)
- * ✅ Actual Reported time is from eventReporting response Timestamp (SAP UTC 14-digit)
- * ✅ Event payload sends StopId (stop.stopid) (NOT locid)
- * ✅ Badge only for reported events:
- *    ARRIVAL -> Arrived, POD -> Delivered, DEPARTURE -> Departed, else blank
- * ✅ Color coding:
- *    - Any event (arrival / pod / return etc.) => ORANGE
- *    - DEPARTURE only => GREEN
- *    - Not reached => BLUE
- * ✅ Card border color and left accent bar follow event color (orange/green)
- * ✅ totalLoadedPack/totalUnloadedPack drive Material Load/Unload
- * ✅ Return action appears if ReturnInfo exists -> show Return on sourceLoc (not destLoc)
- *
- * ✅ FIXES ADDED NOW:
- * 1) STRICT stop order: cannot report later stop until current stop is COMPLETE (based on last action in its sequence)
- * 2) Persist Actual Reported Time after re-search:
- *    - Use stop.actDateTime from backend to initialize reported timestamps (arrivalAt/departureAt/podAt)
- *    - Also fallback to stop.actDateTime when reportedMap timestamps are missing
- * 3) Return mapping:
- *    - Parse selectedShipment.raw.ReturnInfo and/or selectedShipment.returnLocIds
- *    - Mark stop as Return if stop.locid matches sourceLoc (or sourceLocId) entries
+ * RouteTimeline — robust (NEW trackingDetails payload)
+ * ✅ Build stops ONLY from `Stops` array (order + F/I/L)
+ * ✅ Pull stop details from `FinalInfo` (mapped by locId occurrence order)
+ * ✅ Return shown based on `ReturnInfo` (mapped by StopId, fallback locId)
+ * ✅ Events populate per stop from FinalInfo.event + actDateTime
+ * ✅ Unloading shown on unloading locations:
+ *    - seqPos === "L" OR totalUnloadedPack > 0 OR hasReturnUnload
+ * ✅ Strict stop order: only current pending stop can report events (items/return allowed anytime)
+ * ✅ Last stop rules:
+ *    - If return unload => Arrival + Unloading only
+ *    - Else if unloading location => Arrival + Unloading + POD
+ *    - Else => Arrival only
  */
 export default function RouteTimeline({
   selectedShipment,
@@ -59,8 +49,8 @@ export default function RouteTimeline({
   const TEXT_SECONDARY = "#6B6C6E";
 
   const BLUE = "#42A5F5"; // not reached
-  const ORANGE = "#ED6C02"; // any event
-  const GREEN = "#2E7D32"; // departure only
+  const ORANGE = "#ED6C02"; // any event (arrival/unloading/pod etc.)
+  const GREEN = "#2E7D32"; // departure / completed last stop
 
   // menu state
   const [anchorEl, setAnchorEl] = useState(null);
@@ -68,16 +58,91 @@ export default function RouteTimeline({
   const [sending, setSending] = useState({});
   const menuOpen = Boolean(anchorEl);
 
-  // items view
+  // items view (shipment items OR return items)
   const [showItems, setShowItems] = useState(false);
   const [itemsStop, setItemsStop] = useState(null);
   const [itemsLoading, setItemsLoading] = useState(false);
 
-  if (
-    !selectedShipment ||
-    !Array.isArray(selectedShipment.stops) ||
-    selectedShipment.stops.length === 0
-  ) {
+  // ======================
+  // Date/time helpers
+  // ======================
+
+  const parseSapUtcDateTimeToDate = (dt) => {
+    if (dt === null || typeof dt === "undefined") return null;
+    if (dt === 0) return null;
+
+    const s = String(dt).trim();
+    if (!s || s === "0") return null;
+
+    if (/^\d{14}$/.test(s)) {
+      const yyyy = Number(s.slice(0, 4));
+      const mm = Number(s.slice(4, 6));
+      const dd = Number(s.slice(6, 8));
+      const hh = Number(s.slice(8, 10));
+      const min = Number(s.slice(10, 12));
+      const ss = Number(s.slice(12, 14));
+
+      if (!yyyy || !mm || !dd) return null;
+
+      const d = new Date(Date.UTC(yyyy, mm - 1, dd, hh, min, ss));
+      return isNaN(d) ? null : d;
+    }
+
+    const maybe = new Date(s);
+    return isNaN(maybe) ? null : maybe;
+  };
+
+  const formatDateTimeLocal = (d) => {
+    if (!d) return "-";
+    return d.toLocaleString(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+  };
+
+  const buildAddress = (s) => {
+    if (!s) return "-";
+    const parts = [];
+    if (s.street) parts.push(s.street);
+    const cityLine = [s.postCode1 ?? s.postCode, s.city1 ?? s.city]
+      .filter(Boolean)
+      .join(" ");
+    if (cityLine) parts.push(cityLine);
+    const regionCountry = [s.region, s.country].filter(Boolean).join(", ");
+    if (regionCountry) parts.push(regionCountry);
+    return parts.join(", ") || "-";
+  };
+
+  const safeJsonArray = (value) => {
+    if (!value) return [];
+    try {
+      const arr = typeof value === "string" ? JSON.parse(value) : value;
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // ======================
+  // Normalize NEW payload
+  // selectedShipment can be:
+  //  - trackingDetails row itself
+  //  - or { raw: trackingDetailsRow, ... }
+  // ======================
+
+  const raw = selectedShipment?.raw ?? selectedShipment ?? {};
+  const FoId = raw?.FoId ?? selectedShipment?.FoId ?? "";
+
+  const stopsArr = useMemo(() => safeJsonArray(raw?.Stops), [raw?.Stops]);
+  const finalInfoArr = useMemo(() => safeJsonArray(raw?.FinalInfo), [raw?.FinalInfo]);
+  const returnArr = useMemo(() => safeJsonArray(raw?.ReturnInfo), [raw?.ReturnInfo]);
+
+  if (!FoId || !Array.isArray(stopsArr) || stopsArr.length === 0) {
     return (
       <div style={{ padding: 12 }}>
         <Typography variant="body2" sx={{ color: TEXT_SECONDARY }}>
@@ -87,139 +152,137 @@ export default function RouteTimeline({
     );
   }
 
-  const { stops: rawStops = [], FoId, returnLocIds = [], raw = {} } = selectedShipment;
-
   // ======================
-  // Date/time helpers
+  // ReturnInfo mapping (view-only quantities)
+  // map by StopId first (best), fallback by locId
   // ======================
 
-  // Parse SAP UTC datetime:
-  // - if 14 digits: YYYYMMDDHHmmss (UTC)
-  // - interpret as UTC (Date.UTC), then display in device timezone
-const parseSapUtcDateTimeToDate = (dt) => {
-  if (dt === null || typeof dt === "undefined") return null;
+  const buildReturnQtyMaps = (returnInfo) => {
+    const loadByStopId = new Map(); // stopid -> qty
+    const unloadByStopId = new Map(); // stopid -> qty
+    const loadByLoc = new Map(); // locid -> qty (fallback)
+    const unloadByLoc = new Map(); // locid -> qty (fallback)
 
-  // ✅ handle backend "0" / 0 meaning "not reported"
-  if (dt === 0) return null;
+    returnInfo.forEach((x) => {
+      const r = {
+        sourceLoc: String(x?.sourceLoc ?? x?.sourceLocId ?? "").trim(),
+        destLoc: String(x?.destLoc ?? x?.destLocId ?? "").trim(),
+        sourceStopId: String(x?.sourceStopId ?? "").trim(),
+        destStopId: String(x?.destStopId ?? "").trim(),
+        returnLoaded: Number(x?.returnLoaded ?? 0) || 0,
+        returnUnloaded: Number(x?.returnUnloaded ?? 0) || 0,
+      };
 
-  const s = String(dt).trim();
-  if (!s || s === "0") return null;
+      if (r.sourceStopId && r.returnLoaded > 0) {
+        loadByStopId.set(r.sourceStopId, (loadByStopId.get(r.sourceStopId) || 0) + r.returnLoaded);
+      } else if (r.sourceLoc && r.returnLoaded > 0) {
+        loadByLoc.set(r.sourceLoc, (loadByLoc.get(r.sourceLoc) || 0) + r.returnLoaded);
+      }
 
-  if (/^\d{14}$/.test(s)) {
-    const yyyy = Number(s.slice(0, 4));
-    const mm = Number(s.slice(4, 6));
-    const dd = Number(s.slice(6, 8));
-    const hh = Number(s.slice(8, 10));
-    const min = Number(s.slice(10, 12));
-    const ss = Number(s.slice(12, 14));
+      if (r.destStopId && r.returnUnloaded > 0) {
+        unloadByStopId.set(
+          r.destStopId,
+          (unloadByStopId.get(r.destStopId) || 0) + r.returnUnloaded
+        );
+      } else if (r.destLoc && r.returnUnloaded > 0) {
+        unloadByLoc.set(r.destLoc, (unloadByLoc.get(r.destLoc) || 0) + r.returnUnloaded);
+      }
+    });
 
-    // ✅ guard against weird zeros like 00000000000000
-    if (!yyyy || !mm || !dd) return null;
-
-    const d = new Date(Date.UTC(yyyy, mm - 1, dd, hh, min, ss));
-    return isNaN(d) ? null : d;
-  }
-
-  const maybe = new Date(s);
-  return isNaN(maybe) ? null : maybe;
-};
-
-
-  // Display with device timezone + timezone abbreviation
-  const formatDateTimeLocal = (d) => {
-  if (!d) return "-";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true, // ✅ AM/PM
-  });
-};
-
-  const buildAddress = (s) => {
-    if (!s) return "-";
-    const parts = [];
-    if (s.street) parts.push(s.street);
-    const cityLine = [s.postCode1 ?? s.postCode, s.city1 ?? s.city].filter(Boolean).join(" ");
-    if (cityLine) parts.push(cityLine);
-    const regionCountry = [s.region, s.country].filter(Boolean).join(", ");
-    if (regionCountry) parts.push(regionCountry);
-    return parts.join(", ") || "-";
+    return { loadByStopId, unloadByStopId, loadByLoc, unloadByLoc };
   };
 
-  const getStopKey = (s) => s.stopid || s.locid || String(s.idx);
+  const { loadByStopId, unloadByStopId, loadByLoc, unloadByLoc } = useMemo(
+    () => buildReturnQtyMaps(returnArr),
+    [returnArr]
+  );
 
   // ======================
-  // ReturnInfo parsing (sourceLoc based)
+  // Build FinalInfo queues by locid (in FinalInfo array order)
+  // Then build route stops ONLY from Stops array (order preserved)
   // ======================
-  const parseReturnSourceLocs = (returnInfoValue) => {
-    if (!returnInfoValue) return [];
-    try {
-      const arr =
-        typeof returnInfoValue === "string" ? JSON.parse(returnInfoValue) : returnInfoValue;
-      if (!Array.isArray(arr)) return [];
-      return arr
-        .map((x) => x?.sourceLoc || x?.sourceLocId || x?.source || x?.SourceLoc || x?.SOURCELOC)
-        .filter(Boolean)
-        .map(String);
-    } catch (e) {
-      console.warn("Failed to parse ReturnInfo in RouteTimeline:", e, returnInfoValue);
-      return [];
-    }
+
+  const buildFinalQueuesByLoc = (finalInfo) => {
+    const m = new Map(); // locid -> [finalInfoRow, ...]
+    finalInfo.forEach((x) => {
+      const locid = String(x?.locid ?? x?.locId ?? "").trim();
+      if (!locid) return;
+      const list = m.get(locid) || [];
+      list.push(x);
+      m.set(locid, list);
+    });
+    return m;
   };
 
-  // Build return loc set:
-  // - keep backward compatibility with returnLocIds (if already passed)
-  // - add parsed sourceLocs from raw.ReturnInfo (new payload)
-  const returnLocSet = useMemo(() => {
-    const base = new Set((returnLocIds || []).map((x) => String(x)));
-    const fromRaw = parseReturnSourceLocs(raw?.ReturnInfo);
-    fromRaw.forEach((x) => base.add(String(x)));
-    return base;
-  }, [returnLocIds, raw?.ReturnInfo]);
+  const finalQueuesByLoc = useMemo(() => buildFinalQueuesByLoc(finalInfoArr), [finalInfoArr]);
+
+  const getStopKey = (s) => s.stopid || `${s.locid}_${s.stopseqpos}_${s.idx}`;
+
+  const routeStops = useMemo(() => {
+    // copy queues so we can shift safely
+    const localQueues = new Map();
+    finalQueuesByLoc.forEach((v, k) => localQueues.set(k, [...v]));
+
+    return stopsArr.map((st, idx) => {
+      const locid = String(st?.locId ?? st?.locid ?? "").trim();
+      const seq = String(st?.stopSeqPos ?? st?.stopseqpos ?? "").trim().toUpperCase();
+
+      const q = localQueues.get(locid) || [];
+      const info = q.length ? q.shift() : null;
+      localQueues.set(locid, q);
+
+      const stopid = String(info?.stopid ?? info?.stopId ?? "").trim() || `${locid}_${seq}_${idx}`;
+
+      const totalLoadedPack = Number(info?.totalLoadedPack ?? info?.TotalLoadedPack ?? 0) || 0;
+      const totalUnloadedPack = Number(info?.totalUnloadedPack ?? info?.TotalUnloadedPack ?? 0) || 0;
+
+      const returnLoadQty = loadByStopId.get(stopid) ?? loadByLoc.get(locid) ?? 0;
+      const returnUnloadQty = unloadByStopId.get(stopid) ?? unloadByLoc.get(locid) ?? 0;
+
+      return {
+        idx,
+        stopid,
+        locid,
+        stopseqpos: seq,
+
+        // Planned time
+        dateTime: parseSapUtcDateTimeToDate(info?.dateTime ?? info?.dateTimeString ?? null),
+
+        // Display
+        name1: info?.name1 ?? info?.name ?? "",
+        street: info?.street ?? "",
+        postCode1: info?.postCode1 ?? info?.postCode ?? "",
+        city1: info?.city1 ?? info?.city ?? "",
+        region: info?.region ?? "",
+        country: info?.country ?? "",
+
+        latitude: info?.latitude ?? info?.Latitude ?? info?.lat ?? null,
+        longitude: info?.longitude ?? info?.Longitude ?? info?.lng ?? null,
+
+        // Backend milestone + actual time
+        eventRaw: (info?.event ?? info?.Event ?? "") || "",
+        actDateTime: parseSapUtcDateTimeToDate(info?.actDateTime ?? info?.ActDateTime ?? null),
+
+        totalLoadedPack,
+        totalUnloadedPack,
+        displayLoad: totalLoadedPack,
+        displayUnload: totalUnloadedPack,
+
+        // Return view-only quantities
+        returnLoadQty,
+        returnUnloadQty,
+        hasReturnLoad: Number(returnLoadQty) > 0,
+        hasReturnUnload: Number(returnUnloadQty) > 0,
+      };
+    });
+  }, [stopsArr, finalQueuesByLoc, loadByStopId, unloadByStopId, loadByLoc, unloadByLoc]);
+
+  // IMPORTANT: order is from Stops array ONLY (no date sorting)
+  const derivedStops = useMemo(() => routeStops, [routeStops]);
 
   // ======================
   // Sequence helpers
   // ======================
-
-  // new mapping:
-  // totalLoadedPack > 0 => shipping point
-  // totalUnloadedPack > 0 => drop
-  const getLocationRole = (stop) => {
-    const loaded = Number(stop.totalLoadedPack || 0);
-    const unloaded = Number(stop.totalUnloadedPack || 0);
-    if (loaded > 0) return "ship";
-    if (unloaded > 0) return "drop";
-    return "unknown";
-  };
-
-  const allowedSequenceForStop = (stop) => {
-    const seq = (stop.stopseqpos || "").toUpperCase();
-    const role = getLocationRole(stop);
-
-    // helper: last stop = no departure
-    const isLastStop = (() => {
-      const last = derivedStops[derivedStops.length - 1];
-      return last && String(getStopKey(last)) === String(getStopKey(stop));
-    })();
-
-    // If stopseqpos empty (new payload), use role + last-stop rule:
-    if (!seq) {
-      if (role === "ship") return ["items", "departure"]; // load point
-      if (role === "drop")
-        return isLastStop ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
-      return isLastStop ? ["items", "arrival", "pod"] : ["items", "arrival", "pod", "departure"];
-    }
-
-    // fallback for older payloads
-    if (seq === "F") return ["items", "departure"];
-    if (seq === "I") return ["items", "arrival", "pod", "departure"];
-    if (seq === "L") return ["items", "arrival", "pod"];
-    return ["items", "arrival", "pod", "departure"];
-  };
 
   const computeFlagsUpTo = (seq, lastKey) => {
     const idx = seq.indexOf(lastKey);
@@ -232,10 +295,14 @@ const parseSapUtcDateTimeToDate = (dt) => {
     return flags;
   };
 
-  // ✅ your response includes: Timestamp: "20251230124316 "
-  // interpret as UTC 14 digit -> ms
   const extractServerTimestampMs = (body) => {
-    const v = body?.Timestamp ?? body?.timestamp ?? null;
+    const v =
+      body?.Timestamp ??
+      body?.timestamp ??
+      body?.d?.Timestamp ??
+      body?.d?.timestamp ??
+      null;
+
     if (!v) return null;
 
     if (typeof v === "string") {
@@ -246,106 +313,107 @@ const parseSapUtcDateTimeToDate = (dt) => {
     }
 
     if (typeof v === "number") {
-      // if looks like 14-digit
       if (v > 10_000_000_000_000) return parseSapUtcDateTimeToDate(String(v))?.getTime() ?? null;
-      // epoch ms
-      if (v > 1_000_000_000_000) return v;
-      // epoch sec
-      if (v > 1_000_000_000) return v * 1000;
+      if (v > 1_000_000_000_000) return v; // ms
+      if (v > 1_000_000_000) return v * 1000; // sec
     }
 
     return null;
   };
 
-  // ======================
-  // Normalize stops
-  // ======================
-  const stops = useMemo(
-    () =>
-      rawStops.map((s, idx) => ({
-        idx,
-        stopid: s.stopId ?? s.stopid ?? String(idx),
-        locid: s.locId ?? s.locid ?? "",
-        stopseqpos: (s.stopSeqPos ?? s.stopseqpos ?? "").toString().toUpperCase(),
-        dateTime: parseSapUtcDateTimeToDate(s.dateTime ?? s.dateTimeString ?? s.dateTime),
-        name1: s.name1 ?? s.name ?? "",
-        street: s.street ?? "",
-        postCode1: s.postCode1 ?? s.postCode ?? "",
-        city1: s.city1 ?? s.city ?? "",
-        region: s.region ?? "",
-        country: s.country ?? "",
-        eventRaw: (s.event ?? s.Event ?? "") || "",
-        latitude: s.Latitude ?? s.latitude ?? s.lat ?? null,
-        longitude: s.Longitude ?? s.longitude ?? s.lng ?? null,
-        // ✅ NEW: persist actual-reported time from backend
-        actDateTime: parseSapUtcDateTimeToDate(s.actDateTime ?? s.ActDateTime ?? null),
-        totalLoadedPack: Number(s.totalLoadedPack ?? s.TotalLoadedPack ?? 0) || 0,
-        totalUnloadedPack: Number(s.totalUnloadedPack ?? s.TotalUnloadedPack ?? 0) || 0,
-      })),
-    [rawStops]
-  );
+  const isLastStop = (stop) => {
+    const last = derivedStops[derivedStops.length - 1];
+    if (!last) return false;
+    return String(getStopKey(last)) === String(getStopKey(stop));
+  };
 
-  const derivedStops = useMemo(() => {
-    const sorted = [...stops].sort(
-      (a, b) => (a.dateTime?.getTime() ?? 0) - (b.dateTime?.getTime() ?? 0)
-    );
-    return sorted.map((s) => ({
-      ...s,
-      displayLoad: s.totalLoadedPack,
-      displayUnload: s.totalUnloadedPack,
-      // ✅ Return shown on sourceLoc: stop.locid must match sourceLoc set
-      isReturnLocation: returnLocSet.has(String(s.locid || "")),
-    }));
-  }, [stops, returnLocSet]);
+  const isUnloadingLocation = (stop) => {
+    const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
+    return seqPos === "L" || Number(stop.totalUnloadedPack || 0) > 0 || stop.hasReturnUnload;
+  };
+
+  const allowedSequenceForStop = (stop) => {
+    const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
+    const last = isLastStop(stop);
+
+    // Last stop rules:
+    if (last) {
+      if (stop.hasReturnUnload) return ["items", "arrival", "unloading"]; // return drop only
+      if (isUnloadingLocation(stop)) return ["items", "arrival", "unloading", "pod"]; // customer unload
+      return ["items", "arrival"]; // arrival only
+    }
+
+    // First stop (shipping point):
+    if (seqPos === "F") return ["items", "departure"];
+
+    // Intermediate:
+    if (isUnloadingLocation(stop)) return ["items", "arrival", "unloading", "pod", "departure"];
+    return ["items", "arrival", "departure"];
+  };
 
   // ======================
-  // reportedMap:
-  // { stopKey: { items?:true, arrival?:true, departure?:true, pod?:true,
-  //              arrivalAt?:ms, departureAt?:ms, podAt?:ms } }
+  // reportedMap (state)
+  // { stopKey: { items?:true, arrival?:true, unloading?:true, departure?:true, pod?:true,
+  //              arrivalAt?:ms, unloadingAt?:ms, departureAt?:ms, podAt?:ms } }
   // ======================
-  const [reportedMap, setReportedMap] = useState(() => {
+
+  const [reportedMap, setReportedMap] = useState({});
+
+  const mapEventStringToActionKey = (ev) => {
+    if (!ev) return null;
+    const e = String(ev).trim().toUpperCase();
+    const isArr = e.includes("ARRIV") || e.includes("ARRV");
+    const isUnl = e.includes("UNLOAD") || e.includes("UNLD");
+    const isDep = e.includes("DEPART") || e.includes("DEPT");
+    const isPod = e.includes("POD");
+    if (isDep) return "departure";
+    if (isPod) return "pod";
+    if (isUnl) return "unloading";
+    if (isArr) return "arrival";
+    return null;
+  };
+
+  // Init from backend FinalInfo.event + actDateTime (after derivedStops exist)
+  useEffect(() => {
     const m = {};
+
     derivedStops.forEach((s) => {
       const key = getStopKey(s);
-      const ev = (s.eventRaw ?? "").toString().trim().toUpperCase();
-      if (!ev) return;
+      const mapped = mapEventStringToActionKey(s.eventRaw);
+      if (!mapped) return;
 
       const seq = allowedSequenceForStop(s);
-      let flags = {};
-      let lastKey = null;
+      const flags = computeFlagsUpTo(seq, mapped);
 
-      if (ev.includes("DEPART")) {
-        lastKey = "departure";
-        flags = computeFlagsUpTo(seq, "departure");
-      } else if (ev.includes("POD")) {
-        lastKey = "pod";
-        flags = computeFlagsUpTo(seq, "pod");
-      } else if (ev.includes("ARRIV")) {
-        lastKey = "arrival";
-        flags = computeFlagsUpTo(seq, "arrival");
-      }
+      if (!Object.keys(flags).length) return;
 
-      if (Object.keys(flags).length) {
-        const atKey =
-          lastKey === "arrival" ? "arrivalAt" : lastKey === "departure" ? "departureAt" : "podAt";
-        const actMs = s.actDateTime?.getTime?.() ?? null;
+      const atKey =
+        mapped === "arrival"
+          ? "arrivalAt"
+          : mapped === "unloading"
+          ? "unloadingAt"
+          : mapped === "departure"
+          ? "departureAt"
+          : "podAt";
 
-        m[key] = {
-          ...(m[key] || {}),
-          ...flags,
-          ...(actMs ? { [atKey]: actMs } : {}),
-        };
-      }
+      const actMs = s.actDateTime?.getTime?.() ?? null;
+
+      m[key] = {
+        ...(m[key] || {}),
+        ...flags,
+        ...(actMs ? { [atKey]: actMs } : {}),
+      };
     });
-    return m;
-  });
 
-  // ✅ Helper: stop is COMPLETE only when last required step of its seq is reported
+    setReportedMap((prev) => ({ ...m, ...prev }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedStops]);
+
   const isStopComplete = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
     const seq = allowedSequenceForStop(stop).filter((x) => x !== "items");
-    const last = seq[seq.length - 1]; // "departure" or "pod"
+    const last = seq[seq.length - 1];
     return Boolean(r[last]);
   };
 
@@ -356,19 +424,11 @@ const parseSapUtcDateTimeToDate = (dt) => {
     const { event, stopId, ts } = podCompletedInfo;
     if (!stopId) return;
 
-    const ev = String(event || "").toUpperCase();
-    let mapped = null;
-    if (ev.includes("ARRIV")) mapped = "arrival";
-    else if (ev.includes("DEPART")) mapped = "departure";
-    else if (ev.includes("POD")) mapped = "pod";
+    const mapped = mapEventStringToActionKey(event);
     if (!mapped) return;
 
     setReportedMap((prev) => {
-      const copy = { ...prev };
-
-      const matchingStop = derivedStops.find(
-        (s) => (s.stopid || "").toString() === stopId.toString()
-      );
+      const matchingStop = derivedStops.find((s) => String(s.stopid || "") === String(stopId));
       if (!matchingStop) return prev;
 
       const key = getStopKey(matchingStop);
@@ -376,14 +436,22 @@ const parseSapUtcDateTimeToDate = (dt) => {
       const flags = computeFlagsUpTo(seq, mapped);
 
       const atKey =
-        mapped === "arrival" ? "arrivalAt" : mapped === "departure" ? "departureAt" : "podAt";
+        mapped === "arrival"
+          ? "arrivalAt"
+          : mapped === "unloading"
+          ? "unloadingAt"
+          : mapped === "departure"
+          ? "departureAt"
+          : "podAt";
 
-      copy[key] = {
-        ...(copy[key] || {}),
-        ...flags,
-        [atKey]: Number.isFinite(Number(ts)) ? Number(ts) : copy[key]?.[atKey] ?? Date.now(),
+      return {
+        ...prev,
+        [key]: {
+          ...(prev[key] || {}),
+          ...flags,
+          [atKey]: Number.isFinite(Number(ts)) ? Number(ts) : prev[key]?.[atKey] ?? Date.now(),
+        },
       };
-      return copy;
     });
   }, [podCompletedInfo, derivedStops]);
 
@@ -393,7 +461,7 @@ const parseSapUtcDateTimeToDate = (dt) => {
       derivedStops.reduce((acc, s) => {
         const key = getStopKey(s);
         const r = reportedMap[key] || {};
-        return acc + (r.arrival || r.departure || r.pod ? 1 : 0);
+        return acc + (r.arrival || r.unloading || r.departure || r.pod ? 1 : 0);
       }, 0),
     [derivedStops, reportedMap]
   );
@@ -404,7 +472,7 @@ const parseSapUtcDateTimeToDate = (dt) => {
     if (typeof onAction === "function") onAction("progress", progressPercent);
   }, [progressPercent, onAction]);
 
-  // ✅ FIX: next pending stop = first INCOMPLETE stop (not "no event")
+  // next pending stop = first incomplete stop
   const nextPendingIndex = useMemo(() => {
     for (let i = 0; i < derivedStops.length; i++) {
       if (!isStopComplete(derivedStops[i])) return i;
@@ -418,22 +486,11 @@ const parseSapUtcDateTimeToDate = (dt) => {
     onAction("nextStop", { stop: nextStop });
   }, [nextPendingIndex, derivedStops, onAction]);
 
-  // server Event string -> action key
-  const mapServerEventToActionKey = (ev) => {
-    if (!ev) return null;
-    const e = String(ev).toUpperCase();
-    if (e.includes("ARRIV")) return "arrival";
-    if (e.includes("DEPART")) return "departure";
-    if (e.includes("POD")) return "pod";
-    if (e.includes("RETURN")) return "return";
-    return null;
-  };
-
-  // POST event; sends StopId = stop.stopid
+  // POST event (ARRV/DEPT); sends StopId = stop.stopid
   const sendEventReport = async (networkActionCode, stop) => {
     const stopKey = getStopKey(stop);
     const payload = {
-      FoId: FoId ?? selectedShipment.FoId,
+      FoId: FoId,
       Action: networkActionCode,
       StopId: stop.stopid || "",
     };
@@ -464,17 +521,18 @@ const parseSapUtcDateTimeToDate = (dt) => {
       const serverEvent =
         body && (body.Event ?? body.event) ? String(body.Event ?? body.event) : null;
 
-      const mapped = mapServerEventToActionKey(serverEvent);
+      const mapped = mapEventStringToActionKey(serverEvent) || mapEventStringToActionKey(networkActionCode);
       if (!mapped) {
         alert("Backend did not return a valid Event. Cannot move to next step.");
         return { ok: false, body };
       }
 
-      // timestamp from server
       const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
       const atKey =
         mapped === "arrival"
           ? "arrivalAt"
+          : mapped === "unloading"
+          ? "unloadingAt"
           : mapped === "departure"
           ? "departureAt"
           : mapped === "pod"
@@ -482,16 +540,16 @@ const parseSapUtcDateTimeToDate = (dt) => {
           : null;
 
       setReportedMap((prev) => {
-        const copy = { ...prev };
         const seq = allowedSequenceForStop(stop);
         const flags = computeFlagsUpTo(seq, mapped);
-
-        copy[stopKey] = {
-          ...(copy[stopKey] || {}),
-          ...flags,
-          ...(atKey ? { [atKey]: serverTsMs } : {}),
+        return {
+          ...prev,
+          [stopKey]: {
+            ...(prev[stopKey] || {}),
+            ...flags,
+            ...(atKey ? { [atKey]: serverTsMs } : {}),
+          },
         };
-        return copy;
       });
 
       return { ok: true, body, mapped, ts: serverTsMs };
@@ -507,30 +565,87 @@ const parseSapUtcDateTimeToDate = (dt) => {
     }
   };
 
-  // items call unchanged
+  // ✅ Unloading event (ZSKY_SRV)
+  const unloadingUrl = "/odata/v4/GTT/UnloadingSet";
+
+  const sendUnloadingReport = async (stop) => {
+    const stopKey = getStopKey(stop);
+    const sendKey = `${stopKey}_UNLD`;
+
+    try {
+      setSending((p) => ({ ...p, [sendKey]: true }));
+
+      const payload = {
+        FoId: FoId,
+        StopId: stop.stopid || "",
+      };
+
+      const res = await fetch(unloadingUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        alert(`Failed to report unloading — ${res.status}: ${txt}`);
+        return { ok: false };
+      }
+
+      let body = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
+      }
+
+      const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
+
+      setReportedMap((prev) => ({
+        ...prev,
+        [stopKey]: {
+          ...(prev[stopKey] || {}),
+          unloading: true,
+          unloadingAt: serverTsMs,
+        },
+      }));
+
+      return { ok: true, body, mapped: "unloading", ts: serverTsMs };
+    } catch (err) {
+      alert(`Failed to report unloading: ${err.message || err}`);
+      return { ok: false, error: err };
+    } finally {
+      setSending((p) => {
+        const c = { ...p };
+        delete c[sendKey];
+        return c;
+      });
+    }
+  };
+
+  // Shipment Items (includes StopId)
   const fetchItemsForStop = async (stop) => {
-    setItemsStop(stop);
+    setItemsStop({ ...stop, items: [], itemsType: "shipment" });
     setShowItems(true);
     setItemsLoading(true);
 
     try {
       const loc = stop.locid || stop.stopid || "";
-      const foId = selectedShipment.FoId;
+      const stopId = stop.stopid || "";
 
-      if (!loc || !foId) {
-        console.warn("Missing loc or FoId for items call", { loc, foId });
+      if (!loc || !FoId) {
         setItemsStop((s) => ({ ...s, items: [] }));
         return;
       }
 
       const url =
         `/odata/v4/GTT/shipmentItems` +
-        `?$filter=FoId eq '${foId}'` +
-        ` and Location eq '${loc}'`;
+        `?$filter=FoId eq '${FoId}'` +
+        ` and Location eq '${loc}'` +
+        ` and StopId eq '${stopId}'`;
 
       const res = await fetch(url);
       if (!res.ok) {
-        console.error("shipmentItems call failed", res.status, res.statusText);
         setItemsStop((s) => ({ ...s, items: [] }));
         return;
       }
@@ -545,8 +660,52 @@ const parseSapUtcDateTimeToDate = (dt) => {
         ...prev,
         [key]: { ...(prev[key] || {}), items: true },
       }));
-    } catch (e) {
-      console.warn("Failed to fetch items", e);
+    } catch {
+      setItemsStop((s) => ({ ...s, items: [] }));
+    } finally {
+      setItemsLoading(false);
+    }
+  };
+
+  // ✅ Return Items (view-only)
+  const fetchReturnItemsForStop = async (stop) => {
+    setItemsStop({ ...stop, items: [], itemsType: "return" });
+    setShowItems(true);
+    setItemsLoading(true);
+
+    try {
+      const loc = stop.locid || "";
+      const stopId = stop.stopid || "";
+
+      if (!FoId || !loc || !stopId) {
+        setItemsStop((s) => ({ ...s, items: [] }));
+        return;
+      }
+
+      const url =
+        `/odata/v4/GTT/ReturnItemsSet` +
+        `?$filter=FoId eq '${FoId}' and Location eq '${loc}' and StopId eq '${stopId}'`;
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        setItemsStop((s) => ({ ...s, items: [] }));
+        return;
+      }
+
+      const json = await res.json().catch(() => null);
+      const row = Array.isArray(json?.value) ? json.value[0] : null;
+      const loaded = row?.LoadedItems ?? null;
+
+      let items = [];
+      try {
+        if (typeof loaded === "string") items = JSON.parse(loaded);
+        else if (Array.isArray(loaded)) items = loaded;
+      } catch {
+        items = [];
+      }
+
+      setItemsStop((s) => ({ ...s, items }));
+    } catch {
       setItemsStop((s) => ({ ...s, items: [] }));
     } finally {
       setItemsLoading(false);
@@ -557,6 +716,7 @@ const parseSapUtcDateTimeToDate = (dt) => {
     setAnchorEl(event.currentTarget);
     setActiveStopKey(stopKey);
   };
+
   const handleMenuClose = () => {
     setAnchorEl(null);
     setActiveStopKey(null);
@@ -570,9 +730,16 @@ const parseSapUtcDateTimeToDate = (dt) => {
 
     const stopIndex = derivedStops.findIndex((s) => getStopKey(s) === activeStopKey);
 
+    // Always-allowed views:
     if (actionKey === "items") {
       await fetchItemsForStop(stop);
       if (typeof onAction === "function") onAction("items", stop);
+      return;
+    }
+
+    if (actionKey === "return") {
+      await fetchReturnItemsForStop(stop);
+      if (typeof onAction === "function") onAction("return", { stop });
       return;
     }
 
@@ -582,13 +749,7 @@ const parseSapUtcDateTimeToDate = (dt) => {
       return;
     }
 
-    // Return placeholder
-    if (actionKey === "return") {
-      alert("Return functionality will be added later. UI is ready.");
-      return;
-    }
-
-    // ✅ FIX: strict stop order enforcement (ONLY current pending stop can be reported)
+    // strict stop order gating for events (arrival/unloading/departure)
     const allowedToAct = stopIndex === nextPendingIndex;
     if (!allowedToAct) {
       alert("Please report stops in order. Complete the current stop first.");
@@ -605,7 +766,7 @@ const parseSapUtcDateTimeToDate = (dt) => {
       return;
     }
 
-    const priorActions = seq.slice(1, actionIndex);
+    const priorActions = actionIndex > 1 ? seq.slice(1, actionIndex) : []; // skip "items"
     const priorAllReported = priorActions.every((pa) => Boolean(reported[pa]));
     if (!priorAllReported) {
       alert("Please follow the event sequence for this stop. Report earlier events first.");
@@ -621,50 +782,45 @@ const parseSapUtcDateTimeToDate = (dt) => {
       return;
     }
 
+    if (actionKey === "unloading") {
+      const r = await sendUnloadingReport(stop);
+      if (r.ok && typeof onAction === "function") {
+        onAction("unloading", { stop, response: r.body, ts: r.ts });
+      }
+      return;
+    }
+
     if (typeof onAction === "function") onAction(actionKey, stop);
   };
 
-  // Badge ONLY for reported events
+  // Badge ONLY for reported events (NO return badge)
   const badgeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
     if (r.pod) return "Delivered";
+    if (r.unloading) return "Unloaded";
     if (r.departure) return "Departed";
     if (r.arrival) return "Arrived";
     return "";
   };
 
-  // Color coding:
-  // - Departure only => GREEN
-  // - Any other event => ORANGE
-  // - Not reached => BLUE
+  const colorForStop = (stop) => {
+    const key = getStopKey(stop);
+    const r = reportedMap[key] || {};
+    const last = isLastStop(stop);
 
-  const isLastStop = (stop) => {
-  const last = derivedStops[derivedStops.length - 1];
-  if (!last) return false;
-  return String(getStopKey(last)) === String(getStopKey(stop));
-};
-
- const colorForStop = (stop) => {
-  const key = getStopKey(stop);
-  const r = reportedMap[key] || {};
-
-  const last = isLastStop(stop);
-
-  if (last && (r.pod || (r.arrival && r.pod))) return GREEN;
-
-  // existing rules
-  if (r.departure) return GREEN;              
-  if (r.arrival || r.pod) return ORANGE;      
-  return BLUE;                               
-};
+    if (last && isStopComplete(stop)) return GREEN;
+    if (r.departure) return GREEN;
+    if (r.arrival || r.unloading || r.pod) return ORANGE;
+    return BLUE;
+  };
 
   // Actual reported time per stop:
-  // prefer reportedMap timestamps, else fallback to backend actDateTime (persist across re-search)
+  // prefer reportedMap timestamps, else fallback to backend actDateTime
   const actualReportedTimeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
-    const ms = r.departureAt ?? r.podAt ?? r.arrivalAt ?? null;
+    const ms = r.podAt ?? r.unloadingAt ?? r.departureAt ?? r.arrivalAt ?? null;
     if (ms) return new Date(ms);
     return stop.actDateTime || null;
   };
@@ -706,6 +862,13 @@ const parseSapUtcDateTimeToDate = (dt) => {
           if (seq.includes("arrival") && !reported.arrival)
             menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
 
+          if (seq.includes("unloading") && !reported.unloading)
+            menuOptions.push({
+              key: "unloading",
+              label: "Unloading",
+              Icon: Inventory2OutlinedIcon,
+            });
+
           if (seq.includes("pod") && !reported.pod)
             menuOptions.push({
               key: "pod",
@@ -716,23 +879,23 @@ const parseSapUtcDateTimeToDate = (dt) => {
           if (seq.includes("departure") && !reported.departure)
             menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
 
-          if (stop.isReturnLocation)
+          // Return viewer action only if return exists
+          if (stop.hasReturnLoad || stop.hasReturnUnload)
             menuOptions.push({
               key: "return",
-              label: "Return",
+              label: "Return Items",
               Icon: ReplayRoundedIcon,
             });
 
-          // planned datetime (UTC from backend -> local display)
           const plannedText = formatDateTimeLocal(stop.dateTime);
 
-          // actual reported time
           const actualReportedDate = actualReportedTimeForStop(stop);
-         const actualText = actualReportedDate ? formatDateTimeLocal(actualReportedDate) : "-";
+          const actualText = actualReportedDate ? formatDateTimeLocal(actualReportedDate) : "-";
 
-          // load/unload
           const load = Number(stop.displayLoad || 0);
           const unload = Number(stop.displayUnload || 0);
+          const returnLoadQty = Number(stop.returnLoadQty || 0);
+          const returnUnloadQty = Number(stop.returnUnloadQty || 0);
 
           return (
             <div key={key} className="flex items-start mb-4 min-w-0">
@@ -816,6 +979,7 @@ const parseSapUtcDateTimeToDate = (dt) => {
                     {plannedText}
                   </p>
 
+                  {/* Materials + Return (always show return when present) */}
                   <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13 }}>
                     {load > 0 ? (
                       <div>Material Load : {load} Packages</div>
@@ -823,6 +987,15 @@ const parseSapUtcDateTimeToDate = (dt) => {
                       <div>Material Unload : {unload} Packages</div>
                     ) : (
                       <div>Material : —</div>
+                    )}
+
+                    {(returnLoadQty > 0 || returnUnloadQty > 0) && (
+                      <div style={{ marginTop: 4, fontWeight: 700 }}>
+                        {returnLoadQty > 0 ? (
+                          <span style={{ marginRight: 10 }}>Return Load : {returnLoadQty}</span>
+                        ) : null}
+                        {returnUnloadQty > 0 ? <span>Return Unload : {returnUnloadQty}</span> : null}
+                      </div>
                     )}
                   </div>
 
@@ -849,10 +1022,7 @@ const parseSapUtcDateTimeToDate = (dt) => {
                       }}
                     />
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <Typography
-                        variant="caption"
-                        sx={{ color: TEXT_SECONDARY, display: "block" }}
-                      >
+                      <Typography variant="caption" sx={{ color: TEXT_SECONDARY, display: "block" }}>
                         Address
                       </Typography>
                       <Typography
@@ -904,19 +1074,6 @@ const parseSapUtcDateTimeToDate = (dt) => {
                         }}
                       >
                         {badge}
-                      </span>
-                    ) : null}
-
-                    {stop.isReturnLocation ? (
-                      <span
-                        className="px-2 py-1 rounded-full text-[10px] font-semibold"
-                        style={{
-                          backgroundColor: "rgba(0,0,0,0.05)",
-                          color: TEXT_PRIMARY,
-                          display: "inline-block",
-                        }}
-                      >
-                        Return
                       </span>
                     ) : null}
                   </div>
@@ -988,21 +1145,24 @@ const parseSapUtcDateTimeToDate = (dt) => {
                       ? "DEPT"
                       : opt.key === "pod"
                       ? "POD"
-                      : opt.key === "return"
-                      ? "RETURN"
-                      : null;
+                      : opt.key === "unloading"
+                      ? "UNLD"
+                      : opt.key;
 
-                  const isSending = Boolean(sending[`${key}_${codeForNetwork ?? opt.key}`]);
+                  const isSending =
+                    opt.key === "unloading"
+                      ? Boolean(sending[`${key}_UNLD`])
+                      : Boolean(sending[`${key}_${codeForNetwork}`]);
 
                   // sequence enable logic
                   const reportedForStop = reportedMap[key] || {};
                   const seqForStop = allowedSequenceForStop(stop);
                   const idxOfThisAction = seqForStop.indexOf(opt.key);
 
-                  const priorActions = seqForStop.slice(1, Math.max(1, idxOfThisAction));
+                  const priorActions = idxOfThisAction > 1 ? seqForStop.slice(1, idxOfThisAction) : [];
                   const priorAllReported = priorActions.every((pa) => Boolean(reportedForStop[pa]));
 
-                  // ✅ STRICT stop gating: only current pending stop can execute events
+                  // strict stop gating only for events; items/return always enabled
                   const allowedStop = idx === nextPendingIndex;
 
                   const enabled =
@@ -1010,6 +1170,8 @@ const parseSapUtcDateTimeToDate = (dt) => {
                       ? true
                       : opt.key === "return"
                       ? true
+                      : opt.key === "pod"
+                      ? priorAllReported && allowedStop
                       : allowedStop && priorAllReported;
 
                   return (

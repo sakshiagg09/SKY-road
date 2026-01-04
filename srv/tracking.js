@@ -1,7 +1,7 @@
 // srv/tracking.js
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
-const licenseOcr = require("./licenseOcrService"); // 👈 NEW
+const licenseOcr = require("./licenseOcrService");
 const application  = process.env.EVENT_API_BASE
 
 const { UPSERT } = cds.ql;
@@ -108,7 +108,7 @@ async function s4Post(url, payload) {
     { destinationName: DESTINATION },
     {
       method: "POST",
-      url, // <-- relative to destination URL
+      url, 
       data: payload,
       headers: {
         "x-csrf-token": token,
@@ -134,7 +134,10 @@ module.exports = cds.service.impl(async function () {
     updatesPOD,
     shipmentItems,
     attachmentUpload,
-    delayEvents
+    delayEvents,
+    ReturnItemsSet,
+    UnloadingSet,
+    AttachmentsSet
   } = this.entities;
 
   // DB tables (persistent)
@@ -179,6 +182,7 @@ module.exports = cds.service.impl(async function () {
         FinalInfo: row.FinalInfo ?? null,
         DirectionsInfo: row.DirectionsInfo ?? null,
         StopInfo: row.StopInfo ?? null,
+        Stops:row.Stops??null,
       }),
       "Shipments"
     );
@@ -193,6 +197,7 @@ module.exports = cds.service.impl(async function () {
         FinalInfo: row.FinalInfo,
         DirectionsInfo: row.DirectionsInfo,
         StopInfo: row.StopInfo,
+        Stops: row.Stops,
       },
     ];
   });
@@ -201,14 +206,18 @@ module.exports = cds.service.impl(async function () {
   // READ shipmentItems (unchanged)
   // ---------------------------------------------------------------------------
   this.on("READ", shipmentItems, async (req) => {
-  const foId = getFilterVal(req, "FoId") ?? req.query.SELECT.where?.[2]?.val;
-  const location = getFilterVal(req, "Location") ?? req.query.SELECT.where?.[6]?.val;
+  const foId = getFilterVal(req, "FoId");
+  const location = getFilterVal(req, "Location");
+  const stopId = getFilterVal(req, "StopId")
 
-  if (!foId || !location) return [];
+    if (!foId || !location || !stopId) return [];
+
+  const esc = (s) => String(s).replace(/'/g, "''");
 
   // ✅ READ BY KEY (not $filter)
-  const path =
-    `/ItemsSet(Location='${location}',FoId='${foId}')?$format=json`;
+   const path =
+    `/ItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
+
 
   const v2 = await s4Get(path);
 
@@ -220,6 +229,7 @@ module.exports = cds.service.impl(async function () {
   return [{
     FoId: d.FoId,
     Location: d.Location,
+    StopId: d.StopId,
     ReturnLoaded: d.ReturnLoaded,
     ReturnUnloaded: d.ReturnUnloaded,
     UnloadedItems: d.UnloadedItems,
@@ -269,6 +279,76 @@ module.exports = cds.service.impl(async function () {
       Description: r.Description || "",
     }));
   });
+  //Return Item Set Logic 
+  this.on("READ", ReturnItemsSet, async (req) => {
+  const foId = getFilterVal(req, "FoId");
+  const location = getFilterVal(req, "Location");
+  const stopId = getFilterVal(req, "StopId");
+
+  if (!foId || !location || !stopId) return [];
+
+  const esc = (s) => String(s).replace(/'/g, "''");
+
+  // OData V2 key read
+  const path =
+    `/ReturnItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
+
+  const v2 = await s4Get(path);
+  const d = v2; // s4Get already returns res.data?.d ?? res.data
+  if (!d) return [];
+
+  // Return as CAP entity row
+  return [
+    {
+      FoId: d.FoId ?? foId,
+      Location: d.Location ?? location,
+      StopId: d.StopId ?? stopId,
+      LoadedItems: d.LoadedItems ?? "[]", // keep as string (frontend parses JSON)
+    },
+  ];
+});
+
+  //Unloading event logic
+  this.on("CREATE", UnloadingSet, async (req) => {
+  const { FoId, StopId } = req.data || {};
+  if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
+
+  // Post to OData V2 backend
+  const d = await s4Post("/UnloadingSet", { FoId, StopId });
+
+  // Return something useful to UI (even if backend returns minimal)
+  return {
+    FoId: d?.FoId ?? FoId,
+    StopId: d?.StopId ?? StopId,
+    Event: d?.Event ?? "UNLOADING",
+    Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
+  };
+});
+  // Attachments 
+this.on("READ", AttachmentsSet, async (req) => {
+    const foId = getFilterVal(req, "FoId");
+    if (!foId) return []; // keep safe
+
+    const esc = (s) => String(s).replace(/'/g, "''");
+
+    // ✅ OData V2 filter read
+    const path =
+      `/AttachmentsSet?$filter=FoId eq '${esc(foId)}'&$format=json`;
+
+    const v2 = await s4Get(path);
+    const rows = normalizeV2(v2);
+
+    return rows.map((r) => ({
+      FoId: r.FoId || foId,
+      FileName: r.FileName || "",
+      Description: r.Description || "",
+      CreatedBy: r.CreatedBy || "",
+      FileType: r.FileType || "",
+      MimeCode: r.MimeCode || "",
+      PDFBase64: r.PDFBase64 || "", // ⚠️ big; UI should not request this in list ideally
+    }));
+  });
+
 
   // ---------------------------------------------------------------------------
   // OCR ACTION: extractLicenseNumber

@@ -8,6 +8,7 @@ import ReportEventDialog from "./components/ReportEventDialog";
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
 import { Capacitor } from "@capacitor/core";
 import { loginPKCE, loadToken } from "./auth/auth";
+import AttachmentsPage from "./pages/AttachmentsPage"; // ✅ NEW
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
@@ -141,6 +142,10 @@ export default function App() {
     window.open(url, "_blank", "noopener,noreferrer");
   }, [selectedShipment]);
 
+   const effectiveFoId =
+    selectedShipment?.FoId || selectedShipment?.FoID || selectedShipment?.foId || "";
+  const hasShipment = Boolean(String(effectiveFoId || "").trim());
+
   const renderPage = () => {
     switch (activeTab) {
       case "home":
@@ -159,6 +164,14 @@ export default function App() {
               if (action === "nextStop") setNextStop(payload?.stop || null); // keep
               console.log("Timeline action:", action, payload);
             }}
+          />
+        );
+
+      case "attachments":
+        return (
+          <AttachmentsPage
+            foId={effectiveFoId}
+            onBack={() => setActiveTab("track")}
           />
         );
 
@@ -209,6 +222,9 @@ export default function App() {
         setActiveTab={setActiveTab}
         onReportClick={() => handleOpenReport("unplanned")}
         onMapClick={openFullRouteInMaps}   // ✅ now opens full route
+        // ✅ NEW: attachments wiring
+        hasShipment={hasShipment}
+        onAttachmentsClick={() => setActiveTab("attachments")}
       />
 
       <ReportEventDialog

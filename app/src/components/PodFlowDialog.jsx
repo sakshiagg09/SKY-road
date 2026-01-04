@@ -12,7 +12,7 @@ import {
   List,
   ListItemButton,
   TextField,
-  Chip,
+  InputAdornment,
 } from "@mui/material";
 
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -20,9 +20,7 @@ import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
-import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 
-import MaterialItemList from "../components/MaterialItemList";
 import SignatureAttachmentsSection from "./SignatureAttachmentsSection";
 
 // COLORS
@@ -46,11 +44,10 @@ export default function PodFlowDialog({
   // attachments proxy endpoint (CAP -> /AttachmentsSet in S/4)
   attachmentsUrl = "/odata/v4/GTT/attachmentUpload",
 }) {
-  // step: question -> items (when discrepancy) -> editItem -> signature
-  const [step, setStep] = useState("question"); // 'question' | 'items' | 'editItem' | 'signature'
+  // step: question -> items (when discrepancy) -> signature
+  const [step, setStep] = useState("question"); // 'question' | 'items' | 'signature'
   const [items, setItems] = useState([]);
-  const [baselineItems, setBaselineItems] = useState([]); // used to detect qty changes
-  const [editingItem, setEditingItem] = useState(null);
+  const [baselineItems, setBaselineItems] = useState([]);
 
   // signature is a dataURL (data:image/jpeg;base64,...)
   const [signature, setSignature] = useState("");
@@ -116,51 +113,96 @@ export default function PodFlowDialog({
     effectiveStop?.stopid ||
     "Selected Stop";
 
-  // Prefer Location (like "1000000000") as StopId for POD API
-const stopIdValue = String(
-  stop?.stopid ||
-    stop?.stopId ||
-    stop?.StopId ||
-    effectiveStop?.stopid ||
-    effectiveStop?.stopId ||
-    effectiveStop?.StopId ||
-    stop?.STOPID ||
-    effectiveStop?.STOPID ||
-    ""
-);
+  // ✅ IMPORTANT: StopId and Location must be different
+  const stopIdValue = String(
+    stop?.stopid ||
+      stop?.stopId ||
+      stop?.StopId ||
+      effectiveStop?.stopid ||
+      effectiveStop?.stopId ||
+      effectiveStop?.StopId ||
+      stop?.STOPID ||
+      effectiveStop?.STOPID ||
+      ""
+  );
 
-  // ----------------- normalise shipmentItems -----------------
+  const locationValue = String(
+    stop?.locid ||
+      stop?.locId ||
+      stop?.Location ||
+      effectiveStop?.locid ||
+      effectiveStop?.locId ||
+      ""
+  );
+
+  // ----------------- helpers: parse JSON-string arrays -----------------
+  const safeJsonArray = (v) => {
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s || s === "0") return [];
+      try {
+        const parsed = JSON.parse(s);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  const extractItemListFromShipmentItemsRow = (row0) => {
+    const loaded = safeJsonArray(row0?.LoadedItems);
+    if (loaded.length) return loaded;
+    const unloaded = safeJsonArray(row0?.UnloadedItems);
+    if (unloaded.length) return unloaded;
+    const retLoaded = safeJsonArray(row0?.ReturnLoaded);
+    if (retLoaded.length) return retLoaded;
+    const retUnloaded = safeJsonArray(row0?.ReturnUnloaded);
+    if (retUnloaded.length) return retUnloaded;
+    return [];
+  };
+
+  // ----------------- normalise item object -----------------
   const normaliseItem = (raw, index) => {
-    const baseQty = Number(raw.Quantity ?? raw.Qty ?? 0);
+    const qty = Number(raw.quantity ?? raw.Quantity ?? raw.Qty ?? 0) || 0;
+
+    const itemId = String(raw.itemId ?? raw.ItemId ?? "").trim();
+    const packageId = String(raw.packageid ?? raw.PackageId ?? "").trim();
+
+    const loc = String(raw.location ?? raw.Location ?? locationValue ?? "").trim();
+    const stp = String(raw.stopId ?? raw.StopId ?? stopIdValue ?? "").trim();
+
+    const uom = raw.quantityuom || raw.QuantityUom || "EA";
+
     return {
-      id: raw.PackageId || `${index}`,
-      FoId: raw.FoId,
-      Location: raw.Location,
-      PackageId: raw.PackageId,
-      ItemDescr: raw.ItemDescr,
-      ItemCat: raw.ItemCat,
-      Type: raw.Type,
-      Quantity: baseQty,
-      QuantityUom: raw.QuantityUom || "EA",
-      GrossWeight: raw.GrossWeight,
-      GrossWeightUom: raw.GrossWeightUom,
-      StopId: raw.StopId || "",
+      id: packageId || itemId || `${index}`,
+      itemId,
+      FoId: raw.foId || raw.FoId || effectiveFoId,
+      Location: loc,
+      PackageId: packageId,
+      ItemDescr: raw.itemDescr || raw.ItemDescr || "",
+      ItemCat: raw.itemCat || raw.ItemCat || "",
+      StopId: stp,
+      QuantityUom: uom,
+      GrossWeight: raw.grossweight ?? raw.GrossWeight ?? null,
+      GrossWeightUom: raw.grossweightuom || raw.GrossWeightUom || "",
+
       // UI fields
-      description: raw.ItemDescr || "",
-      category: raw.ItemCat || "",
-      productId: raw.PackageId || "",
-      qty: baseQty,
-      uom: raw.QuantityUom || "EA",
+      description: raw.itemDescr || raw.ItemDescr || "",
+      category: raw.itemCat || raw.ItemCat || "",
+      qty,
+      uom,
     };
   };
 
-  // ----------------- load real items -----------------
+  // ----------------- load items -----------------
   useEffect(() => {
     const resetState = () => {
       setStep("question");
       setItems([]);
       setBaselineItems([]);
-      setEditingItem(null);
       setSignature("");
       setAttachments([]);
       setHasDiscrepancy(false);
@@ -177,16 +219,17 @@ const stopIdValue = String(
       try {
         setItemsLoading(true);
 
-        // If items already on stop (from timeline), reuse
+        // If items already on stop (from timeline), reuse but parse wrapper row
         if (Array.isArray(stop?.items) && stop.items.length > 0) {
-          const norm = stop.items.map((it, idx) => normaliseItem(it, idx));
+          const row0 = stop.items[0] || {};
+          const list = extractItemListFromShipmentItemsRow(row0);
+          const norm = list.map((it, idx) => normaliseItem(it, idx));
           setItems(norm);
           setBaselineItems(norm);
           return;
         }
 
-        // Otherwise, load from backend
-        if (!effectiveFoId || !stopIdValue) {
+        if (!effectiveFoId || !stopIdValue || !locationValue) {
           setItems([]);
           setBaselineItems([]);
           return;
@@ -195,24 +238,23 @@ const stopIdValue = String(
         const url =
           `${itemsUrl}` +
           `?$filter=FoId eq '${effectiveFoId}'` +
-          ` and Location eq '${stopIdValue}'`;
+          ` and Location eq '${locationValue}'` +
+          ` and StopId eq '${stopIdValue}'`;
 
         const res = await fetch(url);
         if (!res.ok) {
-          console.error(
-            "shipmentItems OData failed",
-            res.status,
-            res.statusText
-          );
+          console.error("shipmentItems OData failed", res.status, res.statusText);
           setItems([]);
           setBaselineItems([]);
           return;
         }
 
         const json = await res.json().catch(() => null);
-        const arr = Array.isArray(json?.value) ? json.value : [];
-        const norm = arr.map((it, idx) => normaliseItem(it, idx));
+        const rows = Array.isArray(json?.value) ? json.value : [];
+        const row0 = rows[0] || {};
+        const list = extractItemListFromShipmentItemsRow(row0);
 
+        const norm = list.map((it, idx) => normaliseItem(it, idx));
         setItems(norm);
         setBaselineItems(norm);
       } catch (e) {
@@ -226,7 +268,7 @@ const stopIdValue = String(
 
     loadItems();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, effectiveFoId, stopIdValue]);
+  }, [open, effectiveFoId, stopIdValue, locationValue]);
 
   // ----------------------------- Payload builders -----------------------------
   const buildNoDiscrepancyPayload = () => ({
@@ -237,32 +279,26 @@ const stopIdValue = String(
 
   const buildDiscrepancyPayload = () => {
     const changed = (items || []).filter((it) => {
-      const base = (baselineItems || []).find(
-        (b) =>
-          String(b.PackageId) === String(it.PackageId) &&
-          String(b.Location) === String(it.Location)
-      );
+      const base = (baselineItems || []).find((b) => String(b.id) === String(it.id));
       if (!base) return true;
-      return Number(base.Quantity) !== Number(it.qty);
+      return Number(base.qty) !== Number(it.qty);
     });
 
     if (changed.length === 0) {
-      throw new Error(
-        "You marked discrepancy but no item quantity was changed."
-      );
+      throw new Error("You marked discrepancy but no item quantity was changed.");
     }
 
     const mapped = changed.map((it) => ({
-      item_id: String(it.PackageId), // correct mapping
-      stop_id: String(it.StopId), // correct mapping
+      item_id: String(it.itemId || it.PackageId || it.id || ""),
+      stop_id: String(stopIdValue),
       ActQty: String(Number(it.qty)),
-      ActQtyUom: String(it.QuantityUom || it.uom || "EA"),
+      ActQtyUom: String(it.uom || it.QuantityUom || "EA"),
     }));
 
     return {
       FoId: effectiveFoId,
       Discrepency: "X",
-      Items: JSON.stringify(mapped), // backend expects JSON string
+      Items: JSON.stringify(mapped),
       StopId: stopIdValue,
     };
   };
@@ -279,20 +315,11 @@ const stopIdValue = String(
       throw new Error(`OData POST failed (${res.status}). ${text}`);
     }
 
-    // 👉 This will be your object:
-    // {
-    //   "@odata.context": "...",
-    //   "Event": "POD",
-    //   "StopId": "...",
-    //   "FoId": "..."
-    //   ...
-    // }
     const json = await res.json().catch(() => null);
     return json;
   };
 
   // ----------------------------- Attachments + Signature upload -----------------------------
-
   const readFileAsBase64 = (file) =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -320,7 +347,7 @@ const stopIdValue = String(
 
     const payload = {
       FoId: effectiveFoId,
-      FileType: fileType, // e.g. JPG, PNG, PDF, ...
+      FileType: fileType,
       PDFBase64: base64,
     };
 
@@ -337,17 +364,15 @@ const stopIdValue = String(
     }
   };
 
-  // Signature as JPG
   const uploadSignatureAttachment = async () => {
     if (!attachmentsUrl || !effectiveFoId || !signature) return;
 
-    // signature is like "data:image/jpeg;base64,AAAA..."
     const base64 = signature.split(",")[1] || "";
     if (!base64) return;
 
     const payload = {
       FoId: effectiveFoId,
-      FileType: "JPG", // signature stored as JPG in backend
+      FileType: "JPG",
       PDFBase64: base64,
     };
 
@@ -363,14 +388,16 @@ const stopIdValue = String(
   };
 
   const uploadAllAttachmentsAndSignature = async () => {
-    // sequential, simple – change to Promise.all if backend can handle parallel
     for (const file of attachments || []) {
       await uploadSingleAttachment(file);
     }
     await uploadSignatureAttachment();
   };
 
-  // ----------------------------- Navigation / handlers -----------------------------
+  // ----------------------------- handlers -----------------------------
+  const closeDialog = () => {
+    if (typeof onClose === "function") onClose();
+  };
 
   const handleNoDiscrepancy = () => {
     setHasDiscrepancy(false);
@@ -386,30 +413,16 @@ const stopIdValue = String(
     setStep("items");
   };
 
-  const handleEditClick = (item) => {
-    setEditingItem(item);
-    setStep("editItem");
-  };
-
-  const handleEditSave = () => {
-    if (!editingItem) return;
+  // ✅ Easy inline qty edit (no +/-)
+  const updateQty = (id, value) => {
+    const n = Number(value);
     setItems((prev) =>
-      prev.map((i) =>
-        String(i.PackageId) === String(editingItem.PackageId) &&
-        String(i.Location) === String(editingItem.Location)
-          ? editingItem
-          : i
+      prev.map((it) =>
+        String(it.id) === String(id)
+          ? { ...it, qty: Number.isFinite(n) ? n : 0 }
+          : it
       )
     );
-    setStep("items");
-  };
-
-  const handleEditChange = (field, value) => {
-    setEditingItem((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const closeDialog = () => {
-    if (typeof onClose === "function") onClose();
   };
 
   const handleFileAdd = (event) => {
@@ -430,17 +443,14 @@ const stopIdValue = String(
 
       setSubmitting(true);
       if (!payload.FoId) throw new Error("Missing FoId.");
+      if (!payload.StopId) throw new Error("Missing StopId.");
 
-      // 1) Submit POD and get backend result (with Event/FoId/StopId)
       const podResult = await postToOData(payload);
 
-      // 2) Submit attachments + signature (if any)
       if ((attachments && attachments.length > 0) || signature) {
         await uploadAllAttachmentsAndSignature();
       }
 
-      // 3) Notify parent that POD is successfully done
-      //    -> parent can update timeline based on podResult.Event
       if (typeof onSubmit === "function") {
         onSubmit({
           payload,
@@ -448,7 +458,6 @@ const stopIdValue = String(
         });
       }
 
-      // 4) Close dialog
       closeDialog();
     } catch (e) {
       console.error(e);
@@ -545,14 +554,10 @@ const stopIdValue = String(
             <LocalShippingIcon sx={{ fontSize: 18, color: PRIMARY }} />
           </Box>
           <Box>
-            <Typography
-              sx={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}
-            >
+            <Typography sx={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>
               FREIGHT ORDER ID
             </Typography>
-            <Typography
-              sx={{ fontSize: 13, color: TEXT_PRIMARY, fontWeight: 700 }}
-            >
+            <Typography sx={{ fontSize: 13, color: TEXT_PRIMARY, fontWeight: 700 }}>
               {effectiveFoId || "Not Selected"}
             </Typography>
           </Box>
@@ -664,57 +669,57 @@ const stopIdValue = String(
     </>
   );
 
-  // STEP 2 – ITEMS
+  // STEP 2 – ITEMS (ONLY list + editable qty field)
   const renderStepItems = () => (
     <>
-      {renderHeader("Items (Discrepancy)")}
+      {renderHeader("Adjust Item Quantities")}
 
-      <Box sx={{ flex: 1, bgcolor: BG, overflowY: "auto" }}>
-        <MaterialItemList
-          stop={{ ...(stop || {}), items }}
-          loading={itemsLoading}
-          items={items}
-          onItemsChange={setItems}
-          onBack={() => {
-            setHasDiscrepancy(false);
-            setStep("question");
+      <DialogContent
+        sx={{
+          px: 3,
+          py: 3,
+          bgcolor: BG,
+          flex: 1,
+          overflowY: "auto",
+        }}
+      >
+        <Box
+          sx={{
+            bgcolor: CARD,
+            borderRadius: 3,
+            overflow: "hidden",
+            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
           }}
-          onConfirm={() => setStep("signature")}
-        />
-
-        <Box sx={{ px: 3, pb: 3, pt: 1.5 }}>
-          <Typography
-            sx={{
-              fontSize: 12,
-              color: TEXT_SECONDARY,
-              textTransform: "uppercase",
-              letterSpacing: 1.2,
-              mb: 1,
-            }}
-          >
-            Adjust quantities (for payload)
-          </Typography>
-
-          <Box
-            sx={{
-              bgcolor: CARD,
-              borderRadius: 3,
-              overflow: "hidden",
-              boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
-            }}
-          >
+        >
+          {itemsLoading ? (
+            <Box sx={{ px: 3, py: 2 }}>
+              <Typography
+                sx={{ fontSize: 13, color: TEXT_SECONDARY, fontStyle: "italic" }}
+              >
+                Loading items…
+              </Typography>
+            </Box>
+          ) : items.length === 0 ? (
+            <Box sx={{ px: 3, py: 2 }}>
+              <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY }}>
+                No items found for this stop.
+              </Typography>
+            </Box>
+          ) : (
             <List disablePadding>
               {items.map((item, index) => (
-                <React.Fragment key={`${item.PackageId}_${item.Location}`}>
+                <React.Fragment
+                  key={`${item.id}_${item.Location}_${item.StopId}_${index}`}
+                >
                   <ListItemButton
                     disableRipple
-                    onClick={() => handleEditClick(item)}
                     sx={{
                       alignItems: "flex-start",
                       flexDirection: "column",
-                      py: 1.5,
+                      py: 1.4,
                       px: 3,
                       "&:hover": { backgroundColor: "#F7F8FC" },
+                      cursor: "default",
                     }}
                   >
                     <Box
@@ -723,71 +728,69 @@ const stopIdValue = String(
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "flex-start",
+                        gap: 1,
                         mb: 0.5,
                       }}
                     >
                       <Typography
                         sx={{
                           fontSize: 13,
-                          fontWeight: 600,
+                          fontWeight: 700,
                           color: PRIMARY,
-                          textDecoration: "underline",
-                          textUnderlineOffset: "2px",
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
                         }}
+                        title={item.description}
                       >
-                        {item.description}
+                        {item.description || "Item"}
                       </Typography>
-                      <Typography
-                        sx={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          color: TEXT_SECONDARY,
-                        }}
-                      >
-                        {item.productId}
-                      </Typography>
+
+                      
                     </Box>
 
-                    <Typography
-                      sx={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: TEXT_PRIMARY,
-                      }}
-                    >
-                      {item.category}
-                    </Typography>
+                    {!!item.category && (
+                      <Typography
+                        sx={{ fontSize: 12, color: TEXT_SECONDARY, mb: 1 }}
+                      >
+                        {item.category}
+                      </Typography>
+                    )}
 
-                    <Box
+                    <TextField
+                      size="small"
+                      type="number"
+                      label="Quantity"
+                      value={Number.isFinite(item.qty) ? item.qty : 0}
+                      onChange={(e) => updateQty(item.id, e.target.value)}
+                      fullWidth
+                      inputProps={{
+                        inputMode: "numeric",
+                        min: 0,
+                        step: 1,
+                        style: { fontWeight: 800, fontSize: 14 },
+                      }}
+                      InputProps={{
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Typography
+                              sx={{
+                                fontSize: 12,
+                                color: TEXT_SECONDARY,
+                                fontWeight: 800,
+                              }}
+                            >
+                              {item.uom}
+                            </Typography>
+                          </InputAdornment>
+                        ),
+                      }}
                       sx={{
                         mt: 0.5,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        width: "100%",
-                        alignItems: "center",
+                        "& .MuiOutlinedInput-root": { borderRadius: 2 },
                       }}
-                    >
-                      <Typography
-                        sx={{ fontSize: 12, color: TEXT_SECONDARY }}
-                      >
-                        Qty:{" "}
-                        <strong>
-                          {item.qty} {item.uom}
-                        </strong>
-                      </Typography>
-
-                      <Chip
-                        size="small"
-                        label="Edit"
-                        icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
-                        sx={{
-                          fontSize: 11,
-                          bgcolor: "rgba(25,118,210,0.06)",
-                          color: PRIMARY,
-                          "& .MuiChip-icon": { color: PRIMARY },
-                        }}
-                      />
-                    </Box>
+                    />
                   </ListItemButton>
 
                   {index !== items.length - 1 && (
@@ -796,9 +799,9 @@ const stopIdValue = String(
                 </React.Fragment>
               ))}
             </List>
-          </Box>
+          )}
         </Box>
-      </Box>
+      </DialogContent>
 
       <DialogActions
         sx={{
@@ -843,116 +846,6 @@ const stopIdValue = String(
     </>
   );
 
-  // STEP 2b – EDIT ITEM
-  const renderStepEditItem = () => (
-    <>
-      {renderHeader("Edit Item Quantity")}
-
-      <DialogContent
-        sx={{
-          px: 4,
-          py: 4,
-          bgcolor: BG,
-          flex: 1,
-          overflowY: "auto",
-        }}
-      >
-        <Box
-          sx={{
-            backgroundColor: CARD,
-            borderRadius: 3,
-            p: 3,
-            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
-          }}
-        >
-          <Typography
-            sx={{
-              fontSize: 12,
-              color: TEXT_SECONDARY,
-              textTransform: "uppercase",
-              letterSpacing: 1.2,
-              mb: 1,
-            }}
-          >
-            Item Description
-          </Typography>
-          <Typography
-            sx={{
-              fontSize: 15,
-              fontWeight: 600,
-              color: TEXT_PRIMARY,
-              mb: 2,
-            }}
-          >
-            {editingItem?.description}
-          </Typography>
-
-          <Box sx={{ display: "grid", gap: 2, mb: 2 }}>
-            <TextField
-              label="Product ID"
-              value={editingItem?.productId || ""}
-              disabled
-              size="small"
-              fullWidth
-            />
-            <TextField
-              label="Category"
-              value={editingItem?.category || ""}
-              disabled
-              size="small"
-              fullWidth
-            />
-            <TextField
-              label="Quantity"
-              type="number"
-              size="small"
-              fullWidth
-              value={editingItem?.qty ?? ""}
-              onChange={(e) =>
-                handleEditChange("qty", Number(e.target.value) || 0)
-              }
-            />
-            <TextField
-              label="UOM"
-              size="small"
-              fullWidth
-              value={editingItem?.uom || ""}
-              disabled
-            />
-          </Box>
-        </Box>
-      </DialogContent>
-
-      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
-        <Button
-          onClick={() => setStep("items")}
-          startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          sx={{
-            textTransform: "none",
-            color: TEXT_SECONDARY,
-            fontWeight: 500,
-          }}
-        >
-          Back
-        </Button>
-        <Button
-          onClick={handleEditSave}
-          variant="contained"
-          endIcon={<CheckIcon />}
-          sx={{
-            textTransform: "none",
-            fontWeight: 600,
-            borderRadius: 2,
-            bgcolor: PRIMARY,
-            "&:hover": { bgcolor: PRIMARY_DARK },
-          }}
-        >
-          Save Item
-        </Button>
-      </DialogActions>
-    </>
-  );
-
   // STEP 3 – SIGNATURE + ATTACHMENTS
   const renderStepSignature = () => (
     <>
@@ -969,8 +862,8 @@ const stopIdValue = String(
       >
         <SignatureAttachmentsSection
           hasDiscrepancy={hasDiscrepancy}
-          signatureDataUrl={signature} // dataURL passed in
-          onSignatureChange={setSignature} // updates dataURL
+          signatureDataUrl={signature}
+          onSignatureChange={setSignature}
           attachments={attachments}
           onAddAttachments={handleFileAdd}
           onRemoveAttachment={handleRemoveAttachment}
@@ -984,9 +877,7 @@ const stopIdValue = String(
 
       <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
         <Button
-          onClick={() =>
-            hasDiscrepancy ? setStep("items") : setStep("question")
-          }
+          onClick={() => (hasDiscrepancy ? setStep("items") : setStep("question"))}
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
           sx={{
             textTransform: "none",
@@ -1037,7 +928,6 @@ const stopIdValue = String(
     >
       {step === "question" && renderStepQuestion()}
       {step === "items" && renderStepItems()}
-      {step === "editItem" && renderStepEditItem()}
       {step === "signature" && renderStepSignature()}
     </Dialog>
   );
