@@ -173,19 +173,28 @@ export default function RouteTimeline({
         returnUnloaded: Number(x?.returnUnloaded ?? 0) || 0,
       };
 
-      if (r.sourceStopId && r.returnLoaded > 0) {
-        loadByStopId.set(r.sourceStopId, (loadByStopId.get(r.sourceStopId) || 0) + r.returnLoaded);
-      } else if (r.sourceLoc && r.returnLoaded > 0) {
-        loadByLoc.set(r.sourceLoc, (loadByLoc.get(r.sourceLoc) || 0) + r.returnLoaded);
+      if (r.returnLoaded > 0) {
+        if (r.sourceStopId) {
+          loadByStopId.set(
+            r.sourceStopId,
+            (loadByStopId.get(r.sourceStopId) || 0) + r.returnLoaded
+          );
+        }
+        if (r.sourceLoc) {
+          loadByLoc.set(r.sourceLoc, (loadByLoc.get(r.sourceLoc) || 0) + r.returnLoaded);
+        }
       }
 
-      if (r.destStopId && r.returnUnloaded > 0) {
-        unloadByStopId.set(
-          r.destStopId,
-          (unloadByStopId.get(r.destStopId) || 0) + r.returnUnloaded
-        );
-      } else if (r.destLoc && r.returnUnloaded > 0) {
-        unloadByLoc.set(r.destLoc, (unloadByLoc.get(r.destLoc) || 0) + r.returnUnloaded);
+      if (r.returnUnloaded > 0) {
+        if (r.destStopId) {
+          unloadByStopId.set(
+            r.destStopId,
+            (unloadByStopId.get(r.destStopId) || 0) + r.returnUnloaded
+          );
+        }
+        if (r.destLoc) {
+          unloadByLoc.set(r.destLoc, (unloadByLoc.get(r.destLoc) || 0) + r.returnUnloaded);
+        }
       }
     });
 
@@ -203,14 +212,50 @@ export default function RouteTimeline({
   // ======================
 
   const buildFinalQueuesByLoc = (finalInfo) => {
-    const m = new Map(); // locid -> [finalInfoRow, ...]
+    // Map key -> [finalInfoRow, ...] (queued in FinalInfo array order)
+    // Preferred keys (when FinalInfo.locid exists):
+    //  - F/L: `${locid}|${seq}`
+    //  - I:   `${locid}|I|PKG` (where item_cat/itemcat === 'PKG')
+    // Fallback keys (when FinalInfo.locid is blank):
+    //  - F/L: `|${seq}`
+    //  - I:   `|I|PKG`
+    const m = new Map();
+
+    const push = (key, row) => {
+      if (!key) return;
+      const list = m.get(key) || [];
+      list.push(row);
+      m.set(key, list);
+    };
+
     finalInfo.forEach((x) => {
-      const locid = String(x?.locid ?? x?.locId ?? "").trim();
-      if (!locid) return;
-      const list = m.get(locid) || [];
-      list.push(x);
-      m.set(locid, list);
+      const locid = String(x?.locid ?? x?.locId ?? "").trim(); // may be ""
+      const seq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+      // NOTE: backend may send `itemcat` (as in sample payload) or `item_cat`
+      const itemCat = String(x?.item_cat ?? x?.itemCat ?? x?.itemcat ?? "").trim().toUpperCase();
+
+      // Only allow PKG rows to contribute to load/unload
+      if (itemCat && itemCat !== "PKG") return;
+
+      if (!seq) return;
+
+      // F/L: match by locid + stopseqpos (fallback to seq-only if locid missing)
+      if (seq === "F" || seq === "L") {
+        push(`${locid}|${seq}`, x);
+        if (!locid) push(`|${seq}`, x);
+        return;
+      }
+
+      // I: match by locid + item_cat='PKG' (fallback to PKG-only if locid missing)
+      if (seq === "I" && itemCat === "PKG") {
+        push(`${locid}|I|PKG`, x);
+        if (!locid) push(`|I|PKG`, x);
+        return;
+      }
+
+      // ignore other FinalInfo rows
     });
+
     return m;
   };
 
@@ -225,19 +270,52 @@ export default function RouteTimeline({
 
     return stopsArr.map((st, idx) => {
       const locid = String(st?.locId ?? st?.locid ?? "").trim();
+      // --- Insert FinalInfo locid extraction ---
       const seq = String(st?.stopSeqPos ?? st?.stopseqpos ?? "").trim().toUpperCase();
 
-      const q = localQueues.get(locid) || [];
-      const info = q.length ? q.shift() : null;
-      localQueues.set(locid, q);
+      // Match FinalInfo based on requested logic (with fallback for blank FinalInfo.locid):
+      //  - F/L stops: locid + stopseqpos (fallback: seq-only)
+      //  - I stops:   locid + item_cat='PKG' (fallback: PKG-only)
+      const pickKeys =
+        seq === "I"
+          ? [`${locid}|I|PKG`, `|I|PKG`]
+          : (seq === "F" || seq === "L")
+            ? [`${locid}|${seq}`, `|${seq}`]
+            : [`${locid}|${seq}`, `|${seq}`];
 
-      const stopid = String(info?.stopid ?? info?.stopId ?? "").trim() || `${locid}_${seq}_${idx}`;
+      let info = null;
+      for (const k of pickKeys) {
+        const q = localQueues.get(k) || [];
+        if (q.length) {
+          info = q.shift();
+          localQueues.set(k, q);
+          break;
+        }
+      }
+
+      const stopid =
+        String(st?.stopid ?? st?.stopId ?? "").trim() ||
+        String(info?.stopid ?? info?.stopId ?? "").trim() ||
+        `${locid}_${seq}_${idx}`;
 
       const totalLoadedPack = Number(info?.totalLoadedPack ?? info?.TotalLoadedPack ?? 0) || 0;
       const totalUnloadedPack = Number(info?.totalUnloadedPack ?? info?.TotalUnloadedPack ?? 0) || 0;
 
-      const returnLoadQty = loadByStopId.get(stopid) ?? loadByLoc.get(locid) ?? 0;
-      const returnUnloadQty = unloadByStopId.get(stopid) ?? unloadByLoc.get(locid) ?? 0;
+      // --- Capture FinalInfo locid ---
+      const infoLocid = String(info?.locid ?? info?.locId ?? "").trim();
+
+      // --- Updated return load/unload resolution ---
+      const returnLoadQty =
+        loadByStopId.get(stopid) ??
+        (locid && loadByLoc.get(locid)) ??
+        (infoLocid && loadByLoc.get(infoLocid)) ??
+        0;
+
+      const returnUnloadQty =
+        unloadByStopId.get(stopid) ??
+        (locid && unloadByLoc.get(locid)) ??
+        (infoLocid && unloadByLoc.get(infoLocid)) ??
+        0;
 
       return {
         idx,
@@ -248,16 +326,17 @@ export default function RouteTimeline({
         // Planned time
         dateTime: parseSapUtcDateTimeToDate(info?.dateTime ?? info?.dateTimeString ?? null),
 
-        // Display
-        name1: info?.name1 ?? info?.name ?? "",
-        street: info?.street ?? "",
-        postCode1: info?.postCode1 ?? info?.postCode ?? "",
-        city1: info?.city1 ?? info?.city ?? "",
-        region: info?.region ?? "",
-        country: info?.country ?? "",
+        // Display (address moved to Stops array)
+        // Prefer Stops (`st`) and fallback to FinalInfo (`info`) if needed
+        name1: st?.name1 ?? info?.name1 ?? info?.name ?? "",
+        street: st?.street ?? info?.street ?? "",
+        postCode1: st?.postCode1 ?? st?.postCode ?? info?.postCode1 ?? info?.postCode ?? "",
+        city1: st?.city1 ?? st?.city ?? info?.city1 ?? info?.city ?? "",
+        region: st?.region ?? info?.region ?? "",
+        country: st?.country ?? info?.country ?? "",
 
-        latitude: info?.latitude ?? info?.Latitude ?? info?.lat ?? null,
-        longitude: info?.longitude ?? info?.Longitude ?? info?.lng ?? null,
+        latitude: st?.latitude ?? st?.lat ?? info?.latitude ?? info?.Latitude ?? info?.lat ?? null,
+        longitude: st?.longitude ?? st?.lng ?? info?.longitude ?? info?.Longitude ?? info?.lng ?? null,
 
         // Backend milestone + actual time
         eventRaw: (info?.event ?? info?.Event ?? "") || "",
@@ -322,14 +401,15 @@ export default function RouteTimeline({
   };
 
   const isLastStop = (stop) => {
-    const last = derivedStops[derivedStops.length - 1];
-    if (!last) return false;
-    return String(getStopKey(last)) === String(getStopKey(stop));
+    const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
+    if (seqPos === "L") return true;
+    return false;
+
   };
 
   const isUnloadingLocation = (stop) => {
-    const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
-    return seqPos === "L" || Number(stop.totalUnloadedPack || 0) > 0 || stop.hasReturnUnload;
+
+    return Number(stop.totalUnloadedPack || 0) > 0 || false;
   };
 
   const allowedSequenceForStop = (stop) => {
@@ -338,9 +418,9 @@ export default function RouteTimeline({
 
     // Last stop rules:
     if (last) {
-      if (stop.hasReturnUnload) return ["items", "arrival", "unloading"]; // return drop only
+      if (stop.hasReturnUnload) return ["arrival", "unloading"]; // return drop only
       if (isUnloadingLocation(stop)) return ["items", "arrival", "unloading", "pod"]; // customer unload
-      return ["items", "arrival"]; // arrival only
+      return ["arrival"]; // arrival only
     }
 
     // First stop (shipping point):
@@ -348,7 +428,13 @@ export default function RouteTimeline({
 
     // Intermediate:
     if (isUnloadingLocation(stop)) return ["items", "arrival", "unloading", "pod", "departure"];
+
+    // Intermediate:
+    if (stop.hasReturnLoad) return ["items", "arrival", "unloading", "pod", "return", "departure"];
+
     return ["items", "arrival", "departure"];
+
+
   };
 
   // ======================
@@ -366,10 +452,12 @@ export default function RouteTimeline({
     const isUnl = e.includes("UNLOAD") || e.includes("UNLD");
     const isDep = e.includes("DEPART") || e.includes("DEPT");
     const isPod = e.includes("POD");
+    const isRet = e.includes("RET");
     if (isDep) return "departure";
     if (isPod) return "pod";
     if (isUnl) return "unloading";
     if (isArr) return "arrival";
+    if (isRet) return "return";
     return null;
   };
 
@@ -391,10 +479,12 @@ export default function RouteTimeline({
         mapped === "arrival"
           ? "arrivalAt"
           : mapped === "unloading"
-          ? "unloadingAt"
-          : mapped === "departure"
-          ? "departureAt"
-          : "podAt";
+            ? "unloadingAt"
+            : mapped === "departure"
+              ? "departureAt"
+              : mapped === "return"
+                ? "returnAt"
+                : "podAt";
 
       const actMs = s.actDateTime?.getTime?.() ?? null;
 
@@ -439,10 +529,12 @@ export default function RouteTimeline({
         mapped === "arrival"
           ? "arrivalAt"
           : mapped === "unloading"
-          ? "unloadingAt"
-          : mapped === "departure"
-          ? "departureAt"
-          : "podAt";
+            ? "unloadingAt"
+            : mapped === "departure"
+              ? "departureAt"
+              : mapped === "return"
+                ? "returnAt"
+                : "podAt";
 
       return {
         ...prev,
@@ -461,7 +553,7 @@ export default function RouteTimeline({
       derivedStops.reduce((acc, s) => {
         const key = getStopKey(s);
         const r = reportedMap[key] || {};
-        return acc + (r.arrival || r.unloading || r.departure || r.pod ? 1 : 0);
+        return acc + (r.arrival || r.unloading || r.departure || r.pod || r.return ? 1 : 0);
       }, 0),
     [derivedStops, reportedMap]
   );
@@ -532,12 +624,14 @@ export default function RouteTimeline({
         mapped === "arrival"
           ? "arrivalAt"
           : mapped === "unloading"
-          ? "unloadingAt"
-          : mapped === "departure"
-          ? "departureAt"
-          : mapped === "pod"
-          ? "podAt"
-          : null;
+            ? "unloadingAt"
+            : mapped === "departure"
+              ? "departureAt"
+              : mapped === "return"
+                ? "returnAt"
+                : mapped === "pod"
+                  ? "podAt"
+                  : null;
 
       setReportedMap((prev) => {
         const seq = allowedSequenceForStop(stop);
@@ -801,6 +895,7 @@ export default function RouteTimeline({
     if (r.unloading) return "Unloaded";
     if (r.departure) return "Departed";
     if (r.arrival) return "Arrived";
+    if (r.return) return "Returned";
     return "";
   };
 
@@ -811,7 +906,7 @@ export default function RouteTimeline({
 
     if (last && isStopComplete(stop)) return GREEN;
     if (r.departure) return GREEN;
-    if (r.arrival || r.unloading || r.pod) return ORANGE;
+    if (r.arrival || r.unloading || r.pod || r.return) return ORANGE;
     return BLUE;
   };
 
@@ -820,7 +915,7 @@ export default function RouteTimeline({
   const actualReportedTimeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
-    const ms = r.podAt ?? r.unloadingAt ?? r.departureAt ?? r.arrivalAt ?? null;
+    const ms = r.podAt ?? r.unloadingAt ?? r.departureAt ?? r.arrivalAt ?? r.returnAt ?? null;
     if (ms) return new Date(ms);
     return stop.actDateTime || null;
   };
@@ -875,17 +970,16 @@ export default function RouteTimeline({
               label: "Proof of Delivery",
               Icon: AssignmentTurnedInIcon,
             });
-
-          if (seq.includes("departure") && !reported.departure)
-            menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
-
           // Return viewer action only if return exists
-          if (stop.hasReturnLoad || stop.hasReturnUnload)
+          if (stop.hasReturnLoad && !reported.return)
             menuOptions.push({
               key: "return",
               label: "Return Items",
               Icon: ReplayRoundedIcon,
             });
+
+          if (seq.includes("departure") && !reported.departure)
+            menuOptions.push({ key: "departure", label: "Departure", Icon: LocalShippingIcon });
 
           const plannedText = formatDateTimeLocal(stop.dateTime);
 
@@ -980,21 +1074,27 @@ export default function RouteTimeline({
                   </p>
 
                   {/* Materials + Return (always show return when present) */}
-                  <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13 }}>
+                  <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13, fontWeight: 700 }}>
                     {load > 0 ? (
-                      <div>Material Load : {load} Packages</div>
+                      <span style={{ marginRight: 10 }}>Pick up Packages : {load}</span>
                     ) : unload > 0 ? (
-                      <div>Material Unload : {unload} Packages</div>
+                      <span>
+                        Deliver Packages : {unload}
+                      </span>
                     ) : (
-                      <div>Material : —</div>
+                      <div></div>
                     )}
 
                     {(returnLoadQty > 0 || returnUnloadQty > 0) && (
                       <div style={{ marginTop: 4, fontWeight: 700 }}>
                         {returnLoadQty > 0 ? (
-                          <span style={{ marginRight: 10 }}>Return Load : {returnLoadQty}</span>
+                          <span style={{ marginRight: 10 }}>Return Pick up : {returnLoadQty}</span>
                         ) : null}
-                        {returnUnloadQty > 0 ? <span>Return Unload : {returnUnloadQty}</span> : null}
+
+                        {returnUnloadQty > 0 &&
+                          (stop.stopseqpos === "L" || stop.stopseqpos === "I") ? (
+                          <span>Return Deliver : {returnUnloadQty}</span>
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -1142,12 +1242,12 @@ export default function RouteTimeline({
                     opt.key === "arrival"
                       ? "ARRV"
                       : opt.key === "departure"
-                      ? "DEPT"
-                      : opt.key === "pod"
-                      ? "POD"
-                      : opt.key === "unloading"
-                      ? "UNLD"
-                      : opt.key;
+                        ? "DEPT"
+                        : opt.key === "pod"
+                          ? "POD"
+                          : opt.key === "unloading"
+                            ? "UNLD"
+                            : opt.key;
 
                   const isSending =
                     opt.key === "unloading"
@@ -1169,10 +1269,10 @@ export default function RouteTimeline({
                     opt.key === "items"
                       ? true
                       : opt.key === "return"
-                      ? true
-                      : opt.key === "pod"
-                      ? priorAllReported && allowedStop
-                      : allowedStop && priorAllReported;
+                        ? true
+                        : opt.key === "pod"
+                          ? priorAllReported && allowedStop
+                          : allowedStop && priorAllReported;
 
                   return (
                     <MenuItem

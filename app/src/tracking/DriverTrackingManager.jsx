@@ -18,11 +18,9 @@ export default function DriverTrackingManager({ authenticated, selectedShipment 
 
     for (const point of batch) {
       try {
-        // ✅ This uses your resolveUrl():
         // Native -> SRV + /api/tracking/location (with Bearer token)
         // Web    -> /api/tracking/location (relative)
         await apiPost("/api/tracking/location", point);
-
         markSent(point._id);
       } catch (e) {
         // stop; keep the remaining queued
@@ -42,19 +40,22 @@ export default function DriverTrackingManager({ authenticated, selectedShipment 
     async (loc) => {
       const { FoId, DriverId } = getContext();
 
+      // ✅ FIX: loc.timestamp is already a number (epoch ms) in most BG plugins
+      const ts = Number(loc?.timestamp);
+      const safeTs = Number.isFinite(ts) ? ts : Date.now();
+
       const payload = {
         FoId,
         DriverId,
         Latitude: loc.latitude,
         Longitude: loc.longitude,
         Accuracy: loc.accuracy ?? null,
-        // ✅ keep numeric timestamp in ms (backend-friendly)
-        Timestamp: loc.timestamp ? Date.parse(loc.timestamp) : Date.now(),
+        Timestamp: safeTs,
         Speed: loc.speed ?? null,
         Bearing: loc.bearing ?? null,
       };
 
-      // optional: store last known point for UI/ETA
+      // store last known point for UI/ETA
       localStorage.setItem("sky_last_loc", JSON.stringify(payload));
 
       enqueue(payload);

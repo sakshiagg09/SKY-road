@@ -157,15 +157,16 @@ export default function App() {
         );
 
       case "track":
-        return (
-          <ShipmentDetailsPage
-            selectedShipment={selectedShipment}
-            onAction={(action, payload) => {
-              if (action === "nextStop") setNextStop(payload?.stop || null); // keep
-              console.log("Timeline action:", action, payload);
-            }}
-          />
-        );
+      return (
+        <ShipmentDetailsPage
+          selectedShipment={selectedShipment}
+          nextStop={nextStop}   // ✅ ADD THIS
+          onAction={(action, payload) => {
+            if (action === "nextStop") setNextStop(payload?.stop || null);
+            console.log("Timeline action:", action, payload);
+          }}
+        />
+      );
 
       case "attachments":
         return (

@@ -2,12 +2,10 @@
 import React, { useState, useCallback, useEffect, useMemo } from "react";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
-import LocalMallOutlinedIcon from "@mui/icons-material/LocalMallOutlined";
-import ScaleOutlinedIcon from "@mui/icons-material/ScaleOutlined";
 import RouteOutlinedIcon from "@mui/icons-material/RouteOutlined";
 
 import RouteTimeline from "./RouteTimeline";
-import PodFlowDialog from "../components/PodFlowDialog"; // 👈 adjust path if needed
+import PodFlowDialog from "../components/PodFlowDialog";
 
 /**
  * Props:
@@ -23,16 +21,45 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   // progress is set from RouteTimeline via onAction("progress", percent)
   const [progress, setProgress] = useState(60);
 
-  // 🔹 POD dialog state
+  // POD dialog state
   const [podOpen, setPodOpen] = useState(false);
   const [podContext, setPodContext] = useState({ stop: null, FoId: null });
 
-  // 🔹 Info about last successfully completed POD (to update timeline)
+  // Info about last successfully completed POD (to update timeline)
   const [podCompletedInfo, setPodCompletedInfo] = useState(null);
 
-  // ✅ LIVE tracking UI (non-breaking: only affects ETA display if we can compute)
+  // LIVE tracking UI
   const [liveEtaText, setLiveEtaText] = useState(null);
   const [liveMeta, setLiveMeta] = useState({ distanceKm: null, updatedAt: null });
+
+  // ✅ ETA target: next pending stop coords (from RouteTimeline)
+  const [nextStopCoords, setNextStopCoords] = useState(null);
+
+  // ---------- helpers ----------
+  const toNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const formatEta = (ms) =>
+    new Date(ms).toLocaleString("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+
+  // Extract coords from a stop object (robust)
+  const pickStopCoords = (stop) => {
+    if (!stop) return null;
+    const lat = toNum(stop?.latitude ?? stop?.Latitude ?? stop?.lat);
+    const lng = toNum(stop?.longitude ?? stop?.Longitude ?? stop?.lng ?? stop?.long);
+    if (lat == null || lng == null) return null;
+    if (lat === 0 || lng === 0) return null;
+    return { lat, lng };
+  };
 
   if (!selectedShipment) {
     return (
@@ -51,7 +78,6 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   }
 
   const { FoId, stops = [], raw = {} } = selectedShipment;
-
   const stopsCount = Array.isArray(stops) ? stops.length : 0;
 
   // derive origin/destination from available stops dynamically
@@ -78,48 +104,22 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
       }${lastStop.country ? `, ${lastStop.country}` : ""}`
     : "-";
 
-  // Planned ETA ✅ timezone name for consistency
+  // Planned ETA
   const eta = lastStop
-  ? new Date(lastStop.dateTime || lastStop.dateTimeString || lastStop.plannedDateTime).toLocaleString("en-US", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true, // ✅ AM/PM
-    })
-  : "-";
+    ? new Date(lastStop.dateTime || lastStop.dateTimeString || lastStop.plannedDateTime).toLocaleString(
+        "en-US",
+        {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        }
+      )
+    : "-";
 
-  // ==========================
-  // ✅ Live ETA helpers (safe)
-  // ==========================
-  const haversineKm = (a, b) => {
-    if (!a || !b) return null;
-    const R = 6371;
-    const toRad = (x) => (x * Math.PI) / 180;
-    const dLat = toRad(b.lat - a.lat);
-    const dLon = toRad(b.lng - a.lng);
-    const lat1 = toRad(a.lat);
-    const lat2 = toRad(b.lat);
-
-    const s =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-
-    return 2 * R * Math.asin(Math.sqrt(s));
-  };
-
-  const formatEta = (ms) =>
-  new Date(ms).toLocaleString("en-US", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true, // ✅ AM/PM
-  });
-
-  // Best-effort destination coordinates (does NOT break if missing)
+  // Fallback destination coordinates (last stop / raw)
   const destinationCoords = useMemo(() => {
     const lat = lastStop?.Latitude ?? lastStop?.latitude ?? lastStop?.lat ?? null;
     const lng = lastStop?.Longitude ?? lastStop?.longitude ?? lastStop?.lng ?? null;
@@ -138,58 +138,73 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
     return null;
   }, [lastStop, raw]);
 
-  // Compute live ETA from last location stored by DriverTrackingManager
+  // ✅ Live ETA via backend Routes API
   useEffect(() => {
-    const tick = () => {
+    let alive = true;
+
+    const tick = async () => {
       try {
         const rawLoc = localStorage.getItem("sky_last_loc");
         if (!rawLoc) return;
 
         const p = JSON.parse(rawLoc);
-        if (!p?.Latitude || !p?.Longitude) return;
+        const curLat = toNum(p?.Latitude);
+        const curLng = toNum(p?.Longitude);
+        if (curLat == null || curLng == null) return;
 
-        const cur = { lat: Number(p.Latitude), lng: Number(p.Longitude) };
-        const updatedAt = p.Timestamp ? Number(p.Timestamp) : Date.now();
+        const originPoint = { lat: curLat, lng: curLng };
+        const destPoint = nextStopCoords || destinationCoords;
 
-        if (!destinationCoords) {
+        const updatedAt = p?.Timestamp ? Number(p.Timestamp) : Date.now();
+
+        if (!destPoint) {
+          if (!alive) return;
           setLiveEtaText(null);
           setLiveMeta({ distanceKm: null, updatedAt });
           return;
         }
 
-        const distanceKm = haversineKm(cur, destinationCoords);
-        if (distanceKm == null) {
-          setLiveEtaText(null);
-          setLiveMeta({ distanceKm: null, updatedAt });
-          return;
-        }
+        const res = await fetch("/api/routes/eta", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            origin: originPoint,
+            destination: destPoint,
+            // backend may ignore these; harmless
+            travelMode: "DRIVE",
+            routingPreference: "TRAFFIC_AWARE",
+          }),
+        });
 
-        let speedKmh = null;
-        if (p.Speed != null) {
-          const s = Number(p.Speed);
-          if (Number.isFinite(s)) speedKmh = s <= 60 ? s * 3.6 : s;
-        }
+        if (!res.ok) return;
 
-        if (!speedKmh || speedKmh < 5) speedKmh = 45;
+        const j = await res.json().catch(() => null);
+        const distanceMeters = toNum(j?.distanceMeters);
+        const durationSeconds = toNum(j?.durationSeconds);
 
-        const etaMs = Date.now() + (distanceKm / speedKmh) * 3600 * 1000;
+        if (distanceMeters == null || durationSeconds == null) return;
 
+        const etaMs = Date.now() + durationSeconds * 1000;
+
+        if (!alive) return;
         setLiveEtaText(formatEta(etaMs));
-        setLiveMeta({ distanceKm, updatedAt });
+        setLiveMeta({ distanceKm: distanceMeters / 1000, updatedAt });
       } catch {
         // ignore
       }
     };
 
     tick();
-    const id = setInterval(tick, 5000);
-    return () => clearInterval(id);
-  }, [destinationCoords]);
+    const id = setInterval(tick, 15000); // ✅ 15s (cost control)
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [destinationCoords, nextStopCoords]);
 
-  // ✅ Status badge text + styling based on progress
+  // Status badge text + styling based on progress
   const statusLabel = progress >= 100 ? "Completed" : "In Transit";
-  const statusBg =
-    progress >= 100 ? "rgba(46,125,50,0.10)" : "rgba(25,118,210,0.08)";
+  const statusBg = progress >= 100 ? "rgba(46,125,50,0.10)" : "rgba(25,118,210,0.08)";
   const statusColor = progress >= 100 ? "#2E7D32" : PRIMARY;
 
   // Handler to receive callbacks from RouteTimeline
@@ -199,9 +214,9 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         setProgress(payload);
       }
 
-      // 🔹 when RouteTimeline asks for POD, open dialog
+      // when RouteTimeline asks for POD, open dialog
       if (action === "pod" && payload) {
-        const stop = payload.stop || payload; // support both shapes
+        const stop = payload.stop || payload;
         setPodContext({
           stop,
           FoId: String(selectedShipment.FoId || selectedShipment.foId || ""),
@@ -209,12 +224,17 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         setPodOpen(true);
       }
 
+      // ✅ capture next stop coords from RouteTimeline
       if (action === "nextStop") {
+        const ns = payload?.stop || null;
+          console.log("NEXT STOP RAW:", ns);
+  console.log("NEXT STOP COORDS:", pickStopCoords(ns));
+        setNextStopCoords(pickStopCoords(ns));
         if (typeof onAction === "function") onAction("nextStop", payload);
         return;
       }
 
-      // still bubble up to parent if they passed onAction
+      // bubble up
       if (typeof onAction === "function") onAction(action, payload);
     },
     [onAction, selectedShipment.FoId, selectedShipment.foId]
@@ -236,10 +256,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
     const effectiveStopId = stopIdFromResponse || fallbackStopId;
 
     if (!effectiveStopId) {
-      console.warn(
-        "POD completed but StopId is missing in response/payload. Timeline cannot be updated.",
-        { payload, response }
-      );
+      console.warn("POD completed but StopId is missing in response/payload.", { payload, response });
       return;
     }
 
@@ -274,18 +291,15 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
           boxShadow: "10px 10px 20px #d7dae2, -10px -10px 20px #ffffff",
         }}
       >
-        {/* ✅ Badge centered initially, right when completed */}
+        {/* Badge */}
         <div className="flex items-start mb-3">
-            <span
-              className="px-3 py-1 rounded-full text-[11px] font-semibold"
-              style={{
-                backgroundColor: statusBg,
-                color: statusColor,
-              }}
-            >
-              {statusLabel}
-            </span>
-          </div>
+          <span
+            className="px-3 py-1 rounded-full text-[11px] font-semibold"
+            style={{ backgroundColor: statusBg, color: statusColor }}
+          >
+            {statusLabel}
+          </span>
+        </div>
 
         {/* Route row */}
         <div className="flex items-center gap-3 mt-2">
@@ -293,11 +307,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
             <p className="text-[11px]" style={{ color: TEXT_SECONDARY }}>
               From
             </p>
-            <p
-              className="text-sm font-semibold truncate"
-              style={{ color: TEXT_PRIMARY }}
-              title={origin}
-            >
+            <p className="text-sm font-semibold truncate" style={{ color: TEXT_PRIMARY }} title={origin}>
               {origin}
             </p>
           </div>
@@ -317,11 +327,7 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
             <p className="text-[11px]" style={{ color: TEXT_SECONDARY }}>
               To
             </p>
-            <p
-              className="text-sm font-semibold truncate"
-              style={{ color: TEXT_PRIMARY }}
-              title={destination}
-            >
+            <p className="text-sm font-semibold truncate" style={{ color: TEXT_PRIMARY }} title={destination}>
               {destination}
             </p>
           </div>
@@ -352,17 +358,20 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
               {stopsCount > 1 ? `${Math.max(0, stopsCount - 1)} legs` : "1 leg"}
             </span>
           </div>
+
           <div className="flex items-center gap-1.5">
             <AccessTimeIcon sx={{ fontSize: 16, color: PRIMARY }} />
-            <span style={{ color: TEXT_SECONDARY }}>ETA {liveEtaText || eta}</span>
+            <span style={{ color: TEXT_SECONDARY }}>
+              ETA {liveEtaText || eta}
+              {nextStopCoords ? " (next stop)" : ""}
+            </span>
           </div>
         </div>
 
         {/* Optional: small live tracking meta */}
         {liveMeta?.updatedAt && (
           <p className="text-[10px] mt-2" style={{ color: TEXT_SECONDARY, opacity: 0.8 }}>
-            Live tracking: last update{" "}
-            {new Date(liveMeta.updatedAt).toLocaleTimeString("en-GB")}{" "}
+            Live tracking: last update {new Date(liveMeta.updatedAt).toLocaleTimeString("en-GB")}{" "}
             {liveMeta.distanceKm != null ? `• ${liveMeta.distanceKm.toFixed(1)} km to destination` : ""}
           </p>
         )}
