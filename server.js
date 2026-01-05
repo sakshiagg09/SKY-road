@@ -177,13 +177,15 @@ cds.on("bootstrap", (app) => {
         headers: {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask": fieldMask,
+           "X-Goog-FieldMask": fieldMask,
         },
         body: JSON.stringify(payload),
       });
 
       const text = await r.text();
-
+      console.log("GOOGLE STATUS:", r.status);
+console.log("GOOGLE HEADERS:", Object.fromEntries(r.headers.entries()));
+console.log("GOOGLE RAW TEXT:", text);
       if (!r.ok) {
         return res.status(r.status).json({
           error: "Routes API error",
@@ -192,6 +194,8 @@ cds.on("bootstrap", (app) => {
       }
 
       const json = JSON.parse(text);
+      console.log("GOOGLE ROUTES RAW:", JSON.stringify(json));
+      console.log("GOOGLE ROUTES COUNT:", json?.routes?.length);
       const route = Array.isArray(json.routes) ? json.routes[0] : null;
 
       const dist = Number(route?.distanceMeters);

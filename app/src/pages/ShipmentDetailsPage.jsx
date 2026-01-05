@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect, useMemo } from "react";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import RouteOutlinedIcon from "@mui/icons-material/RouteOutlined";
-
+import { apiPost } from "../auth/api";
 import RouteTimeline from "./RouteTimeline";
 import PodFlowDialog from "../components/PodFlowDialog";
 
@@ -30,7 +30,12 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
 
   // LIVE tracking UI
   const [liveEtaText, setLiveEtaText] = useState(null);
-  const [liveMeta, setLiveMeta] = useState({ distanceKm: null, updatedAt: null });
+  const [liveMeta, setLiveMeta] = useState({
+    distanceKm: null,
+    updatedAt: null,
+    mins: null,
+    target: "destination", // "next stop" | "destination"
+  });
 
   // ✅ ETA target: next pending stop coords (from RouteTimeline)
   const [nextStopCoords, setNextStopCoords] = useState(null);
@@ -41,15 +46,21 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
     return Number.isFinite(n) ? n : null;
   };
 
-  const formatEta = (ms) =>
-    new Date(ms).toLocaleString("en-US", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
+  // Show a clean, driver-friendly ETA: "41 min (19:32)"
+  const formatEtaCompact = (baseMs, durationSeconds) => {
+    const base = Number.isFinite(baseMs) ? baseMs : Date.now();
+    const dur = Number.isFinite(durationSeconds) ? durationSeconds : null;
+    if (dur == null) return null;
+
+    const etaMs = base + dur * 1000;
+    const mins = Math.max(1, Math.round(dur / 60));
+    const timeOnly = new Date(etaMs).toLocaleTimeString("en-GB", {
       hour: "2-digit",
       minute: "2-digit",
-      hour12: true,
     });
+
+    return { text: `${mins} min (${timeOnly})`, mins, etaMs };
+  };
 
   // Extract coords from a stop object (robust)
   const pickStopCoords = (stop) => {
@@ -148,47 +159,60 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         if (!rawLoc) return;
 
         const p = JSON.parse(rawLoc);
+
+        // IMPORTANT: use actual stored GPS (remove hardcoded origin)
         const curLat = toNum(p?.Latitude);
         const curLng = toNum(p?.Longitude);
         if (curLat == null || curLng == null) return;
 
         const originPoint = { lat: curLat, lng: curLng };
         const destPoint = nextStopCoords || destinationCoords;
+        const targetLabel = nextStopCoords ? "next stop" : "destination";
 
+        // base time for ETA calculation: GPS timestamp if available
         const updatedAt = p?.Timestamp ? Number(p.Timestamp) : Date.now();
+        const baseMs = Number.isFinite(updatedAt) ? updatedAt : Date.now();
+
+        // ---- debug logs (safe to keep or remove) ----
+        console.log("ETA ORIGIN:", originPoint);
+        console.log("ETA DEST:", destPoint);
+        console.log("ETA USING NEXT STOP?", !!nextStopCoords);
+        console.log("ETA URL:", "/api/routes/eta");
+        console.log("ETA BASE TS:", baseMs, "=>", new Date(baseMs).toISOString());
+        // --------------------------------------------
 
         if (!destPoint) {
           if (!alive) return;
           setLiveEtaText(null);
-          setLiveMeta({ distanceKm: null, updatedAt });
+          setLiveMeta({ distanceKm: null, updatedAt: baseMs, mins: null, target: targetLabel });
           return;
         }
 
-        const res = await fetch("/api/routes/eta", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            origin: originPoint,
-            destination: destPoint,
-            // backend may ignore these; harmless
-            travelMode: "DRIVE",
-            routingPreference: "TRAFFIC_AWARE",
-          }),
+        const j = await apiPost("/api/routes/eta", {
+          origin: originPoint,
+          destination: destPoint,
+          travelMode: "DRIVE",
+          routingPreference: "TRAFFIC_AWARE",
         });
-
-        if (!res.ok) return;
-
-        const j = await res.json().catch(() => null);
         const distanceMeters = toNum(j?.distanceMeters);
         const durationSeconds = toNum(j?.durationSeconds);
 
         if (distanceMeters == null || durationSeconds == null) return;
 
-        const etaMs = Date.now() + durationSeconds * 1000;
+        const compact = formatEtaCompact(baseMs, durationSeconds);
+        if (!compact) return;
+
+        console.log("ETA DURATION(s):", durationSeconds, "ETA TIME:", new Date(compact.etaMs).toString());
 
         if (!alive) return;
-        setLiveEtaText(formatEta(etaMs));
-        setLiveMeta({ distanceKm: distanceMeters / 1000, updatedAt });
+
+        setLiveEtaText(compact.text);
+        setLiveMeta({
+          distanceKm: distanceMeters / 1000,
+          updatedAt: baseMs,
+          mins: compact.mins,
+          target: targetLabel,
+        });
       } catch {
         // ignore
       }
@@ -227,8 +251,8 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
       // ✅ capture next stop coords from RouteTimeline
       if (action === "nextStop") {
         const ns = payload?.stop || null;
-          console.log("NEXT STOP RAW:", ns);
-  console.log("NEXT STOP COORDS:", pickStopCoords(ns));
+        console.log("NEXT STOP RAW:", ns);
+        console.log("NEXT STOP COORDS:", pickStopCoords(ns));
         setNextStopCoords(pickStopCoords(ns));
         if (typeof onAction === "function") onAction("nextStop", payload);
         return;
@@ -372,7 +396,9 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
         {liveMeta?.updatedAt && (
           <p className="text-[10px] mt-2" style={{ color: TEXT_SECONDARY, opacity: 0.8 }}>
             Live tracking: last update {new Date(liveMeta.updatedAt).toLocaleTimeString("en-GB")}{" "}
-            {liveMeta.distanceKm != null ? `• ${liveMeta.distanceKm.toFixed(1)} km to destination` : ""}
+            {liveMeta.distanceKm != null
+              ? `• ${liveMeta.distanceKm.toFixed(1)} km to ${nextStopCoords ? "next stop" : "destination"}`
+              : ""}
           </p>
         )}
       </div>

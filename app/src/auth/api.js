@@ -34,13 +34,14 @@ function throwHttpError(res) {
 
 export async function apiGet(path) {
   const url = resolveUrl(path);
-
+    console.log("[apiPost] URL:", url);
+  console.log("[apiPost] isNative:", isNative);
   // ============================
   // Native (Android / iOS)
   // ============================
   if (isNative) {
     let token = await getValidAccessToken();
-
+    console.log("[apiPost] token present:", !!token);
     console.log("[API GET] URL:", url);
     console.log("[API GET] Has token:", !!token);
 
@@ -57,6 +58,7 @@ export async function apiGet(path) {
       console.warn("[API GET] 401 received, retrying after refresh");
 
       token = await getValidAccessToken();
+      console.log("[apiPost] retry token present:", !!token);
 
       res = await CapacitorHttp.get({
         url,
@@ -93,8 +95,13 @@ export async function apiGet(path) {
 export async function apiPost(path, body) {
   const url = resolveUrl(path);
 
+  console.log("[apiPost] URL:", url);
+  console.log("[apiPost] isNative:", isNative);
+  console.log("[apiPost] body:", body);
+
   if (isNative) {
     let token = await getValidAccessToken();
+    console.log("[apiPost] token present:", !!token);
 
     let res = await CapacitorHttp.post({
       url,
@@ -102,25 +109,42 @@ export async function apiPost(path, body) {
       data: body,
     });
 
+    console.log("[apiPost] first status:", res.status);
+    console.log("[apiPost] first data:", res.data);
+
     if (res.status === 401) {
+      console.warn("[apiPost] 401, retrying with refreshed token");
       token = await getValidAccessToken();
+      console.log("[apiPost] retry token present:", !!token);
+
       res = await CapacitorHttp.post({
         url,
         headers: await buildHeaders({ "Content-Type": "application/json" }, token),
         data: body,
       });
+
+      console.log("[apiPost] retry status:", res.status);
+      console.log("[apiPost] retry data:", res.data);
     }
 
-    if (res.status < 200 || res.status >= 300) throwHttpError(res);
+    if (res.status < 200 || res.status >= 300) {
+      console.error("[apiPost] ERROR response:", res);
+      throwHttpError(res);
+    }
+
     return res.data;
   }
 
-  // Browser: keep existing behavior
+  // Web
   const res = await CapacitorHttp.post({
     url,
     headers: { "Content-Type": "application/json" },
     data: body,
   });
+
+  console.log("[apiPost][WEB] status:", res.status);
+  console.log("[apiPost][WEB] data:", res.data);
+
   if (res.status < 200 || res.status >= 300) throwHttpError(res);
   return res.data;
 }

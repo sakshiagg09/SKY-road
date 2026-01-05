@@ -5,7 +5,7 @@ import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
 import DocumentScannerRoundedIcon from "@mui/icons-material/DocumentScannerRounded";
 import { LinearProgress } from "@mui/material";
-import { apiGet } from "../auth/api";
+import { apiGet,apiPost } from "../auth/api";
 
 import logo from "../assets/logo.png.png";
 import BarcodeScanner from "../components/BarcodeScanner";
@@ -131,17 +131,10 @@ export default function ShipmentSearchPage({ setSelectedShipment, setActiveTab }
 
   // OCR call (CAP action) – returns { licenseNumber, confidence }
   async function extractLicenseNumberFromImage(base64) {
-    const res = await fetch("/odata/v4/GTT/extractLicenseNumber", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageBase64: base64 }),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(`OCR failed (${res.status}). ${txt}`);
-    }
-    return await res.json();
-  }
+  return await apiPost("/odata/v4/GTT/extractLicenseNumber", {
+    imageBase64: base64,
+  });
+}
 
   // file -> base64 (without data:image/... prefix)
   const fileToBase64 = (file) =>

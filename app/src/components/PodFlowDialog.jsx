@@ -14,7 +14,7 @@ import {
   TextField,
   InputAdornment,
 } from "@mui/material";
-
+import { apiGet, apiPost } from "../auth/api";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
@@ -241,15 +241,7 @@ export default function PodFlowDialog({
           ` and Location eq '${locationValue}'` +
           ` and StopId eq '${stopIdValue}'`;
 
-        const res = await fetch(url);
-        if (!res.ok) {
-          console.error("shipmentItems OData failed", res.status, res.statusText);
-          setItems([]);
-          setBaselineItems([]);
-          return;
-        }
-
-        const json = await res.json().catch(() => null);
+        const json = await apiGet(url);
         const rows = Array.isArray(json?.value) ? json.value : [];
         const row0 = rows[0] || {};
         const list = extractItemListFromShipmentItemsRow(row0);
@@ -304,20 +296,8 @@ export default function PodFlowDialog({
   };
 
   const postToOData = async (payload) => {
-    const res = await fetch(eventsUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`OData POST failed (${res.status}). ${text}`);
-    }
-
-    const json = await res.json().catch(() => null);
-    return json;
-  };
+  return await apiPost(eventsUrl, payload);
+};
 
   // ----------------------------- Attachments + Signature upload -----------------------------
   const readFileAsBase64 = (file) =>
@@ -337,55 +317,37 @@ export default function PodFlowDialog({
     });
 
   const uploadSingleAttachment = async (file) => {
-    if (!attachmentsUrl || !effectiveFoId) return;
+  if (!attachmentsUrl || !effectiveFoId) return;
 
-    const base64 = await readFileAsBase64(file);
-    if (!base64) return;
+  const base64 = await readFileAsBase64(file);
+  if (!base64) return;
 
-    const ext = (file.name.split(".").pop() || "").toUpperCase();
-    const fileType = ext || "BIN";
+  const ext = (file.name.split(".").pop() || "").toUpperCase();
+  const fileType = ext || "BIN";
 
-    const payload = {
-      FoId: effectiveFoId,
-      FileType: fileType,
-      PDFBase64: base64,
-    };
-
-    const res = await fetch(attachmentsUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(
-        `Attachment upload failed for ${file.name} (${res.status}). ${text}`
-      );
-    }
+  const payload = {
+    FoId: effectiveFoId,
+    FileType: fileType,
+    PDFBase64: base64,
   };
+
+  await apiPost(attachmentsUrl, payload);
+};
 
   const uploadSignatureAttachment = async () => {
-    if (!attachmentsUrl || !effectiveFoId || !signature) return;
+  if (!attachmentsUrl || !effectiveFoId || !signature) return;
 
-    const base64 = signature.split(",")[1] || "";
-    if (!base64) return;
+  const base64 = signature.split(",")[1] || "";
+  if (!base64) return;
 
-    const payload = {
-      FoId: effectiveFoId,
-      FileType: "JPG",
-      PDFBase64: base64,
-    };
-
-    const res = await fetch(attachmentsUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Signature upload failed (${res.status}). ${text}`);
-    }
+  const payload = {
+    FoId: effectiveFoId,
+    FileType: "JPG",
+    PDFBase64: base64,
   };
+
+  await apiPost(attachmentsUrl, payload);
+};
 
   const uploadAllAttachmentsAndSignature = async () => {
     for (const file of attachments || []) {

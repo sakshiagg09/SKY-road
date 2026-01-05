@@ -1,5 +1,6 @@
 // src/pages/AttachmentsPage.jsx
 import React, { useEffect, useState } from "react";
+import { apiGet } from "../auth/api";
 import {
   Box,
   Typography,
@@ -62,13 +63,7 @@ export default function AttachmentsPage({
       const escFo = String(foId).replace(/'/g, "''");
       const url = `${attachmentsUrl}?$filter=FoId eq '${escFo}'`;
 
-      const res = await fetch(url);
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`Attachments fetch failed (${res.status}). ${txt}`);
-      }
-
-      const json = await res.json().catch(() => null);
+      const json = await apiGet(url);
       const arr = Array.isArray(json?.value) ? json.value : [];
       setRows(arr);
     } catch (e) {
@@ -127,34 +122,35 @@ export default function AttachmentsPage({
     //   npx cap sync
     // =====================
     try {
-      const [{ Filesystem, Directory }, { Browser }] = await Promise.all([
-        import("@capacitor/filesystem"),
-        import("@capacitor/browser"),
-      ]);
+  const [{ Filesystem, Directory }, { FileOpener }] = await Promise.all([
+    import("@capacitor/filesystem"),
+    import("@capacitor-community/file-opener"),
+  ]);
 
-      const data = cleanBase64(base64);
-      const safeName = String(rawName).replace(/[^a-z0-9._-]/gi, "_");
-      const path = `attachments/${Date.now()}_${safeName}`;
+  const data = cleanBase64(base64);
+  const safeName = String(rawName).replace(/[^a-z0-9._-]/gi, "_");
+  const path = `attachments/${Date.now()}_${safeName}`;
 
-      await Filesystem.writeFile({
-        path,
-        data,
-        directory: Directory.Cache,
-      });
+  await Filesystem.writeFile({
+    path,
+    data,
+    directory: Directory.Cache,
+    recursive: true,
+  });
 
-      const fileUri = await Filesystem.getUri({
-        directory: Directory.Cache,
-        path,
-      });
+  const fileUri = await Filesystem.getUri({
+    directory: Directory.Cache,
+    path,
+  });
 
-      // Open in system viewer
-      await Browser.open({ url: fileUri.uri });
-    } catch (e) {
-      console.error("Native openAttachment failed:", e);
-      alert(
-        "Attachment open failed on device. Make sure @capacitor/filesystem and @capacitor/browser are installed and synced."
-      );
-    }
+  await FileOpener.open({
+    filePath: fileUri.uri,
+    contentType: mime,
+  });
+} catch (e) {
+  console.error("Native openAttachment failed:", e);
+  alert("Attachment open failed on device.");
+}
   };
 
   const count = rows.length;
