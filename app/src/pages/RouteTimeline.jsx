@@ -68,30 +68,26 @@ export default function RouteTimeline({
   // Date/time helpers
   // ======================
 
-  const parseSapUtcDateTimeToDate = (dt) => {
-    if (dt === null || typeof dt === "undefined") return null;
-    if (dt === 0) return null;
+  const parseSapDateTimeToDate = (dt) => {
+  if (dt == null || dt === 0) return null;
+  const s = String(dt).trim();
+  if (!s || s === "0") return null;
 
-    const s = String(dt).trim();
-    if (!s || s === "0") return null;
+  // SAP 14-digit: YYYYMMDDHHmmss -> treat as LOCAL
+  if (/^\d{14}$/.test(s)) {
+    const yyyy = Number(s.slice(0, 4));
+    const mm = Number(s.slice(4, 6));
+    const dd = Number(s.slice(6, 8));
+    const hh = Number(s.slice(8, 10));
+    const min = Number(s.slice(10, 12));
+    const ss = Number(s.slice(12, 14));
+    const d = new Date(yyyy, mm - 1, dd, hh, min, ss); // ✅ local time
+    return isNaN(d) ? null : d;
+  }
 
-    if (/^\d{14}$/.test(s)) {
-      const yyyy = Number(s.slice(0, 4));
-      const mm = Number(s.slice(4, 6));
-      const dd = Number(s.slice(6, 8));
-      const hh = Number(s.slice(8, 10));
-      const min = Number(s.slice(10, 12));
-      const ss = Number(s.slice(12, 14));
-
-      if (!yyyy || !mm || !dd) return null;
-
-      const d = new Date(Date.UTC(yyyy, mm - 1, dd, hh, min, ss));
-      return isNaN(d) ? null : d;
-    }
-
-    const maybe = new Date(s);
-    return isNaN(maybe) ? null : maybe;
-  };
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+};
 
   const formatDateTimeLocal = (d) => {
     if (!d) return "-";
@@ -323,7 +319,7 @@ export default function RouteTimeline({
         0;
 
       // Planned time (default from matched FinalInfo row for this stop)
-      let plannedDateTime = parseSapUtcDateTimeToDate(info?.dateTime ?? info?.dateTimeString ?? null);
+      let plannedDateTime = parseSapDateTimeToDate(info?.dateTime ?? info?.dateTimeString ?? null);
 
       // Special-case: if ReturnInfo indicates a return DESTINATION that maps to the first-stop location,
       // derive the planned arrival for that destination using FinalInfo matched by ReturnInfo.destStopId/destLoc.
@@ -351,7 +347,7 @@ export default function RouteTimeline({
           return (dStop && fiStop === dStop) || (dLoc && fiLoc === dLoc);
         });
 
-        const retPlanned = parseSapUtcDateTimeToDate(fin?.dateTime ?? fin?.dateTimeString ?? null);
+        const retPlanned = parseSapDateTimeToDate(fin?.dateTime ?? fin?.dateTimeString ?? null);
         if (retPlanned) plannedDateTime = retPlanned;
       }
 
@@ -379,7 +375,7 @@ export default function RouteTimeline({
 
         // Backend milestone + actual time
         eventRaw: (info?.event ?? info?.Event ?? "") || "",
-        actDateTime: parseSapUtcDateTimeToDate(info?.actDateTime ?? info?.ActDateTime ?? null),
+        actDateTime: parseSapDateTimeToDate(info?.actDateTime ?? info?.ActDateTime ?? null),
 
         totalLoadedPack,
         totalUnloadedPack,
@@ -425,13 +421,13 @@ export default function RouteTimeline({
 
     if (typeof v === "string") {
       const s = v.trim();
-      if (/^\d{14}$/.test(s)) return parseSapUtcDateTimeToDate(s)?.getTime() ?? null;
+      if (/^\d{14}$/.test(s)) return parseSapDateTimeToDate(s)?.getTime() ?? null;
       const d = new Date(s);
       return isNaN(d) ? null : d.getTime();
     }
 
     if (typeof v === "number") {
-      if (v > 10_000_000_000_000) return parseSapUtcDateTimeToDate(String(v))?.getTime() ?? null;
+      if (v > 10_000_000_000_000) return parseSapDateTimeToDate(String(v))?.getTime() ?? null;
       if (v > 1_000_000_000_000) return v; // ms
       if (v > 1_000_000_000) return v * 1000; // sec
     }

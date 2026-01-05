@@ -98,49 +98,133 @@ export default function App() {
       return ta - tb;
     });
   };
+  const getStopsFromShipment = (shipment) => {
+  if (!shipment) return [];
 
-  const openFullRouteInMaps = useCallback(() => {
-    const shipment = selectedShipment;
+  // 1) If you already have normalized stops array
+  if (Array.isArray(shipment.stops) && shipment.stops.length) return shipment.stops;
 
-    if (!shipment || !Array.isArray(shipment.stops) || shipment.stops.length < 2) {
-      alert("Route not available yet. Please open a shipment with at least 2 stops.");
-      return;
+  // 2) If stops come as JSON string (trackingDetails payload)
+  const rawStops = shipment?.raw?.Stops ?? shipment?.Stops ?? null;
+  if (!rawStops) return [];
+
+  try {
+    const arr = typeof rawStops === "string" ? JSON.parse(rawStops) : rawStops;
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    console.log("getStopsFromShipment: failed to parse Stops", e, rawStops);
+    return [];
+  }
+};
+
+// ✅ Use raw.Stops for coordinates, enrich stopid from FinalInfo when possible
+const getStopsForMap = (shipment) => {
+  if (!shipment) return [];
+
+  const rawStops = shipment?.raw?.Stops ?? shipment?.Stops ?? null;
+  const rawFinal = shipment?.raw?.FinalInfo ?? shipment?.FinalInfo ?? null;
+
+  let stops = [];
+  let finalInfo = [];
+
+  try {
+    stops = typeof rawStops === "string" ? JSON.parse(rawStops) : rawStops;
+    if (!Array.isArray(stops)) stops = [];
+  } catch {
+    stops = [];
+  }
+
+  try {
+    finalInfo = typeof rawFinal === "string" ? JSON.parse(rawFinal) : rawFinal;
+    if (!Array.isArray(finalInfo)) finalInfo = [];
+  } catch {
+    finalInfo = [];
+  }
+
+  // Build a map to attach stopid using (locid + seqpos)
+  const stopIdByLocSeq = new Map();
+  finalInfo.forEach((f) => {
+    const loc = String(f?.locid ?? f?.locId ?? "").trim();
+    const seq = String(f?.stopseqpos ?? f?.stopSeqPos ?? "").trim().toUpperCase();
+    const sid = String(f?.stopid ?? f?.stopId ?? "").trim();
+    if (loc && seq && sid && !stopIdByLocSeq.has(`${loc}|${seq}`)) {
+      stopIdByLocSeq.set(`${loc}|${seq}`, sid);
+    }
+  });
+
+  // Normalize Stops array (this has latitude/longitude)
+  return stops.map((s, idx) => {
+    const loc = String(s?.locid ?? s?.locId ?? "").trim();
+    const seq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
+    const stopid =
+      String(s?.stopid ?? s?.stopId ?? "").trim() ||
+      stopIdByLocSeq.get(`${loc}|${seq}`) ||
+      `${loc}_${seq}_${idx}`;
+
+    return {
+      ...s,
+      locid: loc,
+      stopseqpos: seq,
+      stopid,
+      latitude: s?.latitude ?? s?.Latitude ?? s?.lat ?? null,
+      longitude: s?.longitude ?? s?.Longitude ?? s?.lng ?? s?.long ?? null,
+    };
+  });
+};
+
+const openFullRouteInMaps = useCallback(() => {
+  const shipment = selectedShipment;
+  const stops = getStopsForMap(shipment);
+
+  console.log("MAP stops (from raw.Stops):", stops);
+
+  if (!shipment || stops.length < 2) {
+    alert("Route not available yet. Please open a shipment with at least 2 stops.");
+    return;
+  }
+
+  const toPoint = (s) => {
+    const lat = Number(s?.latitude ?? s?.Latitude ?? s?.lat);
+    const lng = Number(s?.longitude ?? s?.Longitude ?? s?.lng ?? s?.long);
+
+    if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
+      return `${lat},${lng}`;
     }
 
-    const sorted = sortStops(shipment.stops);
+    const street = s?.street || "";
+    const city = s?.city || s?.city1 || "";
+    const state = s?.state || s?.region || "";
+    const postal = s?.postCode || s?.postCode1 || "";
+    const country = s?.country || "";
 
-    // Convert to points (address only)
-    const points = sorted
-      .map(toMapsPoint)
-      .filter(Boolean);
+    const label = [street, city, state, postal, country]
+      .map((v) => String(v || "").trim())
+      .filter(Boolean)
+      .join(", ");
 
-    if (points.length < 2) {
-      alert("Could not build a route: stops are missing valid latitude/longitude.");
-      return;
-    }
+    return label || null;
+  };
 
-    // origin = first, destination = last, waypoints = middle
-    const origin = points[0];
-    const destination = points[points.length - 1];
-    const waypoints = points.slice(1, -1);
+  const points = stops.map(toPoint).filter(Boolean);
 
-    // Google Maps has a practical waypoints limit; keep safe
-    const MAX_WAYPOINTS = 23;
-    const trimmedWaypoints = waypoints.slice(0, MAX_WAYPOINTS);
+  if (points.length < 2) {
+    alert("Could not build a route: stops are missing valid latitude/longitude.");
+    return;
+  }
 
-    const waypointsParam = trimmedWaypoints.length
-      ? `&waypoints=${trimmedWaypoints.map((p) => encodeURIComponent(p)).join("|")}`
-      : "";
+  const origin = points[0];
+  const destination = points[points.length - 1];
+  const waypoints = points.slice(1, -1).slice(0, 23);
 
-    const url =
-      `https://www.google.com/maps/dir/?api=1` +
-      `&origin=${encodeURIComponent(origin)}` +
-      `&destination=${encodeURIComponent(destination)}` +
-      waypointsParam +
-      `&travelmode=driving`;
+  const url =
+    `https://www.google.com/maps/dir/?api=1` +
+    `&origin=${encodeURIComponent(origin)}` +
+    `&destination=${encodeURIComponent(destination)}` +
+    (waypoints.length ? `&waypoints=${waypoints.map(encodeURIComponent).join("|")}` : "") +
+    `&travelmode=driving`;
 
-    window.open(url, "_blank", "noopener,noreferrer");
-  }, [selectedShipment]);
+  window.open(url, "_blank", "noopener,noreferrer");
+}, [selectedShipment]);
 
    const effectiveFoId =
     selectedShipment?.FoId || selectedShipment?.FoID || selectedShipment?.foId || "";
