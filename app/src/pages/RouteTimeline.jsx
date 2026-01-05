@@ -264,6 +264,8 @@ export default function RouteTimeline({
   const getStopKey = (s) => s.stopid || `${s.locid}_${s.stopseqpos}_${s.idx}`;
 
   const routeStops = useMemo(() => {
+    const firstStopLocid = String(stopsArr?.[0]?.locId ?? stopsArr?.[0]?.locid ?? "").trim();
+    const firstStopId = String(stopsArr?.[0]?.stopid ?? stopsArr?.[0]?.stopId ?? "").trim();
     // copy queues so we can shift safely
     const localQueues = new Map();
     finalQueuesByLoc.forEach((v, k) => localQueues.set(k, [...v]));
@@ -317,6 +319,39 @@ export default function RouteTimeline({
         (infoLocid && unloadByLoc.get(infoLocid)) ??
         0;
 
+      // Planned time (default from matched FinalInfo row for this stop)
+      let plannedDateTime = parseSapUtcDateTimeToDate(info?.dateTime ?? info?.dateTimeString ?? null);
+
+      // Special-case: if ReturnInfo indicates a return DESTINATION that maps to the first-stop location,
+      // derive the planned arrival for that destination using FinalInfo matched by ReturnInfo.destStopId/destLoc.
+      const matchingReturnDest = (returnArr || []).find((rr) => {
+        const dStop = String(rr?.destStopId ?? "").trim();
+        const dLoc = String(rr?.destLoc ?? rr?.destLocId ?? "").trim();
+
+        // This stop is the return destination (by stopid/locid)
+        const isThisDest = (dStop && dStop === stopid) || (dLoc && (dLoc === locid || dLoc === infoLocid));
+
+        // Only apply this planned-time override when the return destination is the SAME location as first stop
+        const isFirstLoc = (dLoc && dLoc === firstStopLocid) || (dStop && dStop === firstStopId) || (locid && locid === firstStopLocid);
+
+        return isThisDest && isFirstLoc;
+      });
+
+      if (matchingReturnDest) {
+        const dStop = String(matchingReturnDest?.destStopId ?? "").trim();
+        const dLoc = String(matchingReturnDest?.destLoc ?? matchingReturnDest?.destLocId ?? "").trim();
+
+        // Find the planned datetime in FinalInfo using destStopId first, then destLoc
+        const fin = (finalInfoArr || []).find((fi) => {
+          const fiStop = String(fi?.stopid ?? fi?.stopId ?? "").trim();
+          const fiLoc = String(fi?.locid ?? fi?.locId ?? "").trim();
+          return (dStop && fiStop === dStop) || (dLoc && fiLoc === dLoc);
+        });
+
+        const retPlanned = parseSapUtcDateTimeToDate(fin?.dateTime ?? fin?.dateTimeString ?? null);
+        if (retPlanned) plannedDateTime = retPlanned;
+      }
+
       return {
         idx,
         stopid,
@@ -324,7 +359,7 @@ export default function RouteTimeline({
         stopseqpos: seq,
 
         // Planned time
-        dateTime: parseSapUtcDateTimeToDate(info?.dateTime ?? info?.dateTimeString ?? null),
+        dateTime: plannedDateTime,
 
         // Display (address moved to Stops array)
         // Prefer Stops (`st`) and fallback to FinalInfo (`info`) if needed
@@ -354,7 +389,7 @@ export default function RouteTimeline({
         hasReturnUnload: Number(returnUnloadQty) > 0,
       };
     });
-  }, [stopsArr, finalQueuesByLoc, loadByStopId, unloadByStopId, loadByLoc, unloadByLoc]);
+  }, [stopsArr, finalQueuesByLoc, loadByStopId, unloadByStopId, loadByLoc, unloadByLoc, returnArr, finalInfoArr]);
 
   // IMPORTANT: order is from Stops array ONLY (no date sorting)
   const derivedStops = useMemo(() => routeStops, [routeStops]);
@@ -402,7 +437,7 @@ export default function RouteTimeline({
 
   const isLastStop = (stop) => {
     const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
-    if (seqPos === "L") return true;
+    if (seqPos == "L") return true;
     return false;
 
   };
@@ -414,17 +449,16 @@ export default function RouteTimeline({
 
   const allowedSequenceForStop = (stop) => {
     const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
-    const last = isLastStop(stop);
 
     // Last stop rules:
-    if (last) {
+    if (seqPos == "L") {
       if (stop.hasReturnUnload) return ["arrival", "unloading"]; // return drop only
       if (isUnloadingLocation(stop)) return ["items", "arrival", "unloading", "pod"]; // customer unload
       return ["arrival"]; // arrival only
     }
 
     // First stop (shipping point):
-    if (seqPos === "F") return ["items", "departure"];
+    if (seqPos == "F") return ["items", "departure"];
 
     // Intermediate:
     if (isUnloadingLocation(stop)) return ["items", "arrival", "unloading", "pod", "departure"];
@@ -761,6 +795,49 @@ export default function RouteTimeline({
     }
   };
 
+  // Resolve ReturnItemsSet filter keys from ReturnInfo (source for return pickup, dest for return deliver)
+  const getReturnKeysForStop = (stop) => {
+    const stopId = String(stop?.stopid ?? stop?.stopId ?? "").trim();
+    const locId = String(stop?.locid ?? stop?.locId ?? "").trim();
+
+    // Prefer exact stopId matches (best), then loc matches
+    const match =
+      (returnArr || []).find((r) => String(r?.sourceStopId ?? "").trim() === stopId) ||
+      (returnArr || []).find((r) => String(r?.destStopId ?? "").trim() === stopId) ||
+      (returnArr || []).find((r) => String(r?.sourceLoc ?? r?.sourceLocId ?? "").trim() === locId) ||
+      (returnArr || []).find((r) => String(r?.destLoc ?? r?.destLocId ?? "").trim() === locId) ||
+      null;
+
+    if (!match) return { loc: locId, stopId: stopId };
+
+    // If this stop represents return pickup, use source keys; if return deliver, use dest keys.
+    // Fallback to whichever side has values.
+    const isPickup =
+      (String(match?.sourceStopId ?? "").trim() === stopId) ||
+      (String(match?.sourceLoc ?? match?.sourceLocId ?? "").trim() === locId) ||
+      Boolean(stop?.hasReturnLoad);
+
+    const resolvedStopId = String(
+      (isPickup ? match?.sourceStopId : match?.destStopId) ??
+      match?.sourceStopId ??
+      match?.destStopId ??
+      stopId ??
+      ""
+    ).trim();
+
+    const resolvedLoc = String(
+      (isPickup ? (match?.sourceLoc ?? match?.sourceLocId) : (match?.destLoc ?? match?.destLocId)) ??
+      match?.sourceLoc ??
+      match?.sourceLocId ??
+      match?.destLoc ??
+      match?.destLocId ??
+      locId ??
+      ""
+    ).trim();
+
+    return { loc: resolvedLoc, stopId: resolvedStopId };
+  };
+
   // ✅ Return Items (view-only)
   const fetchReturnItemsForStop = async (stop) => {
     setItemsStop({ ...stop, items: [], itemsType: "return" });
@@ -768,8 +845,7 @@ export default function RouteTimeline({
     setItemsLoading(true);
 
     try {
-      const loc = stop.locid || "";
-      const stopId = stop.stopid || "";
+      const { loc, stopId } = getReturnKeysForStop(stop);
 
       if (!FoId || !loc || !stopId) {
         setItemsStop((s) => ({ ...s, items: [] }));
@@ -952,8 +1028,9 @@ export default function RouteTimeline({
 
           const seq = allowedSequenceForStop(stop);
 
-          const menuOptions = [{ key: "items", label: "Items", Icon: Inventory2OutlinedIcon }];
+          //       const isReturnStop = Boolean(stop.hasReturnLoad || stop.hasReturnUnload);
 
+          const menuOptions = [{ key: "items", label: "Items", Icon: Inventory2OutlinedIcon }];
           if (seq.includes("arrival") && !reported.arrival)
             menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
 
@@ -1247,7 +1324,9 @@ export default function RouteTimeline({
                           ? "POD"
                           : opt.key === "unloading"
                             ? "UNLD"
-                            : opt.key;
+                            : opt.key === "return"
+                              ? "RET"
+                              : opt.key;
 
                   const isSending =
                     opt.key === "unloading"
@@ -1269,10 +1348,8 @@ export default function RouteTimeline({
                     opt.key === "items"
                       ? true
                       : opt.key === "return"
-                        ? true
-                        : opt.key === "pod"
-                          ? priorAllReported && allowedStop
-                          : allowedStop && priorAllReported;
+                        ? priorAllReported && allowedStop
+                        : allowedStop && priorAllReported;
 
                   return (
                     <MenuItem
