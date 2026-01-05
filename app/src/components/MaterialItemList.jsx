@@ -1,5 +1,5 @@
 // src/components/MaterialItemList.jsx
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
+import { apiPost } from "../auth/api";
 
 // Color palette aligned with ShipmentDetails / ReportEvent
 const BG = "#EFF0F3";
@@ -20,6 +21,7 @@ const TEXT_PRIMARY = "#071E54";
 const TEXT_SECONDARY = "#6B6C6E";
 
 export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
+  const [posting, setPosting] = useState(false);
   // ---------- helpers ----------
   const safeJsonArray = (v) => {
     if (!v) return [];
@@ -127,6 +129,47 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
 
   const totalPackages = normalizedItems.length;
 
+  const isReturnView = String(stop?.itemsType ?? "").toLowerCase() === "return";
+
+  const buildReturnItemsSetUrl = () => {
+    const fo = String(stop?.FoId ?? "").trim();
+    const loc = String(stop?.resolvedLoc ?? stop?.locid ?? "").trim();
+    const sid = String(stop?.resolvedStopId ?? stop?.stopid ?? "").trim();
+
+    if (!fo || !loc || !sid) return "";
+
+    // Same URL shape as fetchReturnItemsForStop GET
+    return (
+      `/odata/v4/GTT/ReturnItemsSet` +
+      `?$filter=FoId eq '${fo}' and Location eq '${loc}' and StopId eq '${sid}'`
+    );
+  };
+
+  const handleConfirmClick = async () => {
+    // ✅ Only call API if the items shown are for return
+    if (!isReturnView) {
+      onConfirm?.();
+      return;
+    }
+
+    const url = buildReturnItemsSetUrl();
+    if (!url) {
+      alert("Missing FoId/Location/StopId for ReturnItemsSet POST.");
+      return;
+    }
+
+    try {
+      setPosting(true);
+      // POST to the same ReturnItemsSet URL (same filter keys as GET). No payload required.
+      await apiPost(url, {});
+      onConfirm?.({ ok: true });
+    } catch (e) {
+      alert(e?.message || "Failed to post ReturnItemsSet.");
+    } finally {
+      setPosting(false);
+    }
+  };
+
   return (
     <Box
       sx={{
@@ -177,7 +220,12 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
           )}
         </Box>
 
-        <IconButton size="small" onClick={onConfirm} sx={{ color: PRIMARY }}>
+        <IconButton
+          size="small"
+          onClick={handleConfirmClick}
+          disabled={posting}
+          sx={{ color: PRIMARY }}
+        >
           <CheckIcon sx={{ fontSize: 22 }} />
         </IconButton>
       </Box>
