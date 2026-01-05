@@ -8,6 +8,7 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import EventAvailableIcon from "@mui/icons-material/EventAvailable";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
 import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded"; // Return viewer
+import { apiPost ,apiGet } from "../auth/api";
 
 import {
   IconButton,
@@ -613,143 +614,128 @@ export default function RouteTimeline({
   }, [nextPendingIndex, derivedStops, onAction]);
 
   // POST event (ARRV/DEPT); sends StopId = stop.stopid
-  const sendEventReport = async (networkActionCode, stop) => {
-    const stopKey = getStopKey(stop);
-    const payload = {
-      FoId: FoId,
-      Action: networkActionCode,
-      StopId: stop.stopid || "",
-    };
-    const sendKey = `${stopKey}_${networkActionCode}`;
+const sendEventReport = async (networkActionCode, stop) => {
+  console.log("[sendEventReport] ENTER", {
+    networkActionCode,
+    stopId: stop?.stopid,
+    eventsUrl,
+  });
+  const stopKey = getStopKey(stop);
 
-    try {
-      setSending((p) => ({ ...p, [sendKey]: true }));
-
-      const res = await fetch(eventsUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        alert(`Failed to report event — server returned ${res.status}: ${txt}`);
-        return { ok: false };
-      }
-
-      let body = null;
-      try {
-        body = await res.json();
-      } catch {
-        body = null;
-      }
-
-      const serverEvent =
-        body && (body.Event ?? body.event) ? String(body.Event ?? body.event) : null;
-
-      const mapped = mapEventStringToActionKey(serverEvent) || mapEventStringToActionKey(networkActionCode);
-      if (!mapped) {
-        alert("Backend did not return a valid Event. Cannot move to next step.");
-        return { ok: false, body };
-      }
-
-      const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
-      const atKey =
-        mapped === "arrival"
-          ? "arrivalAt"
-          : mapped === "unloading"
-            ? "unloadingAt"
-            : mapped === "departure"
-              ? "departureAt"
-              : mapped === "return"
-                ? "returnAt"
-                : mapped === "pod"
-                  ? "podAt"
-                  : null;
-
-      setReportedMap((prev) => {
-        const seq = allowedSequenceForStop(stop);
-        const flags = computeFlagsUpTo(seq, mapped);
-        return {
-          ...prev,
-          [stopKey]: {
-            ...(prev[stopKey] || {}),
-            ...flags,
-            ...(atKey ? { [atKey]: serverTsMs } : {}),
-          },
-        };
-      });
-
-      return { ok: true, body, mapped, ts: serverTsMs };
-    } catch (err) {
-      alert(`Failed to report event: ${err.message || err}`);
-      return { ok: false, error: err };
-    } finally {
-      setSending((p) => {
-        const c = { ...p };
-        delete c[sendKey];
-        return c;
-      });
-    }
+  const payload = {
+    FoId: FoId,
+    Action: networkActionCode,
+    StopId: stop.stopid || "",
   };
+   console.log("[sendEventReport] payload prepared:", payload);
+
+  const sendKey = `${stopKey}_${networkActionCode}`;
+
+  try {
+    console.log("[sendEventReport] setting sending flag:", sendKey);
+    setSending((p) => ({ ...p, [sendKey]: true }));
+
+      console.log("[sendEventReport] CALLING apiPost", {
+      url: eventsUrl,
+      payload,
+    });
+    // ✅ Works for Android/iOS (full SRV + Bearer) and Web (relative)
+    const body = await apiPost(eventsUrl, payload);
+
+    const serverEvent =
+      body && (body.Event ?? body.event) ? String(body.Event ?? body.event) : null;
+    console.log("[sendEventReport] serverEvent:", serverEvent);
+    const mapped =
+      mapEventStringToActionKey(serverEvent) ||
+      mapEventStringToActionKey(networkActionCode);
+    console.log("[sendEventReport] mapped action:", mapped);
+    if (!mapped) {
+      alert("Backend did not return a valid Event. Cannot move to next step.");
+      return { ok: false, body };
+    }
+
+    const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
+    console.log("[sendEventReport] serverTsMs:", serverTsMs);
+    const atKey =
+      mapped === "arrival"
+        ? "arrivalAt"
+        : mapped === "unloading"
+        ? "unloadingAt"
+        : mapped === "departure"
+        ? "departureAt"
+        : mapped === "return"
+        ? "returnAt"
+        : mapped === "pod"
+        ? "podAt"
+        : null;
+
+    setReportedMap((prev) => {
+      const seq = allowedSequenceForStop(stop);
+      const flags = computeFlagsUpTo(seq, mapped);
+       console.log("[sendEventReport] updating reportedMap", {
+        stopKey,
+        flags,
+        atKey,
+        serverTsMs,
+      });
+      return {
+        ...prev,
+        [stopKey]: {
+          ...(prev[stopKey] || {}),
+          ...flags,
+          ...(atKey ? { [atKey]: serverTsMs } : {}),
+        },
+      };
+    });
+    console.log("[sendEventReport] SUCCESS");
+    return { ok: true, body, mapped, ts: serverTsMs };
+  } catch (err) {
+    console.error("[sendEventReport] ERROR", err);
+    alert(`Failed to report event: ${err?.message || err}`);
+    return { ok: false, error: err };
+  } finally {
+    console.log("[sendEventReport] clearing sending flag:", sendKey);
+    setSending((p) => {
+      const c = { ...p };
+      delete c[sendKey];
+      return c;
+    });
+  }
+};
 
   // ✅ Unloading event (ZSKY_SRV)
   const unloadingUrl = "/odata/v4/GTT/UnloadingSet";
 
-  const sendUnloadingReport = async (stop) => {
-    const stopKey = getStopKey(stop);
-    const sendKey = `${stopKey}_UNLD`;
+const sendUnloadingReport = async (stop) => {
+  const stopKey = getStopKey(stop);
+  const sendKey = `${stopKey}_UNLD`;
 
-    try {
-      setSending((p) => ({ ...p, [sendKey]: true }));
+  try {
+    setSending((p) => ({ ...p, [sendKey]: true }));
 
-      const payload = {
-        FoId: FoId,
-        StopId: stop.stopid || "",
-      };
+    const payload = { FoId, StopId: stop.stopid || "" };
 
-      const res = await fetch(unloadingUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+    const body = await apiPost(unloadingUrl, payload);
 
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        alert(`Failed to report unloading — ${res.status}: ${txt}`);
-        return { ok: false };
-      }
+    const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
 
-      let body = null;
-      try {
-        body = await res.json();
-      } catch {
-        body = null;
-      }
+    setReportedMap((prev) => ({
+      ...prev,
+      [stopKey]: { ...(prev[stopKey] || {}), unloading: true, unloadingAt: serverTsMs },
+    }));
 
-      const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
-
-      setReportedMap((prev) => ({
-        ...prev,
-        [stopKey]: {
-          ...(prev[stopKey] || {}),
-          unloading: true,
-          unloadingAt: serverTsMs,
-        },
-      }));
-
-      return { ok: true, body, mapped: "unloading", ts: serverTsMs };
-    } catch (err) {
-      alert(`Failed to report unloading: ${err.message || err}`);
-      return { ok: false, error: err };
-    } finally {
-      setSending((p) => {
-        const c = { ...p };
-        delete c[sendKey];
-        return c;
-      });
-    }
-  };
+    return { ok: true, body, mapped: "unloading", ts: serverTsMs };
+  } catch (err) {
+    alert(`Failed to report unloading: ${err?.message || err}`);
+    return { ok: false, error: err };
+  } finally {
+    setSending((p) => {
+      const c = { ...p };
+      delete c[sendKey];
+      return c;
+    });
+  }
+};
 
   // Shipment Items (includes StopId)
   const fetchItemsForStop = async (stop) => {
@@ -772,13 +758,7 @@ export default function RouteTimeline({
         ` and Location eq '${loc}'` +
         ` and StopId eq '${stopId}'`;
 
-      const res = await fetch(url);
-      if (!res.ok) {
-        setItemsStop((s) => ({ ...s, items: [] }));
-        return;
-      }
-
-      const json = await res.json().catch(() => null);
+      const json = await apiGet(url);
       const items = Array.isArray(json?.value) ? json.value : [];
 
       setItemsStop((s) => ({ ...s, items }));
@@ -856,13 +836,8 @@ export default function RouteTimeline({
         `/odata/v4/GTT/ReturnItemsSet` +
         `?$filter=FoId eq '${FoId}' and Location eq '${loc}' and StopId eq '${stopId}'`;
 
-      const res = await fetch(url);
-      if (!res.ok) {
-        setItemsStop((s) => ({ ...s, items: [] }));
-        return;
-      }
-
-      const json = await res.json().catch(() => null);
+      
+      const json = await apiGet(url);
       const row = Array.isArray(json?.value) ? json.value[0] : null;
       const loaded = row?.LoadedItems ?? null;
 

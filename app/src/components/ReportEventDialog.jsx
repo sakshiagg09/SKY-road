@@ -18,7 +18,7 @@ import {
   MenuItem,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-
+import { apiGet, apiPost } from "../auth/api";
 import ReportOutlinedIcon from "@mui/icons-material/ReportOutlined";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
@@ -139,11 +139,7 @@ export default function ReportEventDialog({
     setReasonsError("");
 
     try {
-      const res = await fetch("odata/v4/GTT/delayEvents");
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = await res.json();
+      const data = await apiGet("/odata/v4/GTT/delayEvents");
 
       const rows = Array.isArray(data.value) ? data.value : [];
       setReasonOptions(rows);
@@ -255,18 +251,8 @@ export default function ReportEventDialog({
     console.log("Delay event payload:", payload);
 
     try {
-      const res = await fetch("odata/v4/GTT/delayEvents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status} ${text}`);
-      }
-
-      console.log("Delay event posted OK:", await res.json().catch(() => null));
+      const result = await apiPost("/odata/v4/GTT/delayEvents", payload);
+      console.log("Delay event posted OK:", result);
       alert("Unplanned delay reported successfully.");
       closeDialog();
     } catch (err) {
