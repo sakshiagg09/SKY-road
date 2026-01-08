@@ -622,6 +622,8 @@ const sendEventReport = async (networkActionCode, stop) => {
     FoId: FoId,
     Action: networkActionCode,
     StopId: stop.stopid || "",
+    Latitude: stop.latitude,
+    Longitude: stop.longitude,
   };
    console.log("[sendEventReport] payload prepared:", payload);
 

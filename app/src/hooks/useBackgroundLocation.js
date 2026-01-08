@@ -23,8 +23,7 @@ export function useBackgroundLocation({ onLocation }) {
             backgroundTitle: "SKY – Tracking Active",
             requestPermissions: true,
             stale: false,
-            // IMPORTANT: don't use 0 unless you really want spam
-            distanceFilter: 10, // meters (use 0 only for testing)
+            distanceFilter: 10, // meters
           },
           async (loc, error) => {
             if (error) {
@@ -36,18 +35,34 @@ export function useBackgroundLocation({ onLocation }) {
             }
             if (!loc) return;
 
-            // throttle to avoid too many posts (optional but recommended)
+            // throttle to avoid too many posts
             const now = Date.now();
             if (now - lastSentAt < 4000) return; // 4s throttle
             lastSentAt = now;
 
+            const lat = Number(loc?.latitude);
+            const lng = Number(loc?.longitude);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+            const t = Number(loc?.time);
+            const timestamp = Number.isFinite(t) ? t : now;
+
+            const s = Number(loc?.speed);
+            const speed = Number.isFinite(s) ? s : null; // keep as m/s; convert in manager
+
+            const b = Number(loc?.bearing);
+            const bearing = Number.isFinite(b) ? b : null;
+
+            const a = Number(loc?.accuracy);
+            const accuracy = Number.isFinite(a) ? a : null;
+
             const payload = {
-              latitude: loc.latitude,
-              longitude: loc.longitude,
-              accuracy: loc.accuracy ?? null,
-              speed: loc.speed ?? null,
-              bearing: loc.bearing ?? null,
-              timestamp: loc.time ? Number(loc.time) : now, // epoch ms
+              latitude: lat,
+              longitude: lng,
+              accuracy,
+              speed,
+              bearing,
+              timestamp,
             };
 
             onLocation && onLocation(payload);

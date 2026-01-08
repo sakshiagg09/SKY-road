@@ -11,12 +11,13 @@ function getTarget() {
 }
 
 function skyPlusBase() {
-  return (process.env.SKY_PLUS_BASE_URL || "http://localhost:5000").replace(/\/$/, "");
+  return (process.env.SKY_PLUS_BASE_URL || "https://skyplus-backend-hwf7gsdhathxd4h3.westeurope-01.azurewebsites.net").replace(/\/$/, "");
 }
 
 // Node 18+ has global fetch. If not, install node-fetch.
 async function postSkyPlus(path, payload) {
   const url = `${skyPlusBase()}${path}`;
+  console.log(`POST SKY+ to ${url} with payload:`, payload);
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -242,9 +243,9 @@ module.exports = cds.service.impl(async function () {
   // ---------------------------------------------------------------------------
   this.on("CREATE", eventReporting, async (req) => {
   // if (getTarget() === "SKY_PLUS") {
-  //   return await postSkyPlus("/api/events", req.data);
+  //   return await postSkyPlus("/api/event", req.data);
   // }
-  return await s4Post("/EventsReportingSet", req.data);
+   return await s4Post("/EventsReportingSet", req.data);
 });
 
  this.on("CREATE", updatesPOD, async (req) => {

@@ -2,6 +2,7 @@
 import React, { useRef, useEffect, useState } from "react";
 import { Box, Typography, Button, Chip, IconButton } from "@mui/material";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
+import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 
 const DEFAULT_PRIMARY = "#1976D2";
@@ -10,15 +11,6 @@ const DEFAULT_TEXT_PRIMARY = "#071E54";
 const DEFAULT_TEXT_SECONDARY = "#6B6C6E";
 const DEFAULT_CARD = "#FFFFFF";
 
-/**
- * Props:
- *  - hasDiscrepancy: boolean
- *  - signatureDataUrl: string (data:image/jpeg;base64,...)  // from parent
- *  - onSignatureChange: (dataUrl: string) => void
- *  - attachments: File[]
- *  - onAddAttachments: (event) => void
- *  - onRemoveAttachment: (index: number) => void
- */
 export default function SignatureAttachmentsSection({
   hasDiscrepancy,
   signatureDataUrl,
@@ -35,6 +27,10 @@ export default function SignatureAttachmentsSection({
   const canvasRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
+  // ✅ NEW: separate refs for camera and file picker
+  const cameraInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+
   // ---- helper: fill canvas with WHITE background ----
   const fillCanvasWhite = (canvas, ctx) => {
     ctx.save();
@@ -47,29 +43,22 @@ export default function SignatureAttachmentsSection({
   const initCanvas = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext("2d");
 
-    // set dimensions
     canvas.width = canvas.offsetWidth || 300;
     canvas.height = 140;
 
-    // white bg
     fillCanvasWhite(canvas, ctx);
 
-    // pen style
     ctx.lineWidth = 2.5;
     ctx.lineCap = "round";
     ctx.strokeStyle = "#000000";
   };
 
-  // init canvas once
   useEffect(() => {
     initCanvas();
 
-    // handle resize (optional but helps on responsive dialogs)
     const onResize = () => {
-      // re-init (will clear), then restore signature if present
       initCanvas();
       restoreSignature(signatureDataUrl);
     };
@@ -78,7 +67,6 @@ export default function SignatureAttachmentsSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // restore signatureDataUrl into canvas (if parent already has one)
   const restoreSignature = (dataUrl) => {
     if (!dataUrl) return;
     const canvas = canvasRef.current;
@@ -87,23 +75,18 @@ export default function SignatureAttachmentsSection({
 
     const img = new Image();
     img.onload = () => {
-      // clear and fill white
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       fillCanvasWhite(canvas, ctx);
-
-      // fit image to canvas
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     };
     img.src = dataUrl;
   };
 
   useEffect(() => {
-    // whenever parent signature changes externally, redraw it
     if (signatureDataUrl) restoreSignature(signatureDataUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signatureDataUrl]);
 
-  // ---- pointer helpers ----
   const getPos = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -145,8 +128,6 @@ export default function SignatureAttachmentsSection({
   const saveSignatureToParent = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    // canvas already has white bg; export as JPG
     const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
     onSignatureChange?.(dataUrl);
   };
@@ -157,16 +138,29 @@ export default function SignatureAttachmentsSection({
     saveSignatureToParent();
   };
 
-  // ---- actions: clear only ----
   const handleClearSignature = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     fillCanvasWhite(canvas, ctx);
+    onSignatureChange?.("");
+  };
 
-    onSignatureChange?.(""); // clear in parent
+  // ✅ NEW: wrap picker change so we reset input value (so same file can be selected twice)
+  const handlePickerChange = (e) => {
+    onAddAttachments?.(e);
+    try {
+      e.target.value = "";
+    } catch {}
+  };
+
+  const fileTypeLabel = (file) => {
+    const name = (file?.name || "").toLowerCase();
+    const type = (file?.type || "").toLowerCase();
+    if (type === "application/pdf" || name.endsWith(".pdf")) return "PDF";
+    if (type.startsWith("image/")) return "IMG";
+    return "FILE";
   };
 
   return (
@@ -277,6 +271,8 @@ export default function SignatureAttachmentsSection({
             justifyContent: "space-between",
             alignItems: "center",
             mb: 2,
+            gap: 1,
+            flexWrap: "wrap",
           }}
         >
           <Typography
@@ -290,27 +286,65 @@ export default function SignatureAttachmentsSection({
             Attach Files
           </Typography>
 
-          <Button
-            component="label"
-            startIcon={<UploadFileIcon sx={{ fontSize: 18 }} />}
-            sx={{
-              textTransform: "none",
-              fontSize: 12,
-              fontWeight: 600,
-              borderRadius: 999,
-              bgcolor: "rgba(25,118,210,0.08)",
-              color: primaryColor,
-              "&:hover": { bgcolor: "rgba(25,118,210,0.14)" },
-            }}
-          >
-            Add
-            <input hidden multiple type="file" onChange={onAddAttachments} />
-          </Button>
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+            {/* ✅ Take Photo */}
+            <Button
+              onClick={() => cameraInputRef.current?.click()}
+              startIcon={<PhotoCameraIcon sx={{ fontSize: 18 }} />}
+              sx={{
+                textTransform: "none",
+                fontSize: 12,
+                fontWeight: 600,
+                borderRadius: 999,
+                bgcolor: "rgba(25,118,210,0.08)",
+                color: primaryColor,
+                "&:hover": { bgcolor: "rgba(25,118,210,0.14)" },
+              }}
+            >
+              Camera
+            </Button>
+
+            {/* ✅ Choose Image/PDF */}
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              startIcon={<UploadFileIcon sx={{ fontSize: 18 }} />}
+              sx={{
+                textTransform: "none",
+                fontSize: 12,
+                fontWeight: 600,
+                borderRadius: 999,
+                bgcolor: "rgba(25,118,210,0.08)",
+                color: primaryColor,
+                "&:hover": { bgcolor: "rgba(25,118,210,0.14)" },
+              }}
+            >
+              Add
+            </Button>
+          </Box>
+
+          {/* hidden inputs */}
+          <input
+            ref={cameraInputRef}
+            hidden
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handlePickerChange}
+          />
+
+          <input
+            ref={fileInputRef}
+            hidden
+            multiple
+            type="file"
+            accept="image/*,application/pdf"
+            onChange={handlePickerChange}
+          />
         </Box>
 
         {!attachments || attachments.length === 0 ? (
           <Typography sx={{ fontSize: 12, color: textSecondary }}>
-            No files attached yet.
+            No files attached yet. You can add images or PDFs.
           </Typography>
         ) : (
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -329,7 +363,7 @@ export default function SignatureAttachmentsSection({
               >
                 <Box sx={{ display: "flex", flexDirection: "column" }}>
                   <Typography sx={{ fontSize: 13, fontWeight: 600, color: textPrimary }}>
-                    {file.name}
+                    [{fileTypeLabel(file)}] {file.name}
                   </Typography>
                   <Typography sx={{ fontSize: 11, color: textSecondary }}>
                     {(file.size / 1024).toFixed(1)} KB

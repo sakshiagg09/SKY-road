@@ -23,8 +23,8 @@ service GTT {
         StopId     : String;
         EventTime  : String;
         TimeZone   : String;
-        EventLong  : Double;
-        EventLat   : Double;
+        Longitude  : Double;
+        Latitude   : Double;
         reasonCode : String;
         quantity   : Decimal(15,3);
         signature  : String;
