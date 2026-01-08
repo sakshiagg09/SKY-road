@@ -351,7 +351,6 @@ export default function RouteTimeline({
 
       return {
         idx,
-        uiKey,
         FoId,
         stopid,
         locid,
