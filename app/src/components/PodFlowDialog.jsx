@@ -322,8 +322,11 @@ export default function PodFlowDialog({
   const base64 = await readFileAsBase64(file);
   if (!base64) return;
 
+  const name = (file.name || "").toLowerCase();
+  const isPdf = file.type === "application/pdf" || name.endsWith(".pdf");
+
   const ext = (file.name.split(".").pop() || "").toUpperCase();
-  const fileType = ext || "BIN";
+  const fileType = isPdf ? "PDF" : (ext || "BIN");
 
   const payload = {
     FoId: effectiveFoId,
@@ -708,17 +711,21 @@ export default function PodFlowDialog({
                       >
                         {item.description || "Item"}
                       </Typography>
-
-                      
                     </Box>
 
+                    {/* ✅ Add Package ID right here (no change to Box layout) */}
+                    {!!item.PackageId && (
+                      <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, mb: 0.25 }}>
+                        Package ID: <strong>{item.PackageId}</strong>
+                      </Typography>
+                    )}
+
                     {!!item.category && (
-                      <Typography
-                        sx={{ fontSize: 12, color: TEXT_SECONDARY, mb: 1 }}
-                      >
+                      <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, mb: 1 }}>
                         {item.category}
                       </Typography>
                     )}
+
 
                     <TextField
                       size="small"

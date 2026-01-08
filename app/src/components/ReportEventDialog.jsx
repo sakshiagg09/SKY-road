@@ -110,7 +110,7 @@ export default function ReportEventDialog({
       stop.locid ||
       "";
 
-    return `Stop ${seq}${loc ? ` – ${loc}` : ""}`;
+    return `${loc ? `  ${loc}` : ""}`;
   };
 
   const getStopValue = (stop, idx) =>

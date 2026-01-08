@@ -1,5 +1,5 @@
 // src/components/MaterialItemList.jsx
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import {
   Box,
   Typography,
@@ -11,7 +11,6 @@ import {
 } from "@mui/material";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
-import { apiPost } from "../auth/api";
 
 // Color palette aligned with ShipmentDetails / ReportEvent
 const BG = "#EFF0F3";
@@ -21,7 +20,6 @@ const TEXT_PRIMARY = "#071E54";
 const TEXT_SECONDARY = "#6B6C6E";
 
 export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
-  const [posting, setPosting] = useState(false);
   // ---------- helpers ----------
   const safeJsonArray = (v) => {
     if (!v) return [];
@@ -246,12 +244,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
           )}
         </Box>
 
-        <IconButton
-          size="small"
-          onClick={handleConfirmClick}
-          disabled={posting}
-          sx={{ color: PRIMARY }}
-        >
+        <IconButton size="small" onClick={onConfirm} sx={{ color: PRIMARY }}>
           <CheckIcon sx={{ fontSize: 22 }} />
         </IconButton>
       </Box>
