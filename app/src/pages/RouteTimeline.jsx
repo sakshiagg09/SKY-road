@@ -258,7 +258,7 @@ export default function RouteTimeline({
 
   const finalQueuesByLoc = useMemo(() => buildFinalQueuesByLoc(finalInfoArr), [finalInfoArr]);
 
-  const getStopKey = (s) => s.uiKey || s.stopid || `${s.locid}_${s.stopseqpos}_${s.idx}`;
+  const getStopKey = (s) => s.stopid || `${s.locid}_${s.stopseqpos}_${s.idx}`;
 
   const routeStops = useMemo(() => {
     const firstStopLocid = String(stopsArr?.[0]?.locId ?? stopsArr?.[0]?.locid ?? "").trim();
@@ -295,9 +295,7 @@ export default function RouteTimeline({
       const stopid =
         String(st?.stopid ?? st?.stopId ?? "").trim() ||
         String(info?.stopid ?? info?.stopId ?? "").trim() ||
-        "";
-
-      const uiKey = `${locid}_${seq}_${idx}`;
+        `${locid}_${seq}_${idx}`;
 
       const totalLoadedPack = Number(info?.totalLoadedPack ?? info?.TotalLoadedPack ?? 0) || 0;
       const totalUnloadedPack = Number(info?.totalUnloadedPack ?? info?.TotalUnloadedPack ?? 0) || 0;
@@ -353,7 +351,6 @@ export default function RouteTimeline({
 
       return {
         idx,
-        uiKey,
         stopid,
         locid,
         stopseqpos: seq,
