@@ -311,11 +311,11 @@ module.exports = cds.service.impl(async function () {
 
   //Return Item Set Logic 
   this.on("CREATE", ReturnItemsSet, async (req) => {
-    const foId = getFilterVal(req, "FoId");
-    const location = getFilterVal(req, "Location");
-    const stopId = getFilterVal(req, "StopId");
+   // const foId = getFilterVal(req, "FoId");
+   // const location = getFilterVal(req, "Location");
+   // const stopId = getFilterVal(req, "StopId");
 
-    if (!foId || !location || !stopId) return [];
+    if (!req.data) return [];
 
     const esc = (s) => String(s).replace(/'/g, "''");
 
@@ -323,18 +323,11 @@ module.exports = cds.service.impl(async function () {
     const path =
       `/ReturnItemsSet`;
 
-    // POST payload required by ZSKY_SRV/ReturnItemsSet
-    const payload = {
-      StopId: stopId,
-      Location: location,
-      FoId: foId,
-    };
-
-    const d = await s4Post(url, payload);
+    const d = await s4Post(path, req.data);
     // Return something useful to UI (even if backend returns minimal)
     return {
-      FoId: d?.FoId ?? foId,
-      StopId: d?.StopId ?? stopId,
+      FoId: d?.FoId,
+      StopId: d?.StopId,
       Event: d?.Event ?? "Return",
       Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
     };
