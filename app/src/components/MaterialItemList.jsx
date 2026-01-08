@@ -133,8 +133,24 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
 
   const buildReturnItemsSetUrl = () => {
     const fo = String(stop?.FoId ?? "").trim();
-    const loc = String(stop?.resolvedLoc ?? stop?.locid ?? "").trim();
-    const sid = String(stop?.resolvedStopId ?? stop?.stopid ?? "").trim();
+
+    // Prefer the exact Location/StopId from the fetched items row (prevents posting to wrong stop)
+    const rows = Array.isArray(stop?.items) ? stop.items : [];
+    const row0 = rows[0] || {};
+
+    const loc = String(
+      stop?.resolvedLoc ??
+        row0.Location ??
+        row0.location ??
+        ""
+    ).trim();
+
+    const sid = String(
+      stop?.resolvedStopId ??
+        row0.StopId ??
+        row0.stopId ??
+        ""
+    ).trim();
 
     if (!fo || !loc || !sid) return "";
 
@@ -152,16 +168,26 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
       return;
     }
 
-    const url = buildReturnItemsSetUrl();
-    if (!url) {
+    // Use the same resolved keys used for fetching (prefer resolved keys, then row0)
+    const rows = Array.isArray(stop?.items) ? stop.items : [];
+    const row0 = rows[0] || {};
+    const loc = String(stop?.resolvedLoc ?? row0.Location ?? row0.location ?? "").trim();
+    const sid = String(stop?.resolvedStopId ?? row0.StopId ?? row0.stopId ?? "").trim();
+    const fo = String(stop?.FoId ?? "").trim();
+    
+      // POST should not include $filter when payload body is sent
+    const url = `/odata/v4/GTT/ReturnItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
+
+  
+
+    if (!fo || !loc || !sid) {
       alert("Missing FoId/Location/StopId for ReturnItemsSet POST.");
       return;
     }
 
     try {
       setPosting(true);
-      // POST to the same ReturnItemsSet URL (same filter keys as GET). No payload required.
-      await apiPost(url, {});
+      await apiPost(url, payload);
       onConfirm?.({ ok: true });
     } catch (e) {
       alert(e?.message || "Failed to post ReturnItemsSet.");

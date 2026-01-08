@@ -8,7 +8,7 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import EventAvailableIcon from "@mui/icons-material/EventAvailable";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
 import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded"; // Return viewer
-import { apiPost ,apiGet } from "../auth/api";
+import { apiPost, apiGet } from "../auth/api";
 
 import {
   IconButton,
@@ -69,25 +69,25 @@ export default function RouteTimeline({
   // ======================
 
   const parseSapDateTimeToDate = (dt) => {
-  if (dt == null || dt === 0) return null;
-  const s = String(dt).trim();
-  if (!s || s === "0") return null;
+    if (dt == null || dt === 0) return null;
+    const s = String(dt).trim();
+    if (!s || s === "0") return null;
 
-  // SAP 14-digit: YYYYMMDDHHmmss -> treat as LOCAL
-  if (/^\d{14}$/.test(s)) {
-    const yyyy = Number(s.slice(0, 4));
-    const mm = Number(s.slice(4, 6));
-    const dd = Number(s.slice(6, 8));
-    const hh = Number(s.slice(8, 10));
-    const min = Number(s.slice(10, 12));
-    const ss = Number(s.slice(12, 14));
-    const d = new Date(yyyy, mm - 1, dd, hh, min, ss); // ✅ local time
+    // SAP 14-digit: YYYYMMDDHHmmss -> treat as LOCAL
+    if (/^\d{14}$/.test(s)) {
+      const yyyy = Number(s.slice(0, 4));
+      const mm = Number(s.slice(4, 6));
+      const dd = Number(s.slice(6, 8));
+      const hh = Number(s.slice(8, 10));
+      const min = Number(s.slice(10, 12));
+      const ss = Number(s.slice(12, 14));
+      const d = new Date(yyyy, mm - 1, dd, hh, min, ss); // ✅ local time
+      return isNaN(d) ? null : d;
+    }
+
+    const d = new Date(s);
     return isNaN(d) ? null : d;
-  }
-
-  const d = new Date(s);
-  return isNaN(d) ? null : d;
-};
+  };
 
   const formatDateTimeLocal = (d) => {
     if (!d) return "-";
@@ -232,7 +232,7 @@ export default function RouteTimeline({
       const itemCat = String(x?.item_cat ?? x?.itemCat ?? x?.itemcat ?? "").trim().toUpperCase();
 
       // Only allow PKG rows to contribute to load/unload
-      if (itemCat && itemCat !== "PKG") return;
+      //if (itemCat && itemCat !== "PKG") return;
 
       if (!seq) return;
 
@@ -354,6 +354,7 @@ export default function RouteTimeline({
       return {
         idx,
         uiKey,
+        FoId,
         stopid,
         locid,
         stopseqpos: seq,
@@ -437,9 +438,10 @@ export default function RouteTimeline({
 
   const isLastStop = (stop) => {
     const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
-    if (seqPos == "L") return true;
+    // Consider the final element in the route as the last stop too (roundtrip return may be seqPos 'I')
+    if (typeof stop?.idx === "number" && stop.idx === derivedStops.length - 1) return true;
+    if (seqPos === "L") return true;
     return false;
-
   };
 
   const isUnloadingLocation = (stop) => {
@@ -451,10 +453,11 @@ export default function RouteTimeline({
     const seqPos = (stop.stopseqpos || "").toUpperCase().trim();
 
     // Last stop rules:
-    if (seqPos == "L") {
-      if (stop.hasReturnUnload) return ["arrival", "unloading"]; // return drop only
+    if (isLastStop(stop)) {
+      // Always include `items` so computeFlagsUpTo works consistently
+      if (stop.hasReturnUnload) return ["items", "arrival", "unloading"]; // return drop only
       if (isUnloadingLocation(stop)) return ["items", "arrival", "unloading", "pod"]; // customer unload
-      return ["arrival"]; // arrival only
+      return ["items", "arrival"]; // arrival only
     }
 
     // First stop (shipping point):
@@ -467,8 +470,20 @@ export default function RouteTimeline({
     if (stop.hasReturnLoad) return ["items", "arrival", "unloading", "pod", "return", "departure"];
 
     return ["items", "arrival", "departure"];
+  };
+  // Resolve StopId for POSTing events. For roundtrip last stop (return unload),
+  // use destStopId from ReturnInfo mapping so backend receives the correct StopId.
+  const resolvePostStopId = (stop) => {
+    const baseStopId = String(stop?.stopid ?? stop?.stopId ?? "").trim();
 
+    // Only override on last stop when return-unload exists
+    if (isLastStop(stop) && Boolean(stop?.hasReturnUnload)) {
+      const resolved = getReturnKeysForStop(stop);
+      const retStopId = String(resolved?.stopId ?? "").trim();
+      return retStopId || baseStopId;
+    }
 
+    return baseStopId;
   };
 
   // ======================
@@ -612,133 +627,133 @@ export default function RouteTimeline({
     onAction("nextStop", { stop: nextStop });
   }, [nextPendingIndex, derivedStops, onAction]);
 
-  // POST event (ARRV/DEPT); sends StopId = stop.stopid
-const sendEventReport = async (networkActionCode, stop) => {
-  console.log("[sendEventReport] ENTER", {
-    networkActionCode,
-    stopId: stop?.stopid,
-    eventsUrl,
-  });
-  const stopKey = getStopKey(stop);
+  // POST event (ARRV/DEPT); sends StopId = stop.stopid (or resolved for return last stop)
+  const sendEventReport = async (networkActionCode, stop) => {
+    console.log("[sendEventReport] ENTER", {
+      networkActionCode,
+      stopId: stop?.stopid,
+      eventsUrl,
+    });
+    const stopKey = getStopKey(stop);
 
-  const payload = {
-    FoId: FoId,
-    Action: networkActionCode,
-    StopId: stop.stopid || "",
-  };
-   console.log("[sendEventReport] payload prepared:", payload);
+    const payload = {
+      FoId: FoId,
+      Action: networkActionCode,
+      StopId: resolvePostStopId(stop) || "",
+    };
+    console.log("[sendEventReport] payload prepared:", payload);
 
-  const sendKey = `${stopKey}_${networkActionCode}`;
+    const sendKey = `${stopKey}_${networkActionCode}`;
 
-  try {
-    console.log("[sendEventReport] setting sending flag:", sendKey);
-    setSending((p) => ({ ...p, [sendKey]: true }));
+    try {
+      console.log("[sendEventReport] setting sending flag:", sendKey);
+      setSending((p) => ({ ...p, [sendKey]: true }));
 
       console.log("[sendEventReport] CALLING apiPost", {
-      url: eventsUrl,
-      payload,
-    });
-    // ✅ Works for Android/iOS (full SRV + Bearer) and Web (relative)
-    const body = await apiPost(eventsUrl, payload);
-
-    const serverEvent =
-      body && (body.Event ?? body.event) ? String(body.Event ?? body.event) : null;
-    console.log("[sendEventReport] serverEvent:", serverEvent);
-    const mapped =
-      mapEventStringToActionKey(serverEvent) ||
-      mapEventStringToActionKey(networkActionCode);
-    console.log("[sendEventReport] mapped action:", mapped);
-    if (!mapped) {
-      alert("Backend did not return a valid Event. Cannot move to next step.");
-      return { ok: false, body };
-    }
-
-    const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
-    console.log("[sendEventReport] serverTsMs:", serverTsMs);
-    const atKey =
-      mapped === "arrival"
-        ? "arrivalAt"
-        : mapped === "unloading"
-        ? "unloadingAt"
-        : mapped === "departure"
-        ? "departureAt"
-        : mapped === "return"
-        ? "returnAt"
-        : mapped === "pod"
-        ? "podAt"
-        : null;
-
-    setReportedMap((prev) => {
-      const seq = allowedSequenceForStop(stop);
-      const flags = computeFlagsUpTo(seq, mapped);
-       console.log("[sendEventReport] updating reportedMap", {
-        stopKey,
-        flags,
-        atKey,
-        serverTsMs,
+        url: eventsUrl,
+        payload,
       });
-      return {
-        ...prev,
-        [stopKey]: {
-          ...(prev[stopKey] || {}),
-          ...flags,
-          ...(atKey ? { [atKey]: serverTsMs } : {}),
-        },
-      };
-    });
-    console.log("[sendEventReport] SUCCESS");
-    return { ok: true, body, mapped, ts: serverTsMs };
-  } catch (err) {
-    console.error("[sendEventReport] ERROR", err);
-    alert(`Failed to report event: ${err?.message || err}`);
-    return { ok: false, error: err };
-  } finally {
-    console.log("[sendEventReport] clearing sending flag:", sendKey);
-    setSending((p) => {
-      const c = { ...p };
-      delete c[sendKey];
-      return c;
-    });
-  }
-};
+      // ✅ Works for Android/iOS (full SRV + Bearer) and Web (relative)
+      const body = await apiPost(eventsUrl, payload);
+
+      const serverEvent =
+        body && (body.Event ?? body.event) ? String(body.Event ?? body.event) : null;
+      console.log("[sendEventReport] serverEvent:", serverEvent);
+      const mapped =
+        mapEventStringToActionKey(serverEvent) ||
+        mapEventStringToActionKey(networkActionCode);
+      console.log("[sendEventReport] mapped action:", mapped);
+      if (!mapped) {
+        alert("Backend did not return a valid Event. Cannot move to next step.");
+        return { ok: false, body };
+      }
+
+      const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
+      console.log("[sendEventReport] serverTsMs:", serverTsMs);
+      const atKey =
+        mapped === "arrival"
+          ? "arrivalAt"
+          : mapped === "unloading"
+            ? "unloadingAt"
+            : mapped === "departure"
+              ? "departureAt"
+              : mapped === "return"
+                ? "returnAt"
+                : mapped === "pod"
+                  ? "podAt"
+                  : null;
+
+      setReportedMap((prev) => {
+        const seq = allowedSequenceForStop(stop);
+        const flags = computeFlagsUpTo(seq, mapped);
+        console.log("[sendEventReport] updating reportedMap", {
+          stopKey,
+          flags,
+          atKey,
+          serverTsMs,
+        });
+        return {
+          ...prev,
+          [stopKey]: {
+            ...(prev[stopKey] || {}),
+            ...flags,
+            ...(atKey ? { [atKey]: serverTsMs } : {}),
+          },
+        };
+      });
+      console.log("[sendEventReport] SUCCESS");
+      return { ok: true, body, mapped, ts: serverTsMs };
+    } catch (err) {
+      console.error("[sendEventReport] ERROR", err);
+      alert(`Failed to report event: ${err?.message || err}`);
+      return { ok: false, error: err };
+    } finally {
+      console.log("[sendEventReport] clearing sending flag:", sendKey);
+      setSending((p) => {
+        const c = { ...p };
+        delete c[sendKey];
+        return c;
+      });
+    }
+  };
 
   // ✅ Unloading event (ZSKY_SRV)
   const unloadingUrl = "/odata/v4/GTT/UnloadingSet";
 
-const sendUnloadingReport = async (stop) => {
-  const stopKey = getStopKey(stop);
-  const sendKey = `${stopKey}_UNLD`;
+  const sendUnloadingReport = async (stop) => {
+    const stopKey = getStopKey(stop);
+    const sendKey = `${stopKey}_UNLD`;
 
-  try {
-    setSending((p) => ({ ...p, [sendKey]: true }));
+    try {
+      setSending((p) => ({ ...p, [sendKey]: true }));
 
-    const payload = { FoId, StopId: stop.stopid || "" };
+      const payload = { FoId, StopId: resolvePostStopId(stop) || "" };
 
-    const body = await apiPost(unloadingUrl, payload);
+      const body = await apiPost(unloadingUrl, payload);
 
-    const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
+      const serverTsMs = extractServerTimestampMs(body) ?? Date.now();
 
-    setReportedMap((prev) => ({
-      ...prev,
-      [stopKey]: { ...(prev[stopKey] || {}), unloading: true, unloadingAt: serverTsMs },
-    }));
+      setReportedMap((prev) => ({
+        ...prev,
+        [stopKey]: { ...(prev[stopKey] || {}), unloading: true, unloadingAt: serverTsMs },
+      }));
 
-    return { ok: true, body, mapped: "unloading", ts: serverTsMs };
-  } catch (err) {
-    alert(`Failed to report unloading: ${err?.message || err}`);
-    return { ok: false, error: err };
-  } finally {
-    setSending((p) => {
-      const c = { ...p };
-      delete c[sendKey];
-      return c;
-    });
-  }
-};
+      return { ok: true, body, mapped: "unloading", ts: serverTsMs };
+    } catch (err) {
+      alert(`Failed to report unloading: ${err?.message || err}`);
+      return { ok: false, error: err };
+    } finally {
+      setSending((p) => {
+        const c = { ...p };
+        delete c[sendKey];
+        return c;
+      });
+    }
+  };
 
   // Shipment Items (includes StopId)
   const fetchItemsForStop = async (stop) => {
-    setItemsStop({ ...stop, items: [], itemsType: "shipment" });
+    setItemsStop({ ...stop, FoId, items: [], itemsType: "shipment" });
     setShowItems(true);
     setItemsLoading(true);
 
@@ -819,7 +834,7 @@ const sendUnloadingReport = async (stop) => {
 
   // ✅ Return Items (view-only)
   const fetchReturnItemsForStop = async (stop) => {
-    setItemsStop({ ...stop, items: [], itemsType: "return" });
+    setItemsStop({ ...stop, FoId, items: [], itemsType: "return" });
     setShowItems(true);
     setItemsLoading(true);
 
@@ -835,7 +850,7 @@ const sendUnloadingReport = async (stop) => {
         `/odata/v4/GTT/ReturnItemsSet` +
         `?$filter=FoId eq '${FoId}' and Location eq '${loc}' and StopId eq '${stopId}'`;
 
-      
+
       const json = await apiGet(url);
       const row = Array.isArray(json?.value) ? json.value[0] : null;
       const loaded = row?.LoadedItems ?? null;
@@ -941,11 +956,18 @@ const sendUnloadingReport = async (stop) => {
   const badgeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
+
+    const last = isLastStop(stop);
+
+    // ✅ For intermediate stops, departure should be the final state shown
+    if (!last && r.departure) return "Departed";
+
+    // ✅ For last stop, keep Delivered highest priority
+    if (r.return) return "Returned";
     if (r.pod) return "Delivered";
     if (r.unloading) return "Unloaded";
     if (r.departure) return "Departed";
     if (r.arrival) return "Arrived";
-    if (r.return) return "Returned";
     return "";
   };
 
@@ -1322,7 +1344,7 @@ const sendUnloadingReport = async (stop) => {
                     opt.key === "items"
                       ? true
                       : opt.key === "return"
-                        ? priorAllReported && allowedStop
+                        ? Boolean(reportedForStop.pod)
                         : allowedStop && priorAllReported;
 
                   return (

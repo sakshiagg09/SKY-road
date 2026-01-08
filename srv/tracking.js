@@ -2,7 +2,7 @@
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 const licenseOcr = require("./licenseOcrService");
-const application  = process.env.EVENT_API_BASE
+const application = process.env.EVENT_API_BASE
 
 const { UPSERT } = cds.ql;
 
@@ -108,7 +108,7 @@ async function s4Post(url, payload) {
     { destinationName: DESTINATION },
     {
       method: "POST",
-      url, 
+      url,
       data: payload,
       headers: {
         "x-csrf-token": token,
@@ -124,7 +124,7 @@ async function s4Post(url, payload) {
 }
 
 module.exports = cds.service.impl(async function () {
-   // ✅ Register token exchange action handler FIRST
+  // ✅ Register token exchange action handler FIRST
   // Open DB service once so the pool is ready before first request
   const db = await cds.connect.to("db");
   const run = (...args) => db.run(...args);
@@ -168,7 +168,7 @@ module.exports = cds.service.impl(async function () {
     // 👇 Adjust this path if your S/4 service expects a different syntax,
     // e.g. /SearchFOSet(FoId='...',DriverLicense='...')
     const path =
-       `/SearchFOSet(FoId='${foId}',LicenseNumber='${driverLicense}')?$format=json`;
+      `/SearchFOSet(FoId='${foId}',LicenseNumber='${driverLicense}')?$format=json`;
 
     const data = await s4Get(path);
     const rows = normalizeV2(data);
@@ -182,7 +182,7 @@ module.exports = cds.service.impl(async function () {
         FinalInfo: row.FinalInfo ?? null,
         DirectionsInfo: row.DirectionsInfo ?? null,
         StopInfo: row.StopInfo ?? null,
-        Stops:row.Stops??null,
+        Stops: row.Stops ?? null,
       }),
       "Shipments"
     );
@@ -206,64 +206,64 @@ module.exports = cds.service.impl(async function () {
   // READ shipmentItems (unchanged)
   // ---------------------------------------------------------------------------
   this.on("READ", shipmentItems, async (req) => {
-  const foId = getFilterVal(req, "FoId");
-  const location = getFilterVal(req, "Location");
-  const stopId = getFilterVal(req, "StopId")
+    const foId = getFilterVal(req, "FoId");
+    const location = getFilterVal(req, "Location");
+    const stopId = getFilterVal(req, "StopId")
 
     if (!foId || !location || !stopId) return [];
 
-  const esc = (s) => String(s).replace(/'/g, "''");
+    const esc = (s) => String(s).replace(/'/g, "''");
 
-  // ✅ READ BY KEY (not $filter)
-   const path =
-    `/ItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
+    // ✅ READ BY KEY (not $filter)
+    const path =
+      `/ItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
 
 
-  const v2 = await s4Get(path);
+    const v2 = await s4Get(path);
 
-  // ✅ SEGW returns SINGLE ENTITY → v2.d
-  const d = v2;
-  if (!d) return [];
+    // ✅ SEGW returns SINGLE ENTITY → v2.d
+    const d = v2;
+    if (!d) return [];
 
-  // For now just return raw structure (you can map later)
-  return [{
-    FoId: d.FoId,
-    Location: d.Location,
-    StopId: d.StopId,
-    ReturnLoaded: d.ReturnLoaded,
-    ReturnUnloaded: d.ReturnUnloaded,
-    UnloadedItems: d.UnloadedItems,
-    LoadedItems: d.LoadedItems
-  }];
-});
+    // For now just return raw structure (you can map later)
+    return [{
+      FoId: d.FoId,
+      Location: d.Location,
+      StopId: d.StopId,
+      ReturnLoaded: d.ReturnLoaded,
+      ReturnUnloaded: d.ReturnUnloaded,
+      UnloadedItems: d.UnloadedItems,
+      LoadedItems: d.LoadedItems
+    }];
+  });
 
   // ---------------------------------------------------------------------------
   // CREATE handlers (unchanged)
   // ---------------------------------------------------------------------------
   this.on("CREATE", eventReporting, async (req) => {
-  // if (getTarget() === "SKY_PLUS") {
-  //   return await postSkyPlus("/api/events", req.data);
-  // }
-  return await s4Post("/EventsReportingSet", req.data);
-});
+    // if (getTarget() === "SKY_PLUS") {
+    //   return await postSkyPlus("/api/events", req.data);
+    // }
+    return await s4Post("/EventsReportingSet", req.data);
+  });
 
- this.on("CREATE", updatesPOD, async (req) => {
-  // if (getTarget() === "SKY_PLUS") {
-  //   return await postSkyPlus("/api/pod", req.data); // change path if your sky+ uses different route
-  // }
-  return await s4Post("/ProofOfDeliverySet", req.data);
-});
+  this.on("CREATE", updatesPOD, async (req) => {
+    // if (getTarget() === "SKY_PLUS") {
+    //   return await postSkyPlus("/api/pod", req.data); // change path if your sky+ uses different route
+    // }
+    return await s4Post("/ProofOfDeliverySet", req.data);
+  });
 
   this.on("CREATE", attachmentUpload, async (req) => {
-  return await s4Post("/AttachmentsSet", req.data);
-});
+    return await s4Post("/AttachmentsSet", req.data);
+  });
 
   this.on("CREATE", delayEvents, async (req) => {
-  // if (getTarget() === "SKY_PLUS") {
-  //   return await postSkyPlus("/api/delay", req.data); // change path if needed
-  // }
-  return await s4Post("/DelaySet", req.data);
-});
+    // if (getTarget() === "SKY_PLUS") {
+    //   return await postSkyPlus("/api/delay", req.data); // change path if needed
+    // }
+    return await s4Post("/DelaySet", req.data);
+  });
 
   this.on("READ", delayEvents, async (req) => {
     const data = await s4Get("/DelaySet");
@@ -281,51 +281,82 @@ module.exports = cds.service.impl(async function () {
   });
   //Return Item Set Logic 
   this.on("READ", ReturnItemsSet, async (req) => {
-  const foId = getFilterVal(req, "FoId");
-  const location = getFilterVal(req, "Location");
-  const stopId = getFilterVal(req, "StopId");
+    const foId = getFilterVal(req, "FoId");
+    const location = getFilterVal(req, "Location");
+    const stopId = getFilterVal(req, "StopId");
 
-  if (!foId || !location || !stopId) return [];
+    if (!foId || !location || !stopId) return [];
 
-  const esc = (s) => String(s).replace(/'/g, "''");
+    const esc = (s) => String(s).replace(/'/g, "''");
 
-  // OData V2 key read
-  const path =
-    `/ReturnItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
+    // OData V2 key read
+    const path =
+      `/ReturnItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
 
-  const v2 = await s4Get(path);
-  const d = v2; // s4Get already returns res.data?.d ?? res.data
-  if (!d) return [];
+    const v2 = await s4Get(path);
+    const d = v2; // s4Get already returns res.data?.d ?? res.data
+    if (!d) return [];
 
-  // Return as CAP entity row
-  return [
-    {
-      FoId: d.FoId ?? foId,
-      Location: d.Location ?? location,
-      StopId: d.StopId ?? stopId,
-      LoadedItems: d.LoadedItems ?? "[]", // keep as string (frontend parses JSON)
-    },
-  ];
-});
+    // Return as CAP entity row
+    return [
+      {
+        FoId: d.FoId ?? foId,
+        Location: d.Location ?? location,
+        StopId: d.StopId ?? stopId,
+        LoadedItems: d.LoadedItems ?? "[]", // keep as string (frontend parses JSON)
+      },
+    ];
+  });
+
+  //Return Item Set Logic 
+  this.on("CREATE", ReturnItemsSet, async (req) => {
+    const foId = getFilterVal(req, "FoId");
+    const location = getFilterVal(req, "Location");
+    const stopId = getFilterVal(req, "StopId");
+
+    if (!foId || !location || !stopId) return [];
+
+    const esc = (s) => String(s).replace(/'/g, "''");
+
+    // OData V2 key read
+    const path =
+      `/ReturnItemsSet`;
+
+    // POST payload required by ZSKY_SRV/ReturnItemsSet
+    const payload = {
+      StopId: stopId,
+      Location: location,
+      FoId: foId,
+    };
+
+    const d = await s4Post(url, payload);
+    // Return something useful to UI (even if backend returns minimal)
+    return {
+      FoId: d?.FoId ?? foId,
+      StopId: d?.StopId ?? stopId,
+      Event: d?.Event ?? "Return",
+      Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
+    };
+  });
 
   //Unloading event logic
   this.on("CREATE", UnloadingSet, async (req) => {
-  const { FoId, StopId } = req.data || {};
-  if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
+    const { FoId, StopId } = req.data || {};
+    if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
 
-  // Post to OData V2 backend
-  const d = await s4Post("/UnloadingSet", { FoId, StopId });
+    // Post to OData V2 backend
+    const d = await s4Post("/UnloadingSet", { FoId, StopId });
 
-  // Return something useful to UI (even if backend returns minimal)
-  return {
-    FoId: d?.FoId ?? FoId,
-    StopId: d?.StopId ?? StopId,
-    Event: d?.Event ?? "UNLOADING",
-    Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
-  };
-});
+    // Return something useful to UI (even if backend returns minimal)
+    return {
+      FoId: d?.FoId ?? FoId,
+      StopId: d?.StopId ?? StopId,
+      Event: d?.Event ?? "UNLOADING",
+      Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
+    };
+  });
   // Attachments 
-this.on("READ", AttachmentsSet, async (req) => {
+  this.on("READ", AttachmentsSet, async (req) => {
     const foId = getFilterVal(req, "FoId");
     if (!foId) return []; // keep safe
 
@@ -375,4 +406,4 @@ this.on("READ", AttachmentsSet, async (req) => {
 
 
 })
-  
+
