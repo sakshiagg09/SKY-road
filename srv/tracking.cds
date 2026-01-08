@@ -37,6 +37,8 @@ service GTT {
         Discrepency : String;
         StopId      : String;
         Items       : LargeString;
+        Latitude    : Double;
+        Longitude   : Double;
   }
 
   // If you need this, define it here too (adjust fields as per your actual payload):
@@ -47,6 +49,8 @@ service GTT {
         Action    : String;
         EventTime : String;
         Reason    : String;
+        Latitude  : Double;
+        Longitude : Double;
   }
 
     @cds.persistence.skip
@@ -79,6 +83,8 @@ service GTT {
       EventCode    : String;  
       EvtReasonCode: String;   
       Description  : String;   
+      Latitude     : Double;
+      Longitude    : Double;
 }
 // ✅ NEW: ReturnItemsSet (READ by key)
   @cds.persistence.skip
@@ -86,7 +92,8 @@ service GTT {
     key StopId     : String;
     key Location   : String;
     key FoId       : String;
-
+        Latitude  : Double;
+        Longitude : Double;
         LoadedItems : LargeString;  // JSON string e.g. "[{...}]"
   }
 
@@ -95,7 +102,8 @@ service GTT {
   entity unloadingPayload {
     key FoId     : String;
     key StopId   : String;
-
+        Latitude  : Double;       // optional
+        Longitude : Double;       // optional
         Event     : String;         // optional (if backend returns)
         Timestamp : String;         // optional (if backend returns)
   }

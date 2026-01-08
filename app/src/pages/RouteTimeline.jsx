@@ -637,6 +637,8 @@ export default function RouteTimeline({
       FoId: FoId,
       Action: networkActionCode,
       StopId: resolvePostStopId(stop) || "",
+      Latitude: stop.latitude,
+      Longitude: stop.longitude,
     };
     console.log("[sendEventReport] payload prepared:", payload);
 
@@ -724,7 +726,12 @@ export default function RouteTimeline({
     try {
       setSending((p) => ({ ...p, [sendKey]: true }));
 
-      const payload = { FoId, StopId: resolvePostStopId(stop) || "" };
+      const payload = {
+          FoId,
+          StopId: resolvePostStopId(stop) || "",
+          Latitude: stop.latitude ?? null,
+          Longitude: stop.longitude ?? null,
+        };
 
       const body = await apiPost(unloadingUrl, payload);
 

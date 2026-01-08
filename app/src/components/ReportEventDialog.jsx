@@ -33,7 +33,9 @@ export default function ReportEventDialog({
   open: controlledOpen,
   onClose: controlledOnClose,
 }) {
-  const FoId = selectedShipment?.FoId || "";
+  // Support both shapes: trackingDetails row OR { raw: row }
+  const raw = selectedShipment?.raw ?? selectedShipment ?? {};
+  const FoId = raw?.FoId ?? selectedShipment?.FoId ?? "";
 
   const BG = "#EFF0F3";
   const CARD = "#FFFFFF";
@@ -60,7 +62,6 @@ export default function ReportEventDialog({
   // ---------------- FORM STATE ----------------
 
   const EVENT_VALUE = "Delay"; // UI label only
-
   const [referencedPlannedEvent] = useState("Arrival at Destination");
   const [selectedStop, setSelectedStop] = useState("");
 
@@ -78,29 +79,53 @@ export default function ReportEventDialog({
   const [reasonsLoading, setReasonsLoading] = useState(false);
   const [reasonsError, setReasonsError] = useState("");
 
+  // ---------------- NEW PAYLOAD ARRAYS ----------------
+
+  const safeJsonArray = (v) => {
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s || s === "0") return [];
+      try {
+        const arr = JSON.parse(s);
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  const finalInfoArr = useMemo(() => safeJsonArray(raw?.FinalInfo), [raw?.FinalInfo]);
+  const stopsArr = useMemo(() => safeJsonArray(raw?.Stops), [raw?.Stops]);
+
   // ---------------- STOP FILTERING ----------------
-  // Only show stops which are NOT departed
+  // Only show stops which are NOT departed (departure info is in FinalInfo, not Stops)
 
   const isStopDeparted = (stop) => {
-    const ev = (stop.event || stop.Event || "").toString().toUpperCase();
-    return ev === "DEPARTURE";
+    const locid = String(stop?.locid ?? stop?.locId ?? "").trim();
+    const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "")
+      .trim()
+      .toUpperCase();
+
+    const fi = (finalInfoArr || []).find((x) => {
+      const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+      const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "")
+        .trim()
+        .toUpperCase();
+      return fLoc === locid && fSeq === seq;
+    });
+
+    const ev = String(fi?.event ?? fi?.Event ?? "").toUpperCase();
+    return ev.includes("DEPART"); // DEPARTURE/DEPT etc.
   };
 
   const upcomingStops = useMemo(() => {
-    const stops = Array.isArray(selectedShipment?.stops)
-      ? selectedShipment.stops
-      : [];
-    return stops.filter((s) => !isStopDeparted(s));
-  }, [selectedShipment]);
+    return (stopsArr || []).filter((s) => !isStopDeparted(s));
+  }, [stopsArr, finalInfoArr]);
 
   const getStopLabel = (stop, idx) => {
-    const seq =
-      stop.Sequence ||
-      stop.StopSequence ||
-      stop.sequence ||
-      stop.stopSequence ||
-      idx + 1;
-
     const loc =
       stop.LocationName ||
       stop.locationName ||
@@ -110,27 +135,73 @@ export default function ReportEventDialog({
       stop.locid ||
       "";
 
-    return `${loc ? `  ${loc}` : ""}`;
+    // Optional: show seqPos as well
+    const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "")
+      .trim()
+      .toUpperCase();
+
+    return `${loc ? `${loc}` : ""}${seq ? ` (${seq})` : ""}`;
   };
 
-  const getStopValue = (stop, idx) =>
-    stop.stopid || // <-- from FinalInfo
-    stop.StopId ||
-    stop.stopId ||
-    stop.Id ||
-    stop.id ||
-    String(idx);
+  // IMPORTANT: Delay event needs StopId from FinalInfo, but Stops array does NOT include stopid.
+  // So for dropdown we keep a "synthetic" value: `${locid}|${seq}|${idx}`.
+  const getStopValue = (stop, idx) => {
+    const locid = String(stop?.locid ?? stop?.locId ?? "").trim();
+    const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "")
+      .trim()
+      .toUpperCase();
+    return `${locid}|${seq}|${idx}`;
+  };
 
   // initialise selected stop whenever shipment / stops change
   useEffect(() => {
     if (upcomingStops.length > 0) {
       const first = upcomingStops[0];
-      const value = getStopValue(first, 0);
-      setSelectedStop(value);
+      setSelectedStop(getStopValue(first, 0));
     } else {
       setSelectedStop("");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upcomingStops]);
+
+  // ---------------- COORD + STOPID RESOLUTION ----------------
+
+  const resolveStopIdAndCoords = (selectedValue) => {
+    // selectedValue is `${locid}|${seq}|${idx}`
+    const parts = String(selectedValue || "").split("|");
+    const locid = String(parts?.[0] ?? "").trim();
+    const seq = String(parts?.[1] ?? "").trim().toUpperCase();
+
+    // 1) coords from Stops (best match by locid+seq)
+    const st = (stopsArr || []).find((s) => {
+      const sLoc = String(s?.locid ?? s?.locId ?? "").trim();
+      const sSeq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "")
+        .trim()
+        .toUpperCase();
+      return sLoc === locid && sSeq === seq;
+    });
+
+    const lat = Number(st?.latitude ?? st?.Latitude ?? null);
+    const lng = Number(st?.longitude ?? st?.Longitude ?? null);
+
+    // 2) StopId from FinalInfo by locid+seq.
+    // If multiple matches exist (e.g., same locid repeated), use first match.
+    const fi = (finalInfoArr || []).find((x) => {
+      const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+      const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "")
+        .trim()
+        .toUpperCase();
+      return fLoc === locid && fSeq === seq;
+    });
+
+    const stopId = String(fi?.stopid ?? fi?.stopId ?? "").trim();
+
+    return {
+      StopId: stopId,
+      Latitude: Number.isFinite(lat) ? lat : null,
+      Longitude: Number.isFinite(lng) ? lng : null,
+    };
+  };
 
   // ---------------- REASON CODES (from CAP delayEvents) ----------------
 
@@ -140,7 +211,6 @@ export default function ReportEventDialog({
 
     try {
       const data = await apiGet("/odata/v4/GTT/delayEvents");
-
       const rows = Array.isArray(data.value) ? data.value : [];
       setReasonOptions(rows);
 
@@ -161,9 +231,7 @@ export default function ReportEventDialog({
 
   // load reasons when dialog opens
   useEffect(() => {
-    if (isOpen) {
-      fetchReasonCodes();
-    }
+    if (isOpen) fetchReasonCodes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
@@ -190,25 +258,18 @@ export default function ReportEventDialog({
       },
       "&:hover": {
         backgroundColor: CARD,
-        "& fieldset": {
-          borderColor: PRIMARY,
-        },
+        "& fieldset": { borderColor: PRIMARY },
       },
       "&.Mui-focused": {
         backgroundColor: CARD,
-        "& fieldset": {
-          borderColor: PRIMARY,
-          borderWidth: "1.5px",
-        },
+        "& fieldset": { borderColor: PRIMARY, borderWidth: "1.5px" },
         boxShadow: `0 0 0 2px ${alpha(PRIMARY, 0.15)}`,
       },
     },
     "& .MuiInputLabel-root": {
       color: TEXT_SECONDARY,
       fontWeight: 500,
-      "&.Mui-focused": {
-        color: PRIMARY,
-      },
+      "&.Mui-focused": { color: PRIMARY },
     },
   };
 
@@ -234,21 +295,29 @@ export default function ReportEventDialog({
   // ---------------- PAYLOAD ----------------
 
   const buildPayload = () => {
-    const reasonObj =
-      reasonOptions.find((r) => r.EvtReasonCode === reasonCode) || {};
+    const reasonObj = reasonOptions.find((r) => r.EvtReasonCode === reasonCode) || {};
+    const { StopId, Latitude, Longitude } = resolveStopIdAndCoords(selectedStop);
 
     return {
       FoId,
-      StopId: selectedStop || "",
-      ETA: toS4Timestamp(estimatedTime), 
-      RefEvent: "Arrival" ,//referencedPlannedEvent || "",
+      StopId: StopId || "", // resolved from FinalInfo
+      ETA: toS4Timestamp(estimatedTime),
+      RefEvent: "Arrival", // referencedPlannedEvent || "",
       EventCode: reasonObj.EvtReasonCode || "DELAYED",
+      Latitude: String(Latitude),
+      Longitude: String(Longitude),
     };
   };
 
   const handleSubmit = async () => {
     const payload = buildPayload();
     console.log("Delay event payload:", payload);
+
+    if (!payload.FoId) return alert("Missing FoId");
+    if (!payload.StopId) return alert("Missing StopId (could not resolve from FinalInfo)");
+    if (payload.Latitude == null || payload.Longitude == null) {
+      console.warn("Latitude/Longitude missing for selected stop:", selectedStop);
+    }
 
     try {
       const result = await apiPost("/odata/v4/GTT/delayEvents", payload);
@@ -360,9 +429,7 @@ export default function ReportEventDialog({
               sx={{
                 color: "#fff",
                 backgroundColor: "rgba(15,23,42,0.18)",
-                "&:hover": {
-                  backgroundColor: "rgba(15,23,42,0.32)",
-                },
+                "&:hover": { backgroundColor: "rgba(15,23,42,0.32)" },
               }}
             >
               <CloseRoundedIcon />
@@ -394,26 +461,14 @@ export default function ReportEventDialog({
               >
                 Freight Order ID
               </Typography>
-              <Typography
-                sx={{
-                  fontSize: 13,
-                  fontWeight: 700,
-                  color: TEXT_PRIMARY,
-                }}
-              >
+              <Typography sx={{ fontSize: 13, fontWeight: 700, color: TEXT_PRIMARY }}>
                 {FoId || "Not Selected"}
               </Typography>
             </Box>
           </Paper>
         </Box>
 
-        <DialogContent
-          sx={{
-            px: 3,
-            py: 3,
-            backgroundColor: BG,
-          }}
-        >
+        <DialogContent sx={{ px: 3, py: 3, backgroundColor: BG }}>
           {/* Event = Delay + Stop selector */}
           <Box
             sx={{
@@ -472,10 +527,7 @@ export default function ReportEventDialog({
                   >
                     {upcomingStops.length === 0 && (
                       <MenuItem value="">
-                        <Typography
-                          variant="body2"
-                          sx={{ color: TEXT_SECONDARY }}
-                        >
+                        <Typography variant="body2" sx={{ color: TEXT_SECONDARY }}>
                           No pending (non-departed) stops
                         </Typography>
                       </MenuItem>
@@ -486,25 +538,13 @@ export default function ReportEventDialog({
                       const label = getStopLabel(stop, idx);
                       return (
                         <MenuItem key={value} value={value}>
-                          <Box
-                            sx={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 1.5,
-                            }}
-                          >
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
                             <Chip
                               label={idx + 1}
                               size="small"
-                              sx={{
-                                bgcolor: "#E0EBFF",
-                                color: PRIMARY,
-                                fontWeight: 600,
-                              }}
+                              sx={{ bgcolor: "#E0EBFF", color: PRIMARY, fontWeight: 600 }}
                             />
-                            <Typography sx={{ color: TEXT_PRIMARY }}>
-                              {label}
-                            </Typography>
+                            <Typography sx={{ color: TEXT_PRIMARY }}>{label}</Typography>
                           </Box>
                         </MenuItem>
                       );
@@ -559,9 +599,7 @@ export default function ReportEventDialog({
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
-                    <AccessTimeIcon
-                      sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                    />
+                    <AccessTimeIcon sx={{ color: TEXT_SECONDARY, fontSize: 20 }} />
                   </InputAdornment>
                 ),
               }}
@@ -577,9 +615,7 @@ export default function ReportEventDialog({
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
-                    <LanguageIcon
-                      sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                    />
+                    <LanguageIcon sx={{ color: TEXT_SECONDARY, fontSize: 20 }} />
                   </InputAdornment>
                 ),
               }}
@@ -609,11 +645,7 @@ export default function ReportEventDialog({
               Additional Details
             </Typography>
 
-            <FormControl
-              fullWidth
-              sx={{ ...modernInputStyle, mb: 1 }}
-              margin="dense"
-            >
+            <FormControl fullWidth sx={{ ...modernInputStyle, mb: 1 }} margin="dense">
               <InputLabel>Reason Code</InputLabel>
               <Select
                 value={reasonCode}
@@ -633,10 +665,7 @@ export default function ReportEventDialog({
             </FormControl>
 
             {reasonsError && (
-              <Typography
-                variant="caption"
-                sx={{ color: "red", display: "block", mb: 1 }}
-              >
+              <Typography variant="caption" sx={{ color: "red", display: "block", mb: 1 }}>
                 {reasonsError}
               </Typography>
             )}
@@ -659,13 +688,8 @@ export default function ReportEventDialog({
               placeholder="Enter your description here..."
               InputProps={{
                 startAdornment: (
-                  <InputAdornment
-                    position="start"
-                    sx={{ alignSelf: "flex-start", mt: 0.5 }}
-                  >
-                    <NotesIcon
-                      sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                    />
+                  <InputAdornment position="start" sx={{ alignSelf: "flex-start", mt: 0.5 }}>
+                    <NotesIcon sx={{ color: TEXT_SECONDARY, fontSize: 20 }} />
                   </InputAdornment>
                 ),
               }}
@@ -693,9 +717,7 @@ export default function ReportEventDialog({
                 fontWeight: 500,
                 textTransform: "none",
                 backgroundColor: "#F7F8FC",
-                "&:hover": {
-                  backgroundColor: "#E4E7F1",
-                },
+                "&:hover": { backgroundColor: "#E4E7F1" },
               }}
             >
               Cancel
@@ -708,15 +730,13 @@ export default function ReportEventDialog({
                 px: 3.5,
                 py: 1,
                 borderRadius: "10px",
-                background:
-                  "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)",
+                background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)",
                 color: "#fff",
                 fontWeight: 600,
                 textTransform: "none",
                 boxShadow: "0 8px 18px rgba(25,118,210,0.35)",
                 "&:hover": {
-                  background:
-                    "linear-gradient(135deg, #1565C0 0%, #42A5F5 100%)",
+                  background: "linear-gradient(135deg, #1565C0 0%, #42A5F5 100%)",
                   boxShadow: "0 10px 24px rgba(25,118,210,0.45)",
                 },
               }}

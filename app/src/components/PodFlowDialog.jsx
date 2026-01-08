@@ -134,7 +134,24 @@ export default function PodFlowDialog({
       effectiveStop?.locId ||
       ""
   );
+  const stopLat = Number(
+  stop?.latitude ??
+  stop?.Latitude ??
+  effectiveStop?.latitude ??
+  effectiveStop?.Latitude ??
+  null
+);
 
+const stopLng = Number(
+  stop?.longitude ??
+  stop?.Longitude ??
+  effectiveStop?.longitude ??
+  effectiveStop?.Longitude ??
+  null
+);
+
+const latitudeValue = Number.isFinite(stopLat) ? stopLat : null;
+const longitudeValue = Number.isFinite(stopLng) ? stopLng : null;
   // ----------------- helpers: parse JSON-string arrays -----------------
   const safeJsonArray = (v) => {
     if (!v) return [];
@@ -267,6 +284,8 @@ export default function PodFlowDialog({
     FoId: effectiveFoId,
     Discrepency: "",
     StopId: stopIdValue,
+    Latitude: String(latitudeValue),
+    Longitude: String(longitudeValue),
   });
 
   const buildDiscrepancyPayload = () => {
@@ -292,6 +311,8 @@ export default function PodFlowDialog({
       Discrepency: "X",
       Items: JSON.stringify(mapped),
       StopId: stopIdValue,
+      Latitude: String(latitudeValue),
+      Longitude: String(longitudeValue),
     };
   };
 

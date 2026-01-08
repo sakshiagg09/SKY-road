@@ -342,7 +342,7 @@ module.exports = cds.service.impl(async function () {
 
   //Unloading event logic
   this.on("CREATE", UnloadingSet, async (req) => {
-    const { FoId, StopId } = req.data || {};
+    const { FoId, StopId ,Latitude , Longitude } = req.data || {};
     if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
 
     // Post to OData V2 backend
@@ -353,6 +353,8 @@ module.exports = cds.service.impl(async function () {
       FoId: d?.FoId ?? FoId,
       StopId: d?.StopId ?? StopId,
       Event: d?.Event ?? "UNLOADING",
+      Latitude: d?.Latitude ?? Latitude ?? null,
+      Longitude: d?.Longitude ?? Longitude ?? null,
       Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
     };
   });
