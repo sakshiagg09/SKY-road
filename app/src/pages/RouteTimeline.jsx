@@ -1129,7 +1129,13 @@ export default function RouteTimeline({
                       ? `${stop.name1} (${stop.locid || stop.stopid || "-"})`
                       : `${stop.locid || stop.stopid || "-"}`}
                   </p>
-
+                    {idx === 0 && (
+                        <>
+                          <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY,fontWeight: 600 }}>
+                            Docking Location : DK01
+                          </p>
+                        </>
+                      )}
                   <p className="text-[12px] mt-1" style={{ color: TEXT_SECONDARY }}>
                     Actual Reported At
                   </p>

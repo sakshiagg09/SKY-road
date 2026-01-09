@@ -14,42 +14,129 @@ class LicenseOCRService {
     this.location = "us";
     this.licenseProcessor = "34f5e4ad2405c0d2";
 
+    // Tuning knobs
+    this.MAX_SIDE = Number(process.env.OCR_MAX_SIDE || 1000); // resize longest edge
+    this.MAX_BYTES = Number(process.env.OCR_MAX_BYTES || 350 * 1024); // ~350 KB
+    this.TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS || 20000); // 20s hard timeout
+
     console.log(
-      "🚀 LicenseOCRService initialized (license-only, entity-first mode)."
+      "🚀 LicenseOCRService initialized (license-only, compressed upload + timeout)."
     );
   }
 
-  // ---------- Basic preprocess ----------
+  // ----------------- small helpers -----------------
+  _withTimeout(promise, ms, label = "operation") {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+      ),
+    ]);
+  }
+
+  async _probeMeta(imageBuffer) {
+    try {
+      const meta = await sharp(imageBuffer, { failOn: "none" }).metadata();
+      return meta || {};
+    } catch {
+      return {};
+    }
+  }
+
+  // ----------------- FAST preprocess + compression -----------------
+  /**
+   * Goal: produce a small, readable JPEG buffer quickly.
+   * - hard cap on size (long edge)
+   * - grayscale + normalize (good OCR boost)
+   * - adaptive brightness (optional)
+   * - iterative quality reduction until MAX_BYTES
+   */
   async preprocessImage(imageBuffer) {
     try {
-      let img = sharp(imageBuffer, { limitInputPixels: 2073600 }).rotate();
-      img = img.resize({ width: 1200, withoutEnlargement: true });
+      // Protect server memory (huge photos)
+      const input = sharp(imageBuffer, {
+        limitInputPixels: 12_000_000, // allow bigger inputs but safe
+        failOn: "none",
+      }).rotate();
 
-      const stats = await img.stats();
-      const avg =
-        (stats.channels[0].mean +
-          stats.channels[1].mean +
-          stats.channels[2].mean) /
-        3;
+      const meta = await input.metadata();
+      const width = meta?.width || null;
+      const height = meta?.height || null;
 
-      img = img.grayscale().normalize();
+      // Resize: longest edge -> MAX_SIDE (keeps aspect)
+      let img = input.resize({
+        width: width && height && width >= height ? this.MAX_SIDE : null,
+        height: width && height && height > width ? this.MAX_SIDE : null,
+        fit: "inside",
+        withoutEnlargement: true,
+      });
 
-      if (avg < 60) {
-        img = img.gamma(1.4);
-      } else if (avg > 190) {
-        img = img.modulate({ brightness: 0.8 });
-      }
+      // Lightweight enhancement (fast)
+      // (Keeping it simple is often faster overall than heavy denoise/clahe)
+      img = img.grayscale().normalize().sharpen(0.8);
 
+      // Optional exposure tweak based on rough brightness
+      // (stats() costs a bit, but still cheaper than heavy filters)
       try {
-        if (typeof img.clahe === "function") {
-          img = img.clahe({ width: 64, height: 64, maxSlope: 3 });
+        const stats = await img.stats();
+        const avg =
+          (stats.channels?.[0]?.mean ?? 128) +
+          (stats.channels?.[1]?.mean ?? 128) +
+          (stats.channels?.[2]?.mean ?? 128);
+        const mean = avg / 3;
+
+        if (mean < 60) {
+          img = img.gamma(1.3);
+        } else if (mean > 190) {
+          img = img.modulate({ brightness: 0.85 });
         }
-      } catch (e) {
-        // ignore if not supported
+      } catch {
+        // ignore brightness heuristics if stats fails
       }
 
-      img = img.median(1).sharpen(1.5, 0.5);
-      return await img.jpeg({ quality: 75, mozjpeg: true }).toBuffer();
+      // Encode JPEG iteratively to meet MAX_BYTES
+      // Start at good quality then step down only if needed
+      const qualitySteps = [70, 60, 50, 45, 40, 35];
+
+      let out = null;
+      let chosenQ = qualitySteps[0];
+
+      for (const q of qualitySteps) {
+        chosenQ = q;
+        out = await img
+          .jpeg({
+            quality: q,
+            mozjpeg: true,
+            chromaSubsampling: "4:2:0",
+          })
+          .toBuffer();
+
+        if (out.length <= this.MAX_BYTES) break;
+      }
+
+      // If still too big, do one more downscale + q=40 as last resort
+      if (out && out.length > this.MAX_BYTES) {
+        const smallerSide = Math.max(700, Math.floor(this.MAX_SIDE * 0.85));
+        const img2 = sharp(out, { failOn: "none" })
+          .resize({ width: smallerSide, height: smallerSide, fit: "inside", withoutEnlargement: true })
+          .grayscale()
+          .normalize()
+          .sharpen(0.6);
+
+        out = await img2.jpeg({ quality: 40, mozjpeg: true }).toBuffer();
+        chosenQ = 40;
+      }
+
+      // Debug: show size drop
+      console.log("🗜️ OCR preprocess:", {
+        inKB: Math.round(imageBuffer.length / 1024),
+        outKB: out ? Math.round(out.length / 1024) : null,
+        maxKB: Math.round(this.MAX_BYTES / 1024),
+        maxSide: this.MAX_SIDE,
+        qualityUsed: chosenQ,
+      });
+
+      return out || imageBuffer;
     } catch (err) {
       console.error("preprocessImage failed:", err);
       return imageBuffer;
@@ -60,12 +147,14 @@ class LicenseOCRService {
     const base64Doc = imageBuffer.toString("base64");
     const name = `projects/${this.projectId}/locations/${this.location}/processors/${processorId}`;
 
+    // We are producing JPEG in preprocessImage
     const request = {
       name,
       rawDocument: { content: base64Doc, mimeType: "image/jpeg" },
     };
 
-    const [result] = await this.client.processDocument(request);
+    const call = this.client.processDocument(request);
+    const [result] = await this._withTimeout(call, this.TIMEOUT_MS, "Document AI processDocument");
     return result.document || {};
   }
 
@@ -102,10 +191,17 @@ class LicenseOCRService {
   async extractLicenseNumber(imageBuffer) {
     try {
       const processed = await this.preprocessImage(imageBuffer);
-      const doc = await this.processWithProcessor(
-        processed,
-        this.licenseProcessor
-      );
+
+      // Optional: quick probe log (safe)
+      const meta = await this._probeMeta(processed);
+      console.log("🖼️ OCR input meta:", {
+        w: meta?.width,
+        h: meta?.height,
+        format: meta?.format,
+        sizeKB: Math.round(processed.length / 1024),
+      });
+
+      const doc = await this.processWithProcessor(processed, this.licenseProcessor);
 
       console.log(
         "🔍 LICENSE ENTITIES (raw):",
@@ -146,9 +242,7 @@ class LicenseOCRService {
       // Last fallback: scan raw text
       if (!licenseNumber && doc.text) {
         const txt = doc.text.toUpperCase();
-        const m =
-          txt.match(/\b[A-Z0-9]{5,20}\b/) ||
-          txt.match(/\b\d{8,16}\b/);
+        const m = txt.match(/\b[A-Z0-9]{5,20}\b/) || txt.match(/\b\d{8,16}\b/);
         if (m) licenseNumber = m[0].replace(/[\s\-]+/g, "");
       }
 

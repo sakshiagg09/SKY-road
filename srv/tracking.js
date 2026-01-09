@@ -244,15 +244,19 @@ module.exports = cds.service.impl(async function () {
   this.on("CREATE", eventReporting, async (req) => {
     if (getTarget() === "SKY_PLUS") {
       return await postSkyPlus("/api/event", req.data);
+    }else{
+      return await s4Post("/EventsReportingSet", req.data);
     }
-    // return await s4Post("/EventsReportingSet", req.data);
+     
   });
 
   this.on("CREATE", updatesPOD, async (req) => {
     if (getTarget() === "SKY_PLUS") {
       return await postSkyPlus("/api/pod", req.data); // change path if your sky+ uses different route
-    }
-    // return await s4Post("/ProofOfDeliverySet", req.data);
+    }else{
+       return await s4Post("/ProofOfDeliverySet", req.data);
+      }
+    
   });
 
   this.on("CREATE", attachmentUpload, async (req) => {
@@ -262,8 +266,10 @@ module.exports = cds.service.impl(async function () {
   this.on("CREATE", delayEvents, async (req) => {
     if (getTarget() === "SKY_PLUS") {
       return await postSkyPlus("/api/delay", req.data); // change path if needed
+    }else{
+      return await s4Post("/DelaySet", req.data);
     }
-    //return await s4Post("/DelaySet", req.data);
+    
   });
 
   this.on("READ", delayEvents, async (req) => {
@@ -335,25 +341,27 @@ module.exports = cds.service.impl(async function () {
 
   //Unloading event logic
   this.on("CREATE", UnloadingSet, async (req) => {
-    // const { FoId, StopId ,Latitude , Longitude } = req.data || {};
-    // if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
-
-    // // Post to OData V2 backend
-    //  const d = await s4Post("/UnloadingSet", { FoId, StopId });
-   
-
-    // // Return something useful to UI (even if backend returns minimal)
-    // return {
-    //   FoId: d?.FoId ?? FoId,
-    //   StopId: d?.StopId ?? StopId,
-    //   Event: d?.Event ?? "UNLOADING",
-    //   Latitude: d?.Latitude ?? Latitude ?? null,
-    //   Longitude: d?.Longitude ?? Longitude ?? null,
-    //   Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
-    // };
-     if (getTarget() === "SKY_PLUS") {
+    if (getTarget() === "SKY_PLUS") {
+      console.log("Posting unloading to SKY PLUS:", req.data);
       return await postSkyPlus("/api/unloading", req.data); // change path if needed
     }
+    else{
+    const { FoId, StopId ,Latitude , Longitude } = req.data || {};
+    if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
+
+    // Post to OData V2 backend
+     const d = await s4Post("/UnloadingSet", { FoId, StopId ,Latitude , Longitude });
+    // Return something useful to UI (even if backend returns minimal)
+    return {
+      FoId: d?.FoId ?? FoId,
+      StopId: d?.StopId ?? StopId,
+      Event: d?.Event ?? "UNLOADING",
+      Latitude: d?.Latitude ?? Latitude ?? null,
+      Longitude: d?.Longitude ?? Longitude ?? null,
+      Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
+    };
+  }
+     
   });
   // Attachments 
   this.on("READ", AttachmentsSet, async (req) => {

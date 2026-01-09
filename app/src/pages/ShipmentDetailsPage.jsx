@@ -89,6 +89,39 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   }
 
   const { FoId, stops = [], raw = {} } = selectedShipment;
+  const stopsMaster = useMemo(() => {
+  try {
+    const s = raw?.Stops;
+    const arr = typeof s === "string" ? JSON.parse(s) : Array.isArray(s) ? s : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}, [raw]);
+
+const stopNameByLocId = useMemo(() => {
+  const m = new Map();
+  for (const s of stopsMaster) {
+    const key = String(s?.locid || "").trim();
+    const name = String(s?.name1 || "").trim();
+    if (key && name) m.set(key, name);
+  }
+  return m;
+}, [stopsMaster]);
+
+const resolveStopName = (st) => {
+  const loc = String(st?.locId || st?.locid || "").trim();
+  return (
+    st?.name1 ||
+    st?.name ||
+    st?.LocationName ||
+    st?.locationName ||
+    (loc ? stopNameByLocId.get(loc) : "") ||
+    loc ||
+    ""
+  );
+};
+
   const stopsCount = Array.isArray(stops) ? stops.length : 0;
 
   // derive origin/destination from available stops dynamically
@@ -104,16 +137,16 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
   const lastStop = sortedStopsForHeader[sortedStopsForHeader.length - 1];
 
   const origin = firstStop
-    ? `${firstStop.name || firstStop.name1 || firstStop.locId || firstStop.locid || ""}${
-        firstStop.city ? `, ${firstStop.city}` : ""
-      }${firstStop.country ? `, ${firstStop.country}` : ""}`
-    : "-";
+  ? `${resolveStopName(firstStop)}${firstStop.city ? `, ${firstStop.city}` : ""}${
+      firstStop.country ? `, ${firstStop.country}` : ""
+    }`
+  : "-";
 
   const destination = lastStop
-    ? `${lastStop.name || lastStop.name1 || lastStop.locId || lastStop.locid || ""}${
-        lastStop.city ? `, ${lastStop.city}` : ""
-      }${lastStop.country ? `, ${lastStop.country}` : ""}`
-    : "-";
+  ? `${resolveStopName(lastStop)}${lastStop.city ? `, ${lastStop.city}` : ""}${
+      lastStop.country ? `, ${lastStop.country}` : ""
+    }`
+  : "-";
 
   // Planned ETA
   const eta = lastStop
