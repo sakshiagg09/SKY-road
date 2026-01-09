@@ -1,5 +1,5 @@
 // src/components/MaterialItemList.jsx
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
+import { apiPost } from "../auth/api";
 
 // Color palette aligned with ShipmentDetails / ReportEvent
 const BG = "#EFF0F3";
@@ -20,6 +21,7 @@ const TEXT_PRIMARY = "#071E54";
 const TEXT_SECONDARY = "#6B6C6E";
 
 export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
+  const [posting, setPosting] = useState(false);
   // ---------- helpers ----------
   const safeJsonArray = (v) => {
     if (!v) return [];
@@ -138,16 +140,16 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
 
     const loc = String(
       stop?.resolvedLoc ??
-        row0.Location ??
-        row0.location ??
-        ""
+      row0.Location ??
+      row0.location ??
+      ""
     ).trim();
 
     const sid = String(
       stop?.resolvedStopId ??
-        row0.StopId ??
-        row0.stopId ??
-        ""
+      row0.StopId ??
+      row0.stopId ??
+      ""
     ).trim();
 
     if (!fo || !loc || !sid) return "";
@@ -172,11 +174,15 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
     const loc = String(stop?.resolvedLoc ?? row0.Location ?? row0.location ?? "").trim();
     const sid = String(stop?.resolvedStopId ?? row0.StopId ?? row0.stopId ?? "").trim();
     const fo = String(stop?.FoId ?? "").trim();
-    
-      // POST should not include $filter when payload body is sent
-    const url = `/odata/v4/GTT/ReturnItemsSet(StopId='${esc(stopId)}',Location='${esc(location)}',FoId='${esc(foId)}')?$format=json`;
 
-  
+    // POST should not include $filter when payload body is sent
+    const url =  `/odata/v4/GTT/ReturnItemsSet`;
+   const payload = {
+      StopId: sid,
+      Location: loc,
+      FoId: fo,
+    };
+
 
     if (!fo || !loc || !sid) {
       alert("Missing FoId/Location/StopId for ReturnItemsSet POST.");
@@ -244,7 +250,12 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
           )}
         </Box>
 
-        <IconButton size="small" onClick={onConfirm} sx={{ color: PRIMARY }}>
+        <IconButton
+          size="small"
+          onClick={handleConfirmClick}
+          disabled={posting}
+          sx={{ color: PRIMARY }}
+        >
           <CheckIcon sx={{ fontSize: 22 }} />
         </IconButton>
       </Box>
