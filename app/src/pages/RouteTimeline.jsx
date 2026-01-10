@@ -52,6 +52,7 @@ export default function RouteTimeline({
   const BLUE = "#42A5F5"; // not reached
   const ORANGE = "#ED6C02"; // any event (arrival/unloading/pod etc.)
   const GREEN = "#2E7D32"; // departure / completed last stop
+  const RED = "#D32F2F";
 
   // menu state
   const [anchorEl, setAnchorEl] = useState(null);
@@ -81,13 +82,29 @@ export default function RouteTimeline({
       const hh = Number(s.slice(8, 10));
       const min = Number(s.slice(10, 12));
       const ss = Number(s.slice(12, 14));
-      const d = new Date(yyyy, mm - 1, dd, hh, min, ss); // ✅ local time
+      const d = new Date(Date.UTC(yyyy, mm - 1, dd, hh, min, ss)); // ✅ local time
       return isNaN(d) ? null : d;
     }
 
     const d = new Date(s);
     return isNaN(d) ? null : d;
   };
+
+  const toS4TimestampUTC = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    d.getUTCFullYear() +
+    pad(d.getUTCMonth() + 1) +
+    pad(d.getUTCDate()) +
+    pad(d.getUTCHours()) +
+    pad(d.getUTCMinutes()) +
+    pad(d.getUTCSeconds())
+  );
+};
 
   const formatDateTimeLocal = (d) => {
     if (!d) return "-";
@@ -494,11 +511,13 @@ export default function RouteTimeline({
   const mapEventStringToActionKey = (ev) => {
     if (!ev) return null;
     const e = String(ev).trim().toUpperCase();
+    const isDelay = e.includes("DELAY");
     const isArr = e.includes("ARRIV") || e.includes("ARRV");
     const isUnl = e.includes("UNLOAD") || e.includes("UNLD");
     const isDep = e.includes("DEPART") || e.includes("DEPT");
     const isPod = e.includes("POD");
     const isRet = e.includes("RET");
+    if (isDelay) return "delay";
     if (isDep) return "departure";
     if (isPod) return "pod";
     if (isUnl) return "unloading";
@@ -515,6 +534,13 @@ export default function RouteTimeline({
       const key = getStopKey(s);
       const mapped = mapEventStringToActionKey(s.eventRaw);
       if (!mapped) return;
+
+      // ✅ delay is a status, not part of sequence
+      if (mapped === "delay") {
+        const actMs = s.actDateTime?.getTime?.() ?? null;
+        m[key] = { ...(m[key] || {}), delay: true, ...(actMs ? { delayAt: actMs } : {}) };
+        return;
+      }
 
       const seq = allowedSequenceForStop(s);
       const flags = computeFlagsUpTo(seq, mapped);
@@ -639,6 +665,7 @@ export default function RouteTimeline({
       StopId: resolvePostStopId(stop) || "",
       Latitude: stop.latitude,
       Longitude: stop.longitude,
+      Timestamp: toS4TimestampUTC(new Date()),
     };
     console.log("[sendEventReport] payload prepared:", payload);
 
@@ -731,6 +758,7 @@ export default function RouteTimeline({
           StopId: resolvePostStopId(stop) || "",
           Latitude: stop.latitude ?? null,
           Longitude: stop.longitude ?? null,
+          Timestamp: toS4TimestampUTC(new Date()),
         };
 
       const body = await apiPost(unloadingUrl, payload);
@@ -962,6 +990,8 @@ export default function RouteTimeline({
     const r = reportedMap[key] || {};
 
     const last = isLastStop(stop);
+     // ✅ show delay prominently (adjust priority if you want)
+   
 
     // ✅ For intermediate stops, departure should be the final state shown
     if (!last && r.departure) return "Departed";
@@ -972,6 +1002,7 @@ export default function RouteTimeline({
     if (r.unloading) return "Unloaded";
     if (r.departure) return "Departed";
     if (r.arrival) return "Arrived";
+    if (r.delay) return "Delayed";
     return "";
   };
 
@@ -979,10 +1010,10 @@ export default function RouteTimeline({
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
     const last = isLastStop(stop);
-
     if (last && isStopComplete(stop)) return GREEN;
     if (r.departure) return GREEN;
     if (r.arrival || r.unloading || r.pod || r.return) return ORANGE;
+    if (r.delay) return RED; 
     return BLUE;
   };
 

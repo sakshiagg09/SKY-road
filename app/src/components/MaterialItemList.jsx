@@ -50,6 +50,22 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
     return undefined;
   };
 
+   const toS4TimestampUTC = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    d.getUTCFullYear() +
+    pad(d.getUTCMonth() + 1) +
+    pad(d.getUTCDate()) +
+    pad(d.getUTCHours()) +
+    pad(d.getUTCMinutes()) +
+    pad(d.getUTCSeconds())
+  );
+};
+
   const toNum = (v) => {
     if (v === undefined || v === null) return null;
     const n = Number(String(v).trim());
@@ -181,6 +197,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
       StopId: sid,
       Location: loc,
       FoId: fo,
+      Timestamp: toS4TimestampUTC(new Date()),
     };
 
 

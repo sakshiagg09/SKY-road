@@ -346,11 +346,9 @@ module.exports = cds.service.impl(async function () {
       return await postSkyPlus("/api/unloading", req.data); // change path if needed
     }
     else{
-    const { FoId, StopId ,Latitude , Longitude } = req.data || {};
-    if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
-
     // Post to OData V2 backend
-     const d = await s4Post("/UnloadingSet", { FoId, StopId ,Latitude , Longitude });
+    console.log("Posting unloading to S/4:", req.data);
+     const d = await s4Post("/UnloadingSet", req.data);
     // Return something useful to UI (even if backend returns minimal)
     return {
       FoId: d?.FoId ?? FoId,
@@ -358,7 +356,7 @@ module.exports = cds.service.impl(async function () {
       Event: d?.Event ?? "UNLOADING",
       Latitude: d?.Latitude ?? Latitude ?? null,
       Longitude: d?.Longitude ?? Longitude ?? null,
-      Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
+      Timestamp: d?.Timestamp ?? null,
     };
   }
      
@@ -372,8 +370,8 @@ module.exports = cds.service.impl(async function () {
 
     // ✅ OData V2 filter read
     const path =
-      `/AttachmentsSet?$filter=FoId eq '${esc(foId)}'&$format=json`;
-
+      `/AttachmentsSet?$filter=FoId eq '${esc(foId)}' and CreatedBy eq 'BTP_APP01'&$format=json`;
+    console.log("Fetching attachments from S/4 with path:", path);
     const v2 = await s4Get(path);
     const rows = normalizeV2(v2);
 
