@@ -4,15 +4,41 @@ const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 const licenseOcr = require("./licenseOcrService");
 const application = process.env.EVENT_API_BASE
 
-const { UPSERT } = cds.ql;
+const { UPSERT, SELECT } = cds.ql;
 
 function getTarget() {
   return (process.env.EVENT_TARGET || "TM").toUpperCase(); // TM | SKY_PLUS
 }
 
+function GTTBase() {
+  return (process.env.GTT_BASE_URL || "https://nav-gtt01-4vifgdob.gtt-flp-lbnplatform.cfapps.eu10.hana.ondemand.com/api/inbound/rest/v1/com.navgtt014vifgdob.gtt.app.gttft1.gttft1WriteService").replace(/\/$/, "");
+}
+
 function skyPlusBase() {
   return (process.env.SKY_PLUS_BASE_URL || "https://skyplus-backend-hwf7gsdhathxd4h3.westeurope-01.azurewebsites.net").replace(/\/$/, "");
 }
+
+async function postGTT(path, payload) {
+  const url = `${GTTBase()}${path}`;
+  console.log(`POST GTT to ${url} with payload:`, payload);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic c2Frc2hpLmFnZ2Fyd2FsQG5hdi1pdC5jb206SGVsbEAyU0FQMTIy`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`SKY+ POST failed (${res.status}): ${txt}`);
+  }
+
+  // expect JSON response same shape as TM (Event, Timestamp, StopId, FoId...)
+  return await res.json().catch(() => ({}));
+}
+
 
 // Node 18+ has global fetch. If not, install node-fetch.
 async function postSkyPlus(path, payload) {
@@ -142,7 +168,108 @@ module.exports = cds.service.impl(async function () {
   } = this.entities;
 
   // DB tables (persistent)
-  const { Shipments, ShipmentStops, StopEvents, Items } = cds.entities("sky.db");
+  const { Shipments } = cds.entities("sky.db");
+
+  // In-memory cache of Stops by FoId (populated from READ trackingDetails)
+  // Note: per-app-instance; sufficient for single-instance dev/testing.
+  const stopsCache = new Map();
+  // In-memory cache of FinalInfo by FoId (populated from READ trackingDetails)
+  const finalInfoCache = new Map();
+
+  // ---------------------------------------------------------------------------
+  // GTT helper: derive ordinal + locid from cached Stops and build
+  // the required GTT payload for a given FO/Stop.
+  // ---------------------------------------------------------------------------
+  const buildGttEvent = async ({ FoId, StopId, Latitude, Longitude, Action, fixedPath }) => {
+    if (!FoId || !StopId) throw new Error("FoId and StopId are required");
+
+    // Read Stops from in-memory cache (populated during READ trackingDetails)
+    const stops = stopsCache.get(FoId) || [];
+    const finalInfo = finalInfoCache.get(FoId) || [];
+    if (!Array.isArray(stops) || stops.length === 0) {
+      console.warn(`Stops cache missing/empty for FoId ${FoId}. Ensure trackingDetails was read before posting events.`);
+    }
+
+    // Helpers for normalization
+    const norm = (v) => String(v ?? "").trim();
+    // GTT swagger requires coordinates to be a multiple of 1E-9 (<= 9 decimal places)
+    const normNum = (v) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      if (!Number.isFinite(n)) return null;
+      return Math.round(n * 1e9) / 1e9;
+    };
+    const locIdInStop = (s) => norm(s?.locid ?? s?.locId ?? "");
+    // Stops array does not contain stopid; StopId comes from FinalInfo.stopid
+    const stopIdInFinal = (f) => norm(f?.stopid ?? f?.stopId ?? f?.StopId ?? f?.STOPID ?? f?.stop_id ?? "");
+    const seqIn = (x) => norm(x?.stopseqpos ?? x?.stopSeqPos ?? x?.StopSeqPos ?? x?.STOPSEQPOS ?? "").toUpperCase();
+
+    const targetStopId = norm(StopId);
+
+    // 1) Look up StopId in FinalInfo to get (seq, locid)
+    const fin = (finalInfo || []).find((f) => stopIdInFinal(f) === targetStopId) || null;
+    const finSeq = fin ? seqIn(fin) : "";
+    const finLoc = norm(fin?.locid ?? fin?.locId ?? fin?.LocId ?? "");
+
+    // 2) Determine the stop index/ordinal by matching Stops on (stopseqpos, locid)
+    // Stops array uses stopseqpos + locid
+    let idx = -1;
+    if (finSeq && finLoc) {
+      idx = (stops || []).findIndex((s) => seqIn(s) === finSeq && norm(s?.locid ?? s?.locId ?? "") === finLoc);
+    }
+
+    if (!fin) {
+      console.warn(
+        `FinalInfo match not found for FoId ${FoId} StopId '${targetStopId}'. ` +
+        `Cannot derive (stopseqpos, locid) for GTT payload. Sample final stopids: ${((finalInfo || []).slice(0, 5).map(stopIdInFinal).filter(Boolean)).join(", ")}`
+      );
+    }
+
+    if (idx < 0 && finSeq && finLoc) {
+      console.warn(
+        `Could not match Stops for FoId ${FoId} using (seq='${finSeq}', locid='${finLoc}'). ` +
+        `locationAltKey will fall back to FinalInfo.locid.`
+      );
+    }
+
+    // Ordinal is 1-based and 4-digit padded (0001, 0002, ...)
+    const ordinal = String((idx >= 0 ? idx + 1 : 1)).padStart(4, "0");
+
+    // Prefer Stops.locid when we could resolve idx; otherwise fall back to FinalInfo.locid
+    const locid = idx >= 0 ? locIdInStop(stops?.[idx]) : finLoc;
+    if (!locid) {
+      console.warn(`locid missing for FoId ${FoId} (StopId ${targetStopId}, idx ${idx}). locationAltKey will be empty.`);
+    }
+
+    // Map Action -> GTT endpoint path (or use a fixedPath for POD/Unloading)
+    const path = fixedPath
+      ? fixedPath
+      : (Action === "ARRV" ? "/Arrival" : Action === "DEPT" ? "/Departure" : `/${Action}`);
+
+    // Timestamp + timezone
+    const tsDate = new Date();
+    const actualBusinessTimestamp = tsDate.toISOString();
+    const actualBusinessTimeZone = (() => {
+      try {
+        const parts = new Intl.DateTimeFormat("en", { timeZoneName: "short" }).formatToParts(tsDate);
+        return parts.find((p) => p.type === "timeZoneName")?.value || "UTC";
+      } catch {
+        return "UTC";
+      }
+    })();
+
+    const payload = {
+      altKey: `xri://sap.com/id:LBN#10020001074:S4ACLNT100:FT1_SHIPMENT:${FoId}`,
+      eventMatchKey: `${FoId}${ordinal}`,
+      actualBusinessTimeZone,
+      actualBusinessTimestamp,
+      locationAltKey: `xri://sap.com/id:LBN#10020001074:S4ACLNT100:Location:LogisticLocation:${locid}`,
+      longitude: normNum(Longitude),
+      latitude: normNum(Latitude),
+    };
+
+    return { path, payload, actualBusinessTimestamp };
+  };
 
   const safeRun = (stmt, context) => {
     // Fire-and-forget; do not block OData response on DB
@@ -175,6 +302,26 @@ module.exports = cds.service.impl(async function () {
     const rows = normalizeV2(data);
     const row = rows[0];
     if (!row) return [];
+
+    // Cache Stops for later GTT event posting (avoid DB dependency)
+    try {
+      const rawStops = row.Stops ?? null;
+      const parsedStops = typeof rawStops === "string" ? JSON.parse(rawStops) : Array.isArray(rawStops) ? rawStops : [];
+      stopsCache.set(row.FoId, parsedStops);
+    } catch (e) {
+      console.warn("Failed to cache Stops from trackingDetails:", e.message || e);
+      stopsCache.set(row.FoId, []);
+    }
+
+    // Cache FinalInfo for later GTT event posting (StopId -> locid/stopseqpos mapping)
+    try {
+      const rawFinal = row.FinalInfo ?? null;
+      const parsedFinal = typeof rawFinal === "string" ? JSON.parse(rawFinal) : Array.isArray(rawFinal) ? rawFinal : [];
+      finalInfoCache.set(row.FoId, parsedFinal);
+    } catch (e) {
+      console.warn("Failed to cache FinalInfo from trackingDetails:", e.message || e);
+      finalInfoCache.set(row.FoId, []);
+    }
 
     // Persist to HANA (UPSERT by key FoId)
     safeRun(
@@ -242,21 +389,68 @@ module.exports = cds.service.impl(async function () {
   // CREATE handlers (unchanged)
   // ---------------------------------------------------------------------------
   this.on("CREATE", eventReporting, async (req) => {
+    console.log("posting to GTT:", getTarget(), req.data);
     if (getTarget() === "SKY_PLUS") {
       return await postSkyPlus("/api/event", req.data);
-    }else{
+    }
+    else if (getTarget() === "GTT") {
+      const { FoId, Action, StopId, Latitude, Longitude } = req.data || {};
+      if (!FoId || !StopId || !Action) return req.reject(400, "FoId, StopId and Action are required");
+
+      const { path, payload, actualBusinessTimestamp } = await buildGttEvent({
+        FoId,
+        StopId,
+        Latitude,
+        Longitude,
+        Action,
+      });
+
+      await postGTT(path, payload);
+
+      return {
+        FoId,
+        StopId,
+        Event: Action === "ARRV" ? "ARRIVAL" : Action === "DEPT" ? "DEPARTURE" : Action,
+        Latitude: Latitude ?? null,
+        Longitude: Longitude ?? null,
+        Timestamp: actualBusinessTimestamp,
+      };
+    }
+    else {
       return await s4Post("/EventsReportingSet", req.data);
     }
-     
   });
 
   this.on("CREATE", updatesPOD, async (req) => {
     if (getTarget() === "SKY_PLUS") {
       return await postSkyPlus("/api/pod", req.data); // change path if your sky+ uses different route
-    }else{
-       return await s4Post("/ProofOfDeliverySet", req.data);
-      }
-    
+    }
+    else if (getTarget() === "GTT") {
+      const { FoId, StopId, Latitude, Longitude } = req.data || {};
+      if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
+
+      const { path, payload, actualBusinessTimestamp } = await buildGttEvent({
+        FoId,
+        StopId,
+        Latitude,
+        Longitude,
+        fixedPath: "/POD",
+      });
+
+      await postGTT(path, payload);
+
+      return {
+        FoId,
+        StopId,
+        Event: "POD",
+        Latitude: Latitude ?? null,
+        Longitude: Longitude ?? null,
+        Timestamp: actualBusinessTimestamp,
+      };
+    }
+    else {
+      return await s4Post("/ProofOfDeliverySet", req.data);
+    }
   });
 
   this.on("CREATE", attachmentUpload, async (req) => {
@@ -266,10 +460,51 @@ module.exports = cds.service.impl(async function () {
   this.on("CREATE", delayEvents, async (req) => {
     if (getTarget() === "SKY_PLUS") {
       return await postSkyPlus("/api/delay", req.data); // change path if needed
-    }else{
+    }
+    else if (getTarget() === "GTT") {
+      const {
+        FoId,
+        StopId,
+        Latitude,
+        Longitude,
+        ETA,
+        RefEvent,
+        Event,
+        EventCode,
+        EvtReasonCode,
+        Description,
+      } = req.data || {};
+
+      if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
+
+      // Base GTT payload (altKey/eventMatchKey/locationAltKey/coords/timestamp)
+      const { path, payload, actualBusinessTimestamp } = await buildGttEvent({
+        FoId,
+        StopId,
+        Latitude,
+        Longitude,
+        fixedPath: "/Delay",
+      });
+
+      await postGTT(path, payload);
+
+      return {
+        FoId,
+        StopId,
+        ETA: ETA ?? null,
+        RefEvent: RefEvent ?? null,
+        Event: Event ?? null,
+        EventCode: EventCode ?? null,
+        EvtReasonCode: EvtReasonCode ?? null,
+        Description: Description ?? null,
+        Latitude: Latitude ?? null,
+        Longitude: Longitude ?? null,
+        Timestamp: actualBusinessTimestamp,
+      };
+    }
+    else {
       return await s4Post("/DelaySet", req.data);
     }
-    
   });
 
   this.on("READ", delayEvents, async (req) => {
@@ -317,10 +552,6 @@ module.exports = cds.service.impl(async function () {
 
   //Return Item Set Logic 
   this.on("CREATE", ReturnItemsSet, async (req) => {
-   // const foId = getFilterVal(req, "FoId");
-   // const location = getFilterVal(req, "Location");
-   // const stopId = getFilterVal(req, "StopId");
-
     if (!req.data) return [];
 
     const esc = (s) => String(s).replace(/'/g, "''");
@@ -345,23 +576,45 @@ module.exports = cds.service.impl(async function () {
       console.log("Posting unloading to SKY PLUS:", req.data);
       return await postSkyPlus("/api/unloading", req.data); // change path if needed
     }
-    else{
-    const { FoId, StopId ,Latitude , Longitude } = req.data || {};
-    if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
+    else if (getTarget() === "GTT") {
+      const { FoId, StopId, Latitude, Longitude } = req.data || {};
+      if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
 
-    // Post to OData V2 backend
-     const d = await s4Post("/UnloadingSet", { FoId, StopId ,Latitude , Longitude });
-    // Return something useful to UI (even if backend returns minimal)
-    return {
-      FoId: d?.FoId ?? FoId,
-      StopId: d?.StopId ?? StopId,
-      Event: d?.Event ?? "UNLOADING",
-      Latitude: d?.Latitude ?? Latitude ?? null,
-      Longitude: d?.Longitude ?? Longitude ?? null,
-      Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
-    };
-  }
-     
+      const { path, payload, actualBusinessTimestamp } = await buildGttEvent({
+        FoId,
+        StopId,
+        Latitude,
+        Longitude,
+        fixedPath: "/UnloadingEnd",
+      });
+
+      await postGTT(path, payload);
+
+      return {
+        FoId,
+        StopId,
+        Event: "UNLOADING",
+        Latitude: Latitude ?? null,
+        Longitude: Longitude ?? null,
+        Timestamp: actualBusinessTimestamp,
+      };
+    }
+    else {
+      const { FoId, StopId, Latitude, Longitude } = req.data || {};
+      if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
+
+      // Post to OData V2 backend
+      const d = await s4Post("/UnloadingSet", { FoId, StopId, Latitude, Longitude });
+      // Return something useful to UI (even if backend returns minimal)
+      return {
+        FoId: d?.FoId ?? FoId,
+        StopId: d?.StopId ?? StopId,
+        Event: d?.Event ?? "UNLOADING",
+        Latitude: d?.Latitude ?? Latitude ?? null,
+        Longitude: d?.Longitude ?? Longitude ?? null,
+        Timestamp: d?.Timestamp ?? d?.EventTime ?? null,
+      };
+    }
   });
   // Attachments 
   this.on("READ", AttachmentsSet, async (req) => {
