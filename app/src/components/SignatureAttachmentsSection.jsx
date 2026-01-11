@@ -349,32 +349,50 @@ export default function SignatureAttachmentsSection({
         ) : (
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
             {attachments.map((file, idx) => (
-              <Box
-                key={`${file.name}_${idx}`}
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  px: 1.5,
-                  py: 0.75,
-                  borderRadius: 2,
-                  bgcolor: "#F8FAFF",
-                }}
-              >
-                <Box sx={{ display: "flex", flexDirection: "column" }}>
-                  <Typography sx={{ fontSize: 13, fontWeight: 600, color: textPrimary }}>
-                    [{fileTypeLabel(file)}] {file.name}
-                  </Typography>
-                  <Typography sx={{ fontSize: 11, color: textSecondary }}>
-                    {(file.size / 1024).toFixed(1)} KB
-                  </Typography>
-                </Box>
+  <Box
+    key={`${file.name}_${idx}`}
+    sx={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      px: 1.5,
+      py: 0.75,
+      borderRadius: 2,
+      bgcolor: "#F8FAFF",
+      width: "100%",
+      minWidth: 0,
+      gap: 1,
+    }}
+  >
+    <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+      <Typography
+        noWrap
+        sx={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: textPrimary,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        [{fileTypeLabel(file)}] {file.name}
+      </Typography>
 
-                <IconButton size="small" onClick={() => onRemoveAttachment?.(idx)}>
-                  <DeleteOutlineIcon sx={{ fontSize: 18, color: textSecondary }} />
-                </IconButton>
-              </Box>
-            ))}
+      <Typography noWrap sx={{ fontSize: 11, color: textSecondary }}>
+        {(file.size / 1024).toFixed(1)} KB
+      </Typography>
+    </Box>
+
+    <IconButton
+      size="small"
+      onClick={() => onRemoveAttachment?.(idx)}
+      sx={{ flexShrink: 0 }}
+    >
+      <DeleteOutlineIcon sx={{ fontSize: 18, color: textSecondary }} />
+    </IconButton>
+  </Box>
+))}
+
           </Box>
         )}
       </Box>

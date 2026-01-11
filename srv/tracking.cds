@@ -14,6 +14,7 @@ service GTT {
         DirectionsInfo : String;
         StopInfo       : String;
         Stops          : String;
+        Timestamp      : String;
   }
 
   @cds.persistence.skip
@@ -29,6 +30,7 @@ service GTT {
         quantity   : Decimal(15,3);
         signature  : String;
         podImage   : String;
+        Timestamp  : String;
   }
 
   @cds.persistence.skip
@@ -39,6 +41,7 @@ service GTT {
         Items       : LargeString;
         Latitude    : Double;
         Longitude   : Double;
+        Timestamp   : String;
   }
 
   // If you need this, define it here too (adjust fields as per your actual payload):
@@ -51,6 +54,7 @@ service GTT {
         Reason    : String;
         Latitude  : Double;
         Longitude : Double;
+        Timestamp : String;
   }
 
     @cds.persistence.skip
@@ -58,6 +62,7 @@ service GTT {
     key FoId      : String;
         FileType  : String;
         PDFBase64 : LargeString;
+        Timestamp : String;
   }
     // ✅ NEW: Attachments (READ list by FoId)
   @cds.persistence.skip
@@ -72,6 +77,7 @@ service GTT {
 
         // optional (big) – return only when you really need it
         PDFBase64   : LargeString;
+        Timestamp   : String;
   }
     @cds.persistence.skip
   entity delayEvent {
@@ -85,6 +91,7 @@ service GTT {
       Description  : String;   
       Latitude     : Double;
       Longitude    : Double;
+      Timestamp    : String;
 }
 // ✅ NEW: ReturnItemsSet (READ by key)
   @cds.persistence.skip
@@ -95,6 +102,7 @@ service GTT {
         Latitude  : Double;
         Longitude : Double;
         LoadedItems : LargeString;  // JSON string e.g. "[{...}]"
+        Timestamp   : String;       
   }
 
   // ✅ NEW: UnloadingSet (CREATE)

@@ -625,8 +625,8 @@ module.exports = cds.service.impl(async function () {
 
     // ✅ OData V2 filter read
     const path =
-      `/AttachmentsSet?$filter=FoId eq '${esc(foId)}'&$format=json`;
-
+      `/AttachmentsSet?$filter=FoId eq '${esc(foId)}' and CreatedBy eq 'BTP_APP01'&$format=json`;
+    console.log("Fetching attachments from S/4 with path:", path);
     const v2 = await s4Get(path);
     const rows = normalizeV2(v2);
 

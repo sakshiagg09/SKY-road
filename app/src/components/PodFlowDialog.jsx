@@ -169,6 +169,22 @@ const longitudeValue = Number.isFinite(stopLng) ? stopLng : null;
     return [];
   };
 
+   const toS4TimestampUTC = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    d.getUTCFullYear() +
+    pad(d.getUTCMonth() + 1) +
+    pad(d.getUTCDate()) +
+    pad(d.getUTCHours()) +
+    pad(d.getUTCMinutes()) +
+    pad(d.getUTCSeconds())
+  );
+};
+
   const extractItemListFromShipmentItemsRow = (row0) => {
     const loaded = safeJsonArray(row0?.LoadedItems);
     if (loaded.length) return loaded;
@@ -286,6 +302,7 @@ const longitudeValue = Number.isFinite(stopLng) ? stopLng : null;
     StopId: stopIdValue,
     Latitude: String(latitudeValue),
     Longitude: String(longitudeValue),
+    Timestamp: toS4TimestampUTC(new Date()),
   });
 
   const buildDiscrepancyPayload = () => {
@@ -313,6 +330,7 @@ const longitudeValue = Number.isFinite(stopLng) ? stopLng : null;
       StopId: stopIdValue,
       Latitude: String(latitudeValue),
       Longitude: String(longitudeValue),
+      Timestamp: toS4TimestampUTC(new Date()),
     };
   };
 
@@ -411,11 +429,19 @@ const longitudeValue = Number.isFinite(stopLng) ? stopLng : null;
     );
   };
 
-  const handleFileAdd = (event) => {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) return;
-    setAttachments((prev) => [...prev, ...files]);
-  };
+ const handleFileAdd = (event) => {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+
+  const ts = toS4TimestampUTC(new Date()); // UTC SAP format
+  const renamed = files.map((f) => {
+    const ext = f.name.split(".").pop();
+    const name = `${effectiveFoId}_${ts}.${ext}`;
+    return new File([f], name, { type: f.type });
+  });
+
+  setAttachments((prev) => [...prev, ...renamed]);
+};
 
   const handleRemoveAttachment = (idx) => {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));

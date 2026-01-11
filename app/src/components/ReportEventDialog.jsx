@@ -275,22 +275,23 @@ export default function ReportEventDialog({
 
   // ---------------- HELPERS ----------------
 
-  // convert "2025-12-08T23:00" -> "20251208230000"
-  const toS4Timestamp = (val) => {
-    if (!val) return null;
-    const d = new Date(val);
-    if (Number.isNaN(d.getTime())) return null;
 
-    const pad = (n) => String(n).padStart(2, "0");
-    const year = d.getFullYear();
-    const month = pad(d.getMonth() + 1);
-    const day = pad(d.getDate());
-    const hour = pad(d.getHours());
-    const min = pad(d.getMinutes());
-    const sec = pad(d.getSeconds());
+  const toS4TimestampUTC = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
 
-    return `${year}${month}${day}${hour}${min}${sec}`;
-  };
+  const pad = (n) => String(n).padStart(2, "0");
+
+  return (
+    d.getUTCFullYear() +
+    pad(d.getUTCMonth() + 1) +
+    pad(d.getUTCDate()) +
+    pad(d.getUTCHours()) +
+    pad(d.getUTCMinutes()) +
+    pad(d.getUTCSeconds())
+  );
+};
 
   // ---------------- PAYLOAD ----------------
 
@@ -301,11 +302,13 @@ export default function ReportEventDialog({
     return {
       FoId,
       StopId: StopId || "", // resolved from FinalInfo
-      ETA: toS4Timestamp(estimatedTime),
+      ETA: toS4TimestampUTC(estimatedTime),
       RefEvent: "Arrival", // referencedPlannedEvent || "",
       EventCode: reasonObj.EvtReasonCode || "DELAYED",
       Latitude: String(Latitude),
       Longitude: String(Longitude),
+      Timestamp: toS4TimestampUTC(new Date()),
+
     };
   };
 
