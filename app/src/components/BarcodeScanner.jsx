@@ -12,7 +12,7 @@ import {
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import { Capacitor } from "@capacitor/core";
-import { StatusBar } from "@capacitor/status-bar"; // ✅ for native overlay handling
+import { StatusBar } from "@capacitor/status-bar"; // ✅ native overlay handling
 
 // Web fallback
 import { Html5Qrcode } from "html5-qrcode";
@@ -27,6 +27,7 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
   const regionIdRef = useRef(`qr-reader-${Math.random().toString(16).slice(2)}`);
 
   const isNative = Capacitor.isNativePlatform();
+  const isAndroid = Capacitor.getPlatform?.() === "android";
 
   // track if we made WebView transparent (native)
   const nativeOverlayAppliedRef = useRef(false);
@@ -40,7 +41,6 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
       setError("");
       setScanning(true);
 
-      // start after dialog mounts
       const t = setTimeout(() => {
         isNative ? startNativeScan() : startWebScan();
       }, 150);
@@ -64,11 +64,9 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
   const applyNativeOverlay = async () => {
     if (!isNative || nativeOverlayAppliedRef.current) return;
 
-    // store previous backgrounds
     previousHtmlBgRef.current = document.documentElement.style.backgroundColor || "";
     previousBodyBgRef.current = document.body.style.backgroundColor || "";
 
-    // make WebView transparent so camera below becomes visible
     document.documentElement.style.backgroundColor = "transparent";
     document.body.style.backgroundColor = "transparent";
 
@@ -82,7 +80,6 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
   const restoreNativeOverlay = async () => {
     if (!isNative || !nativeOverlayAppliedRef.current) return;
 
-    // restore backgrounds
     document.documentElement.style.backgroundColor = previousHtmlBgRef.current;
     document.body.style.backgroundColor = previousBodyBgRef.current;
 
@@ -122,13 +119,14 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
 
   // ---------------- NATIVE (Capacitor Android/iOS) ----------------
   const startNativeScan = async () => {
+    let BarcodeScanner;
     try {
       safeSetState(() => {
         setError("");
         setScanning(true);
       });
 
-      const { BarcodeScanner } = await import("@capacitor-mlkit/barcode-scanning");
+      ({ BarcodeScanner } = await import("@capacitor-mlkit/barcode-scanning"));
 
       // ✅ Ensure camera permission (Android needs CAMERA in manifest too!)
       const perm = await BarcodeScanner.requestPermissions();
@@ -139,8 +137,13 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
         throw new Error("Camera permission not granted. Please allow camera access.");
       }
 
-      // ✅ Important: allow native camera view to show behind WebView/dialog
+      // ✅ Make WebView transparent so camera view can show behind dialog
       await applyNativeOverlay();
+
+      // ✅ ROBUST: ensure Google barcode scanner module is installed (Android only)
+      if (isAndroid) {
+        await ensureGoogleBarcodeModule(BarcodeScanner);
+      }
 
       const result = await BarcodeScanner.scan();
 
@@ -165,10 +168,59 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
         await restoreNativeOverlay();
       } catch (_) {}
 
+      const msg = String(e?.message || "");
+
+      // ✅ friendlier message for the exact issue you showed
+      const pretty =
+        msg.includes("Google Barcode Scanner Module is not available") ||
+        msg.includes("installGoogleBarcodeScannerModule") ||
+        msg.toLowerCase().includes("barcode scanner module")
+          ? "Google’s Barcode Scanner module isn’t available on this device (Play Services/Play Store missing, disabled, outdated, or blocked by policy). Update/enable Google Play Services & Play Store, then tap Retry."
+          : msg || "Native scanner failed.";
+
       safeSetState(() => {
-        setError(e?.message || "Native scanner failed.");
+        setError(pretty);
         setScanning(false);
       });
+    }
+  };
+
+  // ✅ helper: check availability + install module (Android)
+  const ensureGoogleBarcodeModule = async (BarcodeScannerApi) => {
+    // different plugin versions expose slightly different method names
+    const isAvailFn =
+      BarcodeScannerApi.isGoogleBarcodeScannerModuleAvailable ||
+      BarcodeScannerApi.isGoogleBarcodeScannerModuleAvailable?.bind?.(BarcodeScannerApi);
+
+    const installFn =
+      BarcodeScannerApi.installGoogleBarcodeScannerModule ||
+      BarcodeScannerApi.installGoogleBarcodeScannerModule?.bind?.(BarcodeScannerApi);
+
+    // if plugin version doesn’t support these methods, just return (scan may still work)
+    if (!isAvailFn || !installFn) return;
+
+    let avail;
+    try {
+      avail = await isAvailFn();
+    } catch (_) {
+      // if availability check fails, try install once anyway
+      try {
+        await installFn();
+      } catch (e) {
+        throw e;
+      }
+      return;
+    }
+
+    const ok =
+      avail === true ||
+      avail?.available === true ||
+      avail?.isAvailable === true ||
+      avail?.value === true;
+
+    if (!ok) {
+      // try to install; this will fail on devices without Play Services/Store
+      await installFn();
     }
   };
 
@@ -231,6 +283,12 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
     }
   };
 
+  const onRetry = () => {
+    // keep existing behavior: native retries native, web retries web
+    if (isNative) startNativeScan();
+    else startWebScan();
+  };
+
   return (
     <Dialog
       open={open}
@@ -255,7 +313,6 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
           justifyContent: "space-between",
           alignItems: "center",
           pb: 1,
-          // ✅ Native: keep title readable on camera
           backgroundColor: isNative ? "rgba(0,0,0,0.35)" : "transparent",
           color: isNative ? "#fff" : "inherit",
         }}
@@ -263,14 +320,17 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
         <Typography variant="h6" component="div">
           Scan Freight Order Barcode
         </Typography>
-        <IconButton onClick={handleClose} size="small" sx={{ color: isNative ? "#fff" : "inherit" }}>
+        <IconButton
+          onClick={handleClose}
+          size="small"
+          sx={{ color: isNative ? "#fff" : "inherit" }}
+        >
           <CloseIcon />
         </IconButton>
       </DialogTitle>
 
       <DialogContent
         sx={{
-          // ✅ Native: keep content transparent so camera visible
           backgroundColor: isNative ? "transparent" : "inherit",
           pt: 1,
         }}
@@ -294,7 +354,7 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
                 {error}
               </Typography>
 
-              <Button variant="contained" onClick={() => (isNative ? startNativeScan() : startWebScan())}>
+              <Button variant="contained" onClick={onRetry}>
                 Retry
               </Button>
             </Box>
@@ -303,7 +363,12 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
               {!isNative ? (
                 <>
                   <div id={regionIdRef.current} style={{ width: "100%" }} />
-                  <Typography variant="body2" color="text.secondary" align="center" sx={{ mt: 2 }}>
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    align="center"
+                    sx={{ mt: 2 }}
+                  >
                     Position the barcode within the frame
                   </Typography>
                 </>
@@ -325,7 +390,10 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
                   <Typography align="center" sx={{ color: "#fff" }}>
                     Opening native scanner…
                   </Typography>
-                  <Typography align="center" sx={{ fontSize: 12, color: "rgba(255,255,255,0.9)" }}>
+                  <Typography
+                    align="center"
+                    sx={{ fontSize: 12, color: "rgba(255,255,255,0.9)" }}
+                  >
                     If it doesn’t open, tap Retry.
                   </Typography>
                 </Box>
@@ -342,12 +410,16 @@ const BarcodeScanner = ({ open, onClose, onScan }) => {
           backgroundColor: isNative ? "rgba(0,0,0,0.35)" : "transparent",
         }}
       >
-        <Button onClick={handleClose} color="inherit" sx={{ color: isNative ? "#fff" : "inherit" }}>
+        <Button
+          onClick={handleClose}
+          color="inherit"
+          sx={{ color: isNative ? "#fff" : "inherit" }}
+        >
           Cancel
         </Button>
 
         {!scanning && !error ? (
-          <Button variant="contained" onClick={() => (isNative ? startNativeScan() : startWebScan())}>
+          <Button variant="contained" onClick={onRetry}>
             Start
           </Button>
         ) : null}
