@@ -600,11 +600,11 @@ module.exports = cds.service.impl(async function () {
       };
     }
     else {
-      const { FoId, StopId, Latitude, Longitude } = req.data || {};
+      const { FoId, StopId, Latitude, Longitude, Timestamp } = req.data || {};
       if (!FoId || !StopId) return req.reject(400, "FoId and StopId are required");
 
       // Post to OData V2 backend
-      const d = await s4Post("/UnloadingSet", { FoId, StopId, Latitude, Longitude });
+      const d = await s4Post("/UnloadingSet", { FoId, StopId, Latitude, Longitude, Timestamp });
       // Return something useful to UI (even if backend returns minimal)
       return {
         FoId: d?.FoId ?? FoId,
