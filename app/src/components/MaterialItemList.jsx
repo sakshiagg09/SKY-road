@@ -146,7 +146,8 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
   const totalPackages = normalizedItems.length;
 
   const isReturnView = String(stop?.itemsType ?? "").toLowerCase() === "return";
-
+  const canReportReturn =
+  isReturnView && Boolean(stop?.isReturnPickup) && !Boolean(stop?.isLastStop);
   const buildReturnItemsSetUrl = () => {
     const fo = String(stop?.FoId ?? "").trim();
 
@@ -179,10 +180,14 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
 
   const handleConfirmClick = async () => {
     // ✅ Only call API if the items shown are for return
-    if (!isReturnView) {
+    if (!isReturnView && !canReportReturn) {
       onConfirm?.();
       return;
     }
+     if (!isReturnView) {
+    onConfirm?.();
+    return;
+  }
 
     // Use the same resolved keys used for fetching (prefer resolved keys, then row0)
     const rows = Array.isArray(stop?.items) ? stop.items : [];
@@ -270,7 +275,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
         <IconButton
           size="small"
           onClick={handleConfirmClick}
-          disabled={posting}
+          disabled= {posting || (isReturnView && !canReportReturn) }
           sx={{ color: PRIMARY }}
         >
           <CheckIcon sx={{ fontSize: 22 }} />

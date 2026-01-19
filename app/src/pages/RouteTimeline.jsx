@@ -1,5 +1,6 @@
 // app/src/pages/RouteTimeline.jsx
 import React, { useEffect, useMemo, useState } from "react";
+import{ LinearProgress } from "@mui/material";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
@@ -43,6 +44,7 @@ export default function RouteTimeline({
   onAction,
   eventsUrl = "/odata/v4/GTT/eventReporting",
   podCompletedInfo,
+  delayReportedInfo
 }) {
   const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";
@@ -619,6 +621,37 @@ export default function RouteTimeline({
     });
   }, [podCompletedInfo, derivedStops]);
 
+  useEffect(() => {
+  if (!delayReportedInfo) return;
+  const { stopId, ts } = delayReportedInfo;
+  if (!stopId) {
+    console.warn("[RouteTimeline] delayReportedInfo missing stopId");
+    return;
+  }
+
+  const matchingStop = derivedStops.find(
+    (s) => String(s.stopid || "") === String(stopId)
+  );
+
+  setReportedMap((prev) => {
+    if (!matchingStop) return prev;
+
+    const key = getStopKey(matchingStop);
+    const delayAt = Number.isFinite(Number(ts)) ? Number(ts) : Date.now();
+
+    const next = {
+      ...prev,
+      [key]: {
+        ...(prev[key] || {}),
+        delay: true,
+        delayAt,
+      },
+    };
+    return next;
+  });
+}, [delayReportedInfo, derivedStops]);
+
+
   // progress
   const completedCount = useMemo(
     () =>
@@ -866,7 +899,7 @@ export default function RouteTimeline({
 
   // ✅ Return Items (view-only)
   const fetchReturnItemsForStop = async (stop) => {
-    setItemsStop({ ...stop, FoId, items: [], itemsType: "return" });
+    setItemsStop({ ...stop, FoId, items: [], itemsType: "return",isReturnPickup: Boolean(stop?.hasReturnLoad), isLastStop: isLastStop(stop), });
     setShowItems(true);
     setItemsLoading(true);
 
@@ -1037,9 +1070,15 @@ export default function RouteTimeline({
       />
     );
   }
+  const isPosting = Object.values(sending).some(Boolean);
 
   return (
     <div>
+      {isPosting && (
+      <div className="w-full px-4 pt-2">
+        <LinearProgress />
+      </div>
+    )}
       <div className="flex items-center justify-between mb-2">
         <p className="text-sm font-semibold" style={{ color: TEXT_PRIMARY }}>
           Route timeline
@@ -1060,8 +1099,12 @@ export default function RouteTimeline({
           const seq = allowedSequenceForStop(stop);
 
           //       const isReturnStop = Boolean(stop.hasReturnLoad || stop.hasReturnUnload);
+          const isFirstStop = String(stop.stopseqpos || "").toUpperCase().trim() === "F";
+          const returnOnly = !isFirstStop && Boolean(stop.hasReturnUnload) && !stop.hasReturnLoad;
 
-          const menuOptions = [{ key: "items", label: "Items", Icon: Inventory2OutlinedIcon }];
+          const menuOptions = returnOnly
+            ? [{ key: "return", label: "Return Items", Icon: ReplayRoundedIcon }]
+            : [{ key: "items", label: "Items", Icon: Inventory2OutlinedIcon }];
           if (seq.includes("arrival") && !reported.arrival)
             menuOptions.push({ key: "arrival", label: "Arrival", Icon: EventAvailableIcon });
 
@@ -1079,7 +1122,7 @@ export default function RouteTimeline({
               Icon: AssignmentTurnedInIcon,
             });
           // Return viewer action only if return exists
-          if (stop.hasReturnLoad && !reported.return)
+          if (!returnOnly && (stop.hasReturnLoad || stop.hasReturnUnload) && !reported.return)
             menuOptions.push({
               key: "return",
               label: "Return Items",
@@ -1189,15 +1232,15 @@ export default function RouteTimeline({
 
                   {/* Materials + Return (always show return when present) */}
                   <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13, fontWeight: 700 }}>
-                    {load > 0 ? (
-                      <span style={{ marginRight: 10 }}>Pick up Packages : {load}</span>
-                    ) : unload > 0 ? (
-                      <span>
-                        Deliver Packages : {unload}
-                      </span>
-                    ) : (
-                      <div></div>
-                    )}
+                    {!returnOnly ? (
+                      load > 0 ? (
+                        <span style={{ marginRight: 10 }}>Pick up Packages : {load}</span>
+                      ) : unload > 0 ? (
+                        <span>Deliver Packages : {unload}</span>
+                      ) : (
+                        <div></div>
+                      )
+                    ) : null}
 
                     {(returnLoadQty > 0 || returnUnloadQty > 0) && (
                       <div style={{ marginTop: 4, fontWeight: 700 }}>
@@ -1381,11 +1424,13 @@ export default function RouteTimeline({
                   // strict stop gating only for events; items/return always enabled
                   const allowedStop = idx === nextPendingIndex;
 
+                  const returnEnabled = returnOnly ? true : Boolean(reportedForStop.pod);
+
                   const enabled =
                     opt.key === "items"
                       ? true
                       : opt.key === "return"
-                        ? Boolean(reportedForStop.pod)
+                        ? returnEnabled
                         : allowedStop && priorAllReported;
 
                   return (

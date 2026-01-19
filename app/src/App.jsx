@@ -23,6 +23,8 @@ export default function App() {
   const BAR_HEIGHT = 64;
   const contentPaddingBottom = BAR_HEIGHT + 70;
 
+  const [delayReportedInfo, setDelayReportedInfo] = useState(null);
+
   useEffect(() => {
     console.log("AUTH: App mounted");
 
@@ -245,6 +247,7 @@ const openFullRouteInMaps = useCallback(() => {
         <ShipmentDetailsPage
           selectedShipment={selectedShipment}
           nextStop={nextStop}   // ✅ ADD THIS
+          delayReportedInfo={delayReportedInfo}
           onAction={(action, payload) => {
             if (action === "nextStop") setNextStop(payload?.stop || null);
             console.log("Timeline action:", action, payload);
@@ -317,6 +320,7 @@ const openFullRouteInMaps = useCallback(() => {
         open={reportOpen}
         mode={reportMode}
         onClose={handleCloseReport}
+        onReported={(info) => setDelayReportedInfo(info)}
       />
     </div>
   );

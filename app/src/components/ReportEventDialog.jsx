@@ -32,6 +32,7 @@ export default function ReportEventDialog({
   selectedShipment = null,
   open: controlledOpen,
   onClose: controlledOnClose,
+  onReported,
 }) {
   // Support both shapes: trackingDetails row OR { raw: row }
   const raw = selectedShipment?.raw ?? selectedShipment ?? {};
@@ -51,6 +52,17 @@ export default function ReportEventDialog({
   }, [controlledOpen]);
 
   const isOpen = typeof controlledOpen === "boolean" ? controlledOpen : open;
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    console.log("[DelayDialog] OPENED", {
+      FoId,
+      hasRaw: !!raw,
+      StopsType: typeof raw?.Stops,
+      FinalInfoType: typeof raw?.FinalInfo,
+    });
+  }, [isOpen, FoId, raw]);
 
   const handleOpen = () => setOpen(true);
 
@@ -121,8 +133,16 @@ export default function ReportEventDialog({
     return ev.includes("DEPART"); // DEPARTURE/DEPT etc.
   };
 
+  // ✅ NEW: do NOT show delay option for the first stop
+  // - exclude index 0
+  // - exclude any stopseqpos === "F" (safety)
   const upcomingStops = useMemo(() => {
-    return (stopsArr || []).filter((s) => !isStopDeparted(s));
+    return (stopsArr || []).filter((s, idx) => {
+      if (idx === 0) return false; // ✅ remove first stop
+      const seq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
+      if (seq === "F") return false; // ✅ safety
+      return !isStopDeparted(s);
+    });
   }, [stopsArr, finalInfoArr]);
 
   const getStopLabel = (stop, idx) => {
@@ -135,7 +155,6 @@ export default function ReportEventDialog({
       stop.locid ||
       "";
 
-    // Optional: show seqPos as well
     const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "")
       .trim()
       .toUpperCase();
@@ -155,14 +174,42 @@ export default function ReportEventDialog({
 
   // initialise selected stop whenever shipment / stops change
   useEffect(() => {
+    console.log("[DelayDialog] upcomingStops count:", upcomingStops.length);
+
     if (upcomingStops.length > 0) {
       const first = upcomingStops[0];
-      setSelectedStop(getStopValue(first, 0));
+      const val = getStopValue(first, 0);
+
+      console.log("[DelayDialog] Auto-selected first stop:", {
+        value: val,
+        label: getStopLabel(first, 0),
+        locid: first?.locid ?? first?.locId,
+        seq: first?.stopseqpos ?? first?.stopSeqPos,
+      });
+
+      setSelectedStop(val);
     } else {
+      console.log("[DelayDialog] No upcoming stops -> selectedStop cleared");
       setSelectedStop("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upcomingStops]);
+
+  const getCurrentLatLng = () => {
+  const rawLoc = localStorage.getItem("sky_last_loc");
+  if (!rawLoc) return null;
+
+  try {
+    const p = JSON.parse(rawLoc);
+    const lat = Number(p?.Latitude);
+    const lng = Number(p?.Longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat, lng };
+  } catch {
+    return null;
+  }
+};
+
 
   // ---------------- COORD + STOPID RESOLUTION ----------------
 
@@ -184,17 +231,55 @@ export default function ReportEventDialog({
     const lat = Number(st?.latitude ?? st?.Latitude ?? null);
     const lng = Number(st?.longitude ?? st?.Longitude ?? null);
 
-    // 2) StopId from FinalInfo by locid+seq.
-    // If multiple matches exist (e.g., same locid repeated), use first match.
-    const fi = (finalInfoArr || []).find((x) => {
-      const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
-      const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "")
-        .trim()
-        .toUpperCase();
-      return fLoc === locid && fSeq === seq;
-    });
+    // 2) StopId from FinalInfo.
+    // ✅ CRITICAL: RouteTimeline uses PKG rows for "I" stops.
+    // So here we must resolve StopId the same way, otherwise Delay won't match timeline stopid.
+    let fi = null;
+
+    if (seq === "I") {
+      // Prefer itemcat === "PKG"
+      fi = (finalInfoArr || []).find((x) => {
+        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+        const itemCat = String(x?.itemcat ?? x?.item_cat ?? x?.itemCat ?? "")
+          .trim()
+          .toUpperCase();
+        return fLoc === locid && fSeq === "I" && itemCat === "PKG";
+      });
+
+      // Fallback: any match by locid+seq
+      if (!fi) {
+        fi = (finalInfoArr || []).find((x) => {
+          const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+          const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+          return fLoc === locid && fSeq === "I";
+        });
+      }
+    } else {
+      // Non-I stops: same as before
+      fi = (finalInfoArr || []).find((x) => {
+        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "")
+          .trim()
+          .toUpperCase();
+        return fLoc === locid && fSeq === seq;
+      });
+    }
 
     const stopId = String(fi?.stopid ?? fi?.stopId ?? "").trim();
+    const itemCatResolved = String(fi?.itemcat ?? fi?.item_cat ?? fi?.itemCat ?? "")
+      .trim()
+      .toUpperCase();
+
+    console.log("[DelayDialog] Resolving StopId", {
+      selectedValue,
+      locid,
+      seq,
+      resolvedStopId: stopId,
+      resolvedItemCat: itemCatResolved,
+      latitude: lat,
+      longitude: lng,
+    });
 
     return {
       StopId: stopId,
@@ -275,23 +360,22 @@ export default function ReportEventDialog({
 
   // ---------------- HELPERS ----------------
 
-
   const toS4TimestampUTC = (val) => {
-  if (!val) return null;
-  const d = new Date(val);
-  if (Number.isNaN(d.getTime())) return null;
+    if (!val) return null;
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) return null;
 
-  const pad = (n) => String(n).padStart(2, "0");
+    const pad = (n) => String(n).padStart(2, "0");
 
-  return (
-    d.getUTCFullYear() +
-    pad(d.getUTCMonth() + 1) +
-    pad(d.getUTCDate()) +
-    pad(d.getUTCHours()) +
-    pad(d.getUTCMinutes()) +
-    pad(d.getUTCSeconds())
-  );
-};
+    return (
+      d.getUTCFullYear() +
+      pad(d.getUTCMonth() + 1) +
+      pad(d.getUTCDate()) +
+      pad(d.getUTCHours()) +
+      pad(d.getUTCMinutes()) +
+      pad(d.getUTCSeconds())
+    );
+  };
 
   // ---------------- PAYLOAD ----------------
 
@@ -299,32 +383,52 @@ export default function ReportEventDialog({
     const reasonObj = reasonOptions.find((r) => r.EvtReasonCode === reasonCode) || {};
     const { StopId, Latitude, Longitude } = resolveStopIdAndCoords(selectedStop);
 
+     const current = getCurrentLatLng();
+    const useLat = current?.lat ?? Latitude;
+    const useLng = current?.lng ?? Longitude;
+
     return {
       FoId,
       StopId: StopId || "", // resolved from FinalInfo
       ETA: toS4TimestampUTC(estimatedTime),
-      RefEvent: "Arrival", // referencedPlannedEvent || "",
+      RefEvent: "Arrival",
       EventCode: reasonObj.EvtReasonCode || "DELAYED",
-      Latitude: String(Latitude),
-      Longitude: String(Longitude),
-      Timestamp: toS4TimestampUTC(new Date()),
 
+      // keep as string (existing behavior), but avoid "null"/"undefined"
+      Latitude: useLat == null ? "" : String(useLat),
+      Longitude: useLng == null ? "" : String(useLng),
+
+      Timestamp: toS4TimestampUTC(new Date()),
     };
   };
 
   const handleSubmit = async () => {
     const payload = buildPayload();
-    console.log("Delay event payload:", payload);
+    console.log("[DelayDialog] FINAL payload => /delayEvents:", JSON.stringify(payload, null, 2));
 
     if (!payload.FoId) return alert("Missing FoId");
     if (!payload.StopId) return alert("Missing StopId (could not resolve from FinalInfo)");
-    if (payload.Latitude == null || payload.Longitude == null) {
-      console.warn("Latitude/Longitude missing for selected stop:", selectedStop);
+    if (!payload.Latitude || !payload.Longitude) {
+      console.warn("[DelayDialog] Latitude/Longitude missing for selected stop:", selectedStop);
     }
 
     try {
       const result = await apiPost("/odata/v4/GTT/delayEvents", payload);
-      console.log("Delay event posted OK:", result);
+      console.log("[DelayDialog] Backend response from /delayEvents:", JSON.stringify(result, null, 2));
+
+      const stopId = (result && result.StopId) || payload.StopId;
+
+      if (typeof onReported === "function") {
+        const evt = {
+          event: "Delay",
+          stopId,
+          foId: payload.FoId,
+          ts: Date.now(),
+        };
+        console.log("[DelayDialog] onReported payload:", evt);
+        onReported(evt);
+      }
+
       alert("Unplanned delay reported successfully.");
       closeDialog();
     } catch (err) {
@@ -518,14 +622,17 @@ export default function ReportEventDialog({
                 />
               </Box>
 
-              {/* Stop: only NOT departed stops */}
+              {/* Stop: only NOT departed stops (excluding first stop) */}
               <Box sx={{ flex: 1 }}>
                 <FormControl fullWidth sx={modernInputStyle} margin="dense">
                   <InputLabel>Stop</InputLabel>
                   <Select
                     value={selectedStop}
                     label="Stop"
-                    onChange={(e) => setSelectedStop(e.target.value)}
+                    onChange={(e) => {
+                      console.log("[DelayDialog] Stop selected (raw value):", e.target.value);
+                      setSelectedStop(e.target.value);
+                    }}
                     disabled={upcomingStops.length === 0}
                   >
                     {upcomingStops.length === 0 && (

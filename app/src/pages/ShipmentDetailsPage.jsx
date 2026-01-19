@@ -12,7 +12,7 @@ import PodFlowDialog from "../components/PodFlowDialog";
  *  - selectedShipment
  *  - onAction?: (action: string, payload: any) => void
  */
-export default function ShipmentDetailsPage({ selectedShipment, onAction }) {
+export default function ShipmentDetailsPage({ selectedShipment, onAction,delayReportedInfo  }) {
   const BG = "#EFF0F3";
   const PRIMARY = "#1976D2";
   const TEXT_PRIMARY = "#071E54";
@@ -442,6 +442,7 @@ const resolveStopName = (st) => {
           selectedShipment={selectedShipment}
           onAction={handleChildAction}
           podCompletedInfo={podCompletedInfo}
+          delayReportedInfo={delayReportedInfo}
         />
       </div>
 
