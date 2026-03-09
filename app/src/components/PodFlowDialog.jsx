@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+// src/dialogs/PodFlowDialog.jsx
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,22 +12,18 @@ import {
   List,
   ListItemButton,
   TextField,
-  Chip,
+  InputAdornment,
 } from "@mui/material";
-
+import { apiGet, apiPost } from "../auth/api";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
-import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
-import UploadFileIcon from "@mui/icons-material/UploadFile";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 
-// ✅ your existing items component (already used elsewhere)
-import MaterialItemList from "../components/MaterialItemList";
+import SignatureAttachmentsSection from "./SignatureAttachmentsSection";
 
-// COLORS (aligned with ShipmentDetails / ReportEvent)
+// COLORS
 const PRIMARY = "#1976D2";
 const PRIMARY_DARK = "#0D47A1";
 const TEXT_PRIMARY = "#071E54";
@@ -34,143 +31,281 @@ const TEXT_SECONDARY = "#6B6C6E";
 const BG = "#EFF0F3";
 const CARD = "#FFFFFF";
 
-// Hard-coded items (like SKY 1.0) — replace later with OData result
-const INITIAL_ITEMS = [
-  {
-    // for now id acts as item_id fallback
-    id: "0000000020",
-    description: "packing material",
-    category: "PKG",
-    productId: "PACK_TRUCK",
-    qty: 1,
-    uom: "EA",
-    // optional per-item stop override if needed
-    stop_id: "0000000050",
-  },
-  {
-    id: "0000000060",
-    description: "Lecithin",
-    category: "PRD",
-    productId: "1000000001",
-    qty: 1,
-    uom: "EA",
-    stop_id: "0000000040",
-  },
-];
-
 export default function PodFlowDialog({
   open,
   stop,
   foId,
   onClose,
   onSubmit,
-  // 🔁 set to your real OData endpoint
+  // POD OData endpoint
   eventsUrl = "/odata/v4/GTT/updatesPOD",
+  // items OData endpoint
+  itemsUrl = "/odata/v4/GTT/shipmentItems",
+  // attachments proxy endpoint (CAP -> /AttachmentsSet in S/4)
+  attachmentsUrl = "/odata/v4/GTT/attachmentUpload",
 }) {
-  // step: question -> items (when discrepancy) -> editItem -> signature
-  const [step, setStep] = useState("question"); // 'question' | 'items' | 'editItem' | 'signature'
-  const [items, setItems] = useState(INITIAL_ITEMS);
-  const [baselineItems, setBaselineItems] = useState(INITIAL_ITEMS); // used to detect qty changes
-  const [editingItem, setEditingItem] = useState(null);
-  const [signature, setSignature] = useState(""); // placeholder string
-  const [attachments, setAttachments] = useState([]); // [{name, size}]
+  // step: question -> items (when discrepancy) -> signature
+  const [step, setStep] = useState("question"); // 'question' | 'items' | 'signature'
+  const [items, setItems] = useState([]);
+  const [baselineItems, setBaselineItems] = useState([]);
+
+  // signature is a dataURL (data:image/jpeg;base64,...)
+  const [signature, setSignature] = useState("");
+
+  // real File[] for attachments
+  const [attachments, setAttachments] = useState([]);
+
   const [hasDiscrepancy, setHasDiscrepancy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [itemsLoading, setItemsLoading] = useState(false);
 
-  // reset when dialog closes
-  React.useEffect(() => {
-    if (!open) {
-      setStep("question");
-      setItems(INITIAL_ITEMS);
-      setBaselineItems(INITIAL_ITEMS);
-      setEditingItem(null);
-      setSignature("");
-      setAttachments([]);
-      setHasDiscrepancy(false);
-      setSubmitting(false);
-    }
-  }, [open]);
-
-  // If stop is a WRAPPER (has FinalInfo), parse stops from it.
-  // If stop is already a STOP object, this will just end up empty.
-  const parsedStops = React.useMemo(() => {
+  // ----------------- stop / FoId helpers -----------------
+  const parsedStops = useMemo(() => {
     const raw = stop?.FinalInfo;
     if (!raw) return [];
-
     try {
-      // raw may be a JSON string or an array already
       const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
       return Array.isArray(arr) ? arr : [];
     } catch {
-      // Some backends double-encode JSON; try a second pass
       try {
         if (typeof raw === "string") {
           const cleaned = raw.trim();
-          const unquoted = (cleaned.startsWith('"') && cleaned.endsWith('"'))
-            ? cleaned.slice(1, -1).replace(/\\"/g, '"')
-            : cleaned;
+          const unquoted =
+            cleaned.startsWith('"') && cleaned.endsWith('"')
+              ? cleaned.slice(1, -1).replace(/\\"/g, '"')
+              : cleaned;
           const arr2 = JSON.parse(unquoted);
           return Array.isArray(arr2) ? arr2 : [];
         }
       } catch {
-        // ignore
+        return [];
       }
       return [];
     }
   }, [stop]);
 
-  // Choose a good stop from FinalInfo for POD/no-discrepancy:
-  // Prefer the LAST customer stop (often the POD stop), else last stop overall.
-  const stopFromFinalInfo = React.useMemo(() => {
+  const stopFromFinalInfo = useMemo(() => {
     if (!parsedStops.length) return null;
     const rev = [...parsedStops].reverse();
     const lastCustomer = rev.find(
-      (s) => (s?.typeLoc ?? "").toString().toUpperCase().includes("CUST") || (s?.typeLoc ?? "").toString().toUpperCase() === "CUSTOMER"
+      (s) =>
+        (s?.typeLoc ?? "").toString().toUpperCase().includes("CUST") ||
+        (s?.typeLoc ?? "").toString().toUpperCase() === "CUSTOMER"
     );
     return lastCustomer || parsedStops[parsedStops.length - 1];
   }, [parsedStops]);
 
-  // Choose the effective stop:
-  // 1) if `stop` already looks like a stop (has stopid/locid/etc) => use it
-  // 2) else use derived stop from FinalInfo
   const effectiveStop =
-    (stop?.stopid || stop?.locid || stop?.stopId || stop?.locId || stop?.StopId || stop?.LocId)
+    stop?.stopid ||
+    stop?.locid ||
+    stop?.stopId ||
+    stop?.locId ||
+    stop?.StopId ||
+    stop?.LocId
       ? stop
       : stopFromFinalInfo;
 
-  // FoId can come from prop OR wrapper
   const effectiveFoId = String(foId || stop?.FoId || "");
 
-  // stop title based on effectiveStop
   const stopTitle =
-    effectiveStop?.name1 || effectiveStop?.locid || effectiveStop?.stopid || "Selected Stop";
-
-  // IMPORTANT:
-  // Your backend example for StopId uses the numeric-looking location id (e.g. "0000000001"),
-  // which matches `locid` on your FinalInfo stops. So we prefer locid first.
-  const stopIdValue = String(
+    effectiveStop?.name1 ||
     effectiveStop?.locid ||
-    effectiveStop?.locId ||
-    effectiveStop?.LOCID ||
     effectiveStop?.stopid ||
-    effectiveStop?.stopId ||
-    effectiveStop?.STOPID ||
-    effectiveStop?.LocId ||
-    effectiveStop?.StopId ||
-    ""
+    "Selected Stop";
+
+  // ✅ IMPORTANT: StopId and Location must be different
+  const stopIdValue = String(
+    stop?.stopid ||
+      stop?.stopId ||
+      stop?.StopId ||
+      effectiveStop?.stopid ||
+      effectiveStop?.stopId ||
+      effectiveStop?.StopId ||
+      stop?.STOPID ||
+      effectiveStop?.STOPID ||
+      ""
   );
 
-  // -----------------------------
-  // Payload builders (exact shapes)
-  // -----------------------------
+  const locationValue = String(
+    stop?.locid ||
+      stop?.locId ||
+      stop?.Location ||
+      effectiveStop?.locid ||
+      effectiveStop?.locId ||
+      ""
+  );
+  const stopLat = Number(
+  stop?.latitude ??
+  stop?.Latitude ??
+  effectiveStop?.latitude ??
+  effectiveStop?.Latitude ??
+  null
+);
+
+const stopLng = Number(
+  stop?.longitude ??
+  stop?.Longitude ??
+  effectiveStop?.longitude ??
+  effectiveStop?.Longitude ??
+  null
+);
+
+const latitudeValue = Number.isFinite(stopLat) ? stopLat : null;
+const longitudeValue = Number.isFinite(stopLng) ? stopLng : null;
+  // ----------------- helpers: parse JSON-string arrays -----------------
+  const safeJsonArray = (v) => {
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s || s === "0") return [];
+      try {
+        const parsed = JSON.parse(s);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+   const toS4TimestampUTC = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    d.getUTCFullYear() +
+    pad(d.getUTCMonth() + 1) +
+    pad(d.getUTCDate()) +
+    pad(d.getUTCHours()) +
+    pad(d.getUTCMinutes()) +
+    pad(d.getUTCSeconds())
+  );
+};
+
+  const extractItemListFromShipmentItemsRow = (row0) => {
+    const loaded = safeJsonArray(row0?.LoadedItems);
+    if (loaded.length) return loaded;
+    const unloaded = safeJsonArray(row0?.UnloadedItems);
+    if (unloaded.length) return unloaded;
+    const retLoaded = safeJsonArray(row0?.ReturnLoaded);
+    if (retLoaded.length) return retLoaded;
+    const retUnloaded = safeJsonArray(row0?.ReturnUnloaded);
+    if (retUnloaded.length) return retUnloaded;
+    return [];
+  };
+
+  // ----------------- normalise item object -----------------
+  const normaliseItem = (raw, index) => {
+    const qty = Number(raw.quantity ?? raw.Quantity ?? raw.Qty ?? 0) || 0;
+
+    const itemId = String(raw.itemId ?? raw.ItemId ?? "").trim();
+    const packageId = String(raw.packageid ?? raw.PackageId ?? "").trim();
+
+    const loc = String(raw.location ?? raw.Location ?? locationValue ?? "").trim();
+    const stp = String(raw.stopId ?? raw.StopId ?? stopIdValue ?? "").trim();
+
+    const uom = raw.quantityuom || raw.QuantityUom || "EA";
+
+    return {
+      id: packageId || itemId || `${index}`,
+      itemId,
+      FoId: raw.foId || raw.FoId || effectiveFoId,
+      Location: loc,
+      PackageId: packageId,
+      ItemDescr: raw.itemDescr || raw.ItemDescr || "",
+      ItemCat: raw.itemCat || raw.ItemCat || "",
+      StopId: stp,
+      QuantityUom: uom,
+      GrossWeight: raw.grossweight ?? raw.GrossWeight ?? null,
+      GrossWeightUom: raw.grossweightuom || raw.GrossWeightUom || "",
+
+      // UI fields
+      description: raw.itemDescr || raw.ItemDescr || "",
+      category: raw.itemCat || raw.ItemCat || "",
+      qty,
+      uom,
+    };
+  };
+
+  // ----------------- load items -----------------
+  useEffect(() => {
+    const resetState = () => {
+      setStep("question");
+      setItems([]);
+      setBaselineItems([]);
+      setSignature("");
+      setAttachments([]);
+      setHasDiscrepancy(false);
+      setSubmitting(false);
+      setItemsLoading(false);
+    };
+
+    if (!open) {
+      resetState();
+      return;
+    }
+
+    const loadItems = async () => {
+      try {
+        setItemsLoading(true);
+
+        // If items already on stop (from timeline), reuse but parse wrapper row
+        if (Array.isArray(stop?.items) && stop.items.length > 0) {
+          const row0 = stop.items[0] || {};
+          const list = extractItemListFromShipmentItemsRow(row0);
+          const norm = list.map((it, idx) => normaliseItem(it, idx));
+          setItems(norm);
+          setBaselineItems(norm);
+          return;
+        }
+
+        if (!effectiveFoId || !stopIdValue || !locationValue) {
+          setItems([]);
+          setBaselineItems([]);
+          return;
+        }
+
+        const url =
+          `${itemsUrl}` +
+          `?$filter=FoId eq '${effectiveFoId}'` +
+          ` and Location eq '${locationValue}'` +
+          ` and StopId eq '${stopIdValue}'`;
+
+        const json = await apiGet(url);
+        const rows = Array.isArray(json?.value) ? json.value : [];
+        const row0 = rows[0] || {};
+        const list = extractItemListFromShipmentItemsRow(row0);
+
+        const norm = list.map((it, idx) => normaliseItem(it, idx));
+        setItems(norm);
+        setBaselineItems(norm);
+      } catch (e) {
+        console.warn("Failed to load shipmentItems", e);
+        setItems([]);
+        setBaselineItems([]);
+      } finally {
+        setItemsLoading(false);
+      }
+    };
+
+    loadItems();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, effectiveFoId, stopIdValue, locationValue]);
+
+  // ----------------------------- Payload builders -----------------------------
   const buildNoDiscrepancyPayload = () => ({
     FoId: effectiveFoId,
     Discrepency: "",
     StopId: stopIdValue,
+    Latitude: String(latitudeValue),
+    Longitude: String(longitudeValue),
+    Timestamp: toS4TimestampUTC(new Date()),
   });
 
   const buildDiscrepancyPayload = () => {
-    // Prefer sending ONLY changed lines (discrepancy lines)
     const changed = (items || []).filter((it) => {
       const base = (baselineItems || []).find((b) => String(b.id) === String(it.id));
       if (!base) return true;
@@ -178,103 +313,173 @@ export default function PodFlowDialog({
     });
 
     if (changed.length === 0) {
-      // if they said discrepancy but didn’t change anything, you can either:
-      // 1) send all items, or 2) block submit
-      // Here we block submit to keep payload meaningful.
       throw new Error("You marked discrepancy but no item quantity was changed.");
     }
 
     const mapped = changed.map((it) => ({
-      item_id: String(it.item_id || it.itemId || it.id || ""),
-      stop_id: String(it.stop_id || it.stopId || stopIdValue || ""),
-      ActQty: String(Number(it.ActQty ?? it.qty ?? 0)),
-      ActQtyUom: String(it.ActQtyUom || it.uom || "EA"),
+      item_id: String(it.itemId || it.PackageId || it.id || ""),
+      stop_id: String(stopIdValue),
+      ActQty: String(Number(it.qty)),
+      ActQtyUom: String(it.uom || it.QuantityUom || "EA"),
     }));
 
     return {
       FoId: effectiveFoId,
       Discrepency: "X",
       Items: JSON.stringify(mapped),
+      StopId: stopIdValue,
+      Latitude: String(latitudeValue),
+      Longitude: String(longitudeValue),
+      Timestamp: toS4TimestampUTC(new Date()),
     };
   };
 
   const postToOData = async (payload) => {
-    const res = await fetch(eventsUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+  return await apiPost(eventsUrl, payload);
+};
+
+  // ----------------------------- Attachments + Signature upload -----------------------------
+  const readFileAsBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== "string") {
+          resolve("");
+          return;
+        }
+        const base64 = result.split(",")[1] || "";
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`OData POST failed (${res.status}). ${text}`);
-    }
-    return true;
+
+  const uploadSingleAttachment = async (file) => {
+  if (!attachmentsUrl || !effectiveFoId) return;
+
+  const base64 = await readFileAsBase64(file);
+  if (!base64) return;
+
+  const name = (file.name || "").toLowerCase();
+  const isPdf = file.type === "application/pdf" || name.endsWith(".pdf");
+
+  const ext = (file.name.split(".").pop() || "").toUpperCase();
+  const fileType = isPdf ? "PDF" : (ext || "BIN");
+
+  const payload = {
+    FoId: effectiveFoId,
+    FileType: fileType,
+    PDFBase64: base64,
   };
 
-  // -----------------------------
-  // Navigation / step handlers
-  // -----------------------------
+  await apiPost(attachmentsUrl, payload);
+};
+
+  const uploadSignatureAttachment = async () => {
+  if (!attachmentsUrl || !effectiveFoId || !signature) return;
+
+  const base64 = signature.split(",")[1] || "";
+  if (!base64) return;
+
+  const payload = {
+    FoId: effectiveFoId,
+    FileType: "JPG",
+    PDFBase64: base64,
+  };
+
+  await apiPost(attachmentsUrl, payload);
+};
+
+  const uploadAllAttachmentsAndSignature = async () => {
+    for (const file of attachments || []) {
+      await uploadSingleAttachment(file);
+    }
+    await uploadSignatureAttachment();
+  };
+
+  // ----------------------------- handlers -----------------------------
+  const closeDialog = () => {
+    if (typeof onClose === "function") onClose();
+  };
+
   const handleNoDiscrepancy = () => {
     setHasDiscrepancy(false);
     setStep("signature");
   };
 
-  // ✅ discrepancy -> navigate to items component
   const handleYesDiscrepancy = () => {
+    if (!items.length) {
+      alert("No items were loaded for this stop. Cannot record discrepancy.");
+      return;
+    }
     setHasDiscrepancy(true);
     setStep("items");
   };
 
-  const handleEditClick = (item) => {
-    setEditingItem(item);
-    setStep("editItem");
+  // ✅ Easy inline qty edit (no +/-)
+  const updateQty = (id, value) => {
+    const n = Number(value);
+    setItems((prev) =>
+      prev.map((it) =>
+        String(it.id) === String(id)
+          ? { ...it, qty: Number.isFinite(n) ? n : 0 }
+          : it
+      )
+    );
   };
 
-  const handleEditSave = () => {
-    if (!editingItem) return;
-    setItems((prev) => prev.map((i) => (String(i.id) === String(editingItem.id) ? editingItem : i)));
-    setStep("items"); // go back to items view
-  };
+ const handleFileAdd = (event) => {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
 
-  const handleEditChange = (field, value) => {
-    setEditingItem((prev) => ({ ...prev, [field]: value }));
-  };
+  const ts = toS4TimestampUTC(new Date()); // UTC SAP format
+  const renamed = files.map((f) => {
+    const ext = f.name.split(".").pop();
+    const name = `${effectiveFoId}_${ts}.${ext}`;
+    return new File([f], name, { type: f.type });
+  });
 
-  const closeDialog = () => {
-    if (typeof onClose === "function") onClose();
-  };
-
-  const handleFileAdd = (event) => {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) return;
-    setAttachments((prev) => [...prev, ...files.map((f) => ({ name: f.name, size: f.size }))]);
-  };
+  setAttachments((prev) => [...prev, ...renamed]);
+};
 
   const handleRemoveAttachment = (idx) => {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  // ✅ Single submit that posts correct payload based on discrepancy flag
   const handleSubmitPod = async () => {
     try {
-      const payload = hasDiscrepancy ? buildDiscrepancyPayload() : buildNoDiscrepancyPayload();
-
-      // optional: notify parent with the exact payload you are sending
-      if (typeof onSubmit === "function") onSubmit(payload);
+      const payload = hasDiscrepancy
+        ? buildDiscrepancyPayload()
+        : buildNoDiscrepancyPayload();
 
       setSubmitting(true);
       if (!payload.FoId) throw new Error("Missing FoId.");
+      if (!payload.StopId) throw new Error("Missing StopId.");
 
-      await postToOData(payload);
+      const podResult = await postToOData(payload);
+
+      if ((attachments && attachments.length > 0) || signature) {
+        await uploadAllAttachmentsAndSignature();
+      }
+
+      if (typeof onSubmit === "function") {
+        onSubmit({
+          payload,
+          response: podResult,
+        });
+      }
+
       closeDialog();
     } catch (e) {
-      alert(e?.message || "Failed to submit POD.");
+      console.error(e);
+      alert(e?.message || "Failed to submit POD / attachments.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // HEADER (common)
+  // -------------- UI helpers --------------
   const renderHeader = (subtitle) => (
     <Box
       sx={{
@@ -296,7 +501,14 @@ export default function PodFlowDialog({
       />
 
       <Box sx={{ position: "relative", zIndex: 1 }}>
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            mb: 2,
+          }}
+        >
           <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
             <HelpOutlineIcon sx={{ color: "#fff", fontSize: 28 }} />
             <Box>
@@ -371,7 +583,15 @@ export default function PodFlowDialog({
     <>
       {renderHeader("Item Discrepancy Check")}
 
-      <DialogContent sx={{ px: 4, py: 4, bgcolor: BG, flex: 1, overflowY: "auto" }}>
+      <DialogContent
+        sx={{
+          px: 4,
+          py: 4,
+          bgcolor: BG,
+          flex: 1,
+          overflowY: "auto",
+        }}
+      >
         <Box
           sx={{
             maxWidth: 420,
@@ -395,12 +615,20 @@ export default function PodFlowDialog({
             {stopTitle}
           </Typography>
 
-          <Typography sx={{ fontSize: 16, fontWeight: 700, color: TEXT_PRIMARY, mb: 2 }}>
+          <Typography
+            sx={{
+              fontSize: 16,
+              fontWeight: 700,
+              color: TEXT_PRIMARY,
+              mb: 2,
+            }}
+          >
             Any missing / damaged material in this shipment leg?
           </Typography>
 
           <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, mb: 3 }}>
-            Choose <strong>Yes</strong> to adjust quantities, or <strong>No</strong> to continue to POD.
+            Choose <strong>Yes</strong> to adjust quantities, or{" "}
+            <strong>No</strong> to continue to POD.
           </Typography>
 
           <Box sx={{ display: "flex", gap: 2, justifyContent: "center" }}>
@@ -430,121 +658,188 @@ export default function PodFlowDialog({
                 bgcolor: PRIMARY,
                 "&:hover": { bgcolor: PRIMARY_DARK },
               }}
+              disabled={itemsLoading}
             >
-              Yes
+              {itemsLoading ? "Loading…" : "Yes"}
             </Button>
           </Box>
         </Box>
       </DialogContent>
 
       <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
-        <Button onClick={closeDialog} sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}>
+        <Button
+          onClick={closeDialog}
+          sx={{
+            textTransform: "none",
+            color: TEXT_SECONDARY,
+            fontWeight: 500,
+          }}
+        >
           Cancel
         </Button>
       </DialogActions>
     </>
   );
 
-  // STEP 2 – ITEMS (Discrepancy path) ✅ uses MaterialItemList
+  // STEP 2 – ITEMS (ONLY list + editable qty field)
   const renderStepItems = () => (
     <>
-      {renderHeader("Items (Discrepancy)")}
+      {renderHeader("Adjust Item Quantities")}
 
-      {/* Uses your existing component; extra props are safe even if it ignores them */}
-      <Box sx={{ flex: 1, bgcolor: BG, overflowY: "auto" }}>
-        <MaterialItemList
-          stop={{ ...(stop || {}), items }}
-          loading={false}
-          // if your MaterialItemList supports these, great; if not, they’ll be ignored safely
-          items={items}
-          onItemsChange={setItems}
-          onBack={() => {
-            setHasDiscrepancy(false);
-            setStep("question");
+      <DialogContent
+        sx={{
+          px: 3,
+          py: 3,
+          bgcolor: BG,
+          flex: 1,
+          overflowY: "auto",
+        }}
+      >
+        <Box
+          sx={{
+            bgcolor: CARD,
+            borderRadius: 3,
+            overflow: "hidden",
+            boxShadow: "0 12px 32px rgba(15,23,42,0.12)",
           }}
-          onConfirm={() => setStep("signature")}
-        />
-
-        {/* If MaterialItemList is view-only, this built-in editor lets you adjust qty */}
-        <Box sx={{ px: 3, pb: 3, pt: 1.5 }}>
-          <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2, mb: 1 }}>
-            Adjust quantities (for payload)
-          </Typography>
-
-          <Box sx={{ bgcolor: CARD, borderRadius: 3, overflow: "hidden", boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
+        >
+          {itemsLoading ? (
+            <Box sx={{ px: 3, py: 2 }}>
+              <Typography
+                sx={{ fontSize: 13, color: TEXT_SECONDARY, fontStyle: "italic" }}
+              >
+                Loading items…
+              </Typography>
+            </Box>
+          ) : items.length === 0 ? (
+            <Box sx={{ px: 3, py: 2 }}>
+              <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY }}>
+                No items found for this stop.
+              </Typography>
+            </Box>
+          ) : (
             <List disablePadding>
               {items.map((item, index) => (
-                <React.Fragment key={item.id}>
+                <React.Fragment
+                  key={`${item.id}_${item.Location}_${item.StopId}_${index}`}
+                >
                   <ListItemButton
                     disableRipple
-                    onClick={() => handleEditClick(item)}
                     sx={{
                       alignItems: "flex-start",
                       flexDirection: "column",
-                      py: 1.5,
+                      py: 1.4,
                       px: 3,
                       "&:hover": { backgroundColor: "#F7F8FC" },
+                      cursor: "default",
                     }}
                   >
-                    <Box sx={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 0.5 }}>
+                    <Box
+                      sx={{
+                        width: "100%",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        gap: 1,
+                        mb: 0.5,
+                      }}
+                    >
                       <Typography
                         sx={{
                           fontSize: 13,
-                          fontWeight: 600,
+                          fontWeight: 700,
                           color: PRIMARY,
-                          textDecoration: "underline",
-                          textUnderlineOffset: "2px",
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
                         }}
+                        title={item.description}
                       >
-                        {item.description}
-                      </Typography>
-                      <Typography sx={{ fontSize: 11, fontWeight: 600, color: TEXT_SECONDARY }}>
-                        {item.productId}
+                        {item.description || "Item"}
                       </Typography>
                     </Box>
 
-                    <Typography sx={{ fontSize: 13, fontWeight: 600, color: TEXT_PRIMARY }}>
-                      {item.category}
-                    </Typography>
-
-                    <Box sx={{ mt: 0.5, display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
-                      <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>
-                        Qty:{" "}
-                        <strong>
-                          {item.qty} {item.uom}
-                        </strong>
+                    {/* ✅ Add Package ID right here (no change to Box layout) */}
+                    {!!item.PackageId && (
+                      <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, mb: 0.25 }}>
+                        Package ID: <strong>{item.PackageId}</strong>
                       </Typography>
+                    )}
 
-                      <Chip
-                        size="small"
-                        label="Edit"
-                        icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
-                        sx={{
-                          fontSize: 11,
-                          bgcolor: "rgba(25,118,210,0.06)",
-                          color: PRIMARY,
-                          "& .MuiChip-icon": { color: PRIMARY },
-                        }}
-                      />
-                    </Box>
+                    {!!item.category && (
+                      <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, mb: 1 }}>
+                        {item.category}
+                      </Typography>
+                    )}
+
+
+                    <TextField
+                      size="small"
+                      type="number"
+                      label="Quantity"
+                      value={Number.isFinite(item.qty) ? item.qty : 0}
+                      onChange={(e) => updateQty(item.id, e.target.value)}
+                      fullWidth
+                      inputProps={{
+                        inputMode: "numeric",
+                        min: 0,
+                        step: 1,
+                        style: { fontWeight: 800, fontSize: 14 },
+                      }}
+                      InputProps={{
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Typography
+                              sx={{
+                                fontSize: 12,
+                                color: TEXT_SECONDARY,
+                                fontWeight: 800,
+                              }}
+                            >
+                              {item.uom}
+                            </Typography>
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        mt: 0.5,
+                        "& .MuiOutlinedInput-root": { borderRadius: 2 },
+                      }}
+                    />
                   </ListItemButton>
 
-                  {index !== items.length - 1 && <Divider sx={{ mx: 3, borderColor: "#E3E6EE" }} />}
+                  {index !== items.length - 1 && (
+                    <Divider sx={{ mx: 3, borderColor: "#E3E6EE" }} />
+                  )}
                 </React.Fragment>
               ))}
             </List>
-          </Box>
+          )}
         </Box>
-      </Box>
+      </DialogContent>
 
-      <DialogActions sx={{ px: 3, py: 2.5, bgcolor: BG, display: "flex", justifyContent: "space-between", flexShrink: 0 }}>
+      <DialogActions
+        sx={{
+          px: 3,
+          py: 2.5,
+          bgcolor: BG,
+          display: "flex",
+          justifyContent: "space-between",
+          flexShrink: 0,
+        }}
+      >
         <Button
           onClick={() => {
             setHasDiscrepancy(false);
             setStep("question");
           }}
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}
+          sx={{
+            textTransform: "none",
+            color: TEXT_SECONDARY,
+            fontWeight: 500,
+          }}
         >
           Back
         </Button>
@@ -567,178 +862,44 @@ export default function PodFlowDialog({
     </>
   );
 
-  // STEP 3 – EDIT ITEM
-  const renderStepEditItem = () => (
-    <>
-      {renderHeader("Edit Item Quantity")}
-
-      <DialogContent sx={{ px: 4, py: 4, bgcolor: BG, flex: 1, overflowY: "auto" }}>
-        <Box sx={{ backgroundColor: CARD, borderRadius: 3, p: 3, boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
-          <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2, mb: 1 }}>
-            Item Description
-          </Typography>
-          <Typography sx={{ fontSize: 15, fontWeight: 600, color: TEXT_PRIMARY, mb: 2 }}>
-            {editingItem?.description}
-          </Typography>
-
-          <Box sx={{ display: "grid", gap: 2, mb: 2 }}>
-            <TextField label="Product ID" value={editingItem?.productId || ""} disabled size="small" fullWidth />
-            <TextField label="Category" value={editingItem?.category || ""} disabled size="small" fullWidth />
-            <TextField
-              label="Quantity"
-              type="number"
-              size="small"
-              fullWidth
-              value={editingItem?.qty ?? ""}
-              onChange={(e) => handleEditChange("qty", Number(e.target.value) || 0)}
-            />
-            <TextField label="UOM" size="small" fullWidth value={editingItem?.uom || ""} disabled />
-          </Box>
-        </Box>
-      </DialogContent>
-
-      <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
-        <Button
-          onClick={() => setStep("items")}
-          startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}
-        >
-          Back
-        </Button>
-        <Button
-          onClick={handleEditSave}
-          variant="contained"
-          endIcon={<CheckIcon />}
-          sx={{ textTransform: "none", fontWeight: 600, borderRadius: 2, bgcolor: PRIMARY, "&:hover": { bgcolor: PRIMARY_DARK } }}
-        >
-          Save Item
-        </Button>
-      </DialogActions>
-    </>
-  );
-
-  // STEP 4 – SIGNATURE & ATTACHMENTS + SUBMIT (posts correct payload)
+  // STEP 3 – SIGNATURE + ATTACHMENTS
   const renderStepSignature = () => (
     <>
       {renderHeader("Capture Proof of Delivery")}
 
-      <DialogContent sx={{ px: 4, py: 4, bgcolor: BG, flex: 1, overflowY: "auto" }}>
-        <Box sx={{ mb: 2.5, display: "flex", alignItems: "center", gap: 1 }}>
-          <Chip
-            label={hasDiscrepancy ? "Discrepancy Reported" : "No Item Discrepancy"}
-            sx={{
-              bgcolor: hasDiscrepancy ? "rgba(245, 158, 11, 0.15)" : "rgba(16, 185, 129, 0.12)",
-              color: hasDiscrepancy ? "#B45309" : "#047857",
-              fontWeight: 600,
-            }}
-          />
-        </Box>
-
-        {/* SIGNATURE CARD */}
-        <Box sx={{ backgroundColor: CARD, borderRadius: 3, p: 3, mb: 3, boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
-          <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2, mb: 1 }}>
-            Signature
-          </Typography>
-
-          <Box
-            sx={{
-              mt: 1,
-              mb: 1.5,
-              borderRadius: 2,
-              border: "1px dashed #CBD2E8",
-              height: 140,
-              bgcolor: "#F8FAFF",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: TEXT_SECONDARY,
-              fontSize: 13,
-            }}
-          >
-            Tap here to capture signature (placeholder)
-          </Box>
-
-          <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5 }}>
-            <Button size="small" onClick={() => setSignature("")} sx={{ textTransform: "none", fontSize: 12, color: TEXT_SECONDARY }}>
-              Clear
-            </Button>
-            <Button
-              size="small"
-              variant="contained"
-              onClick={() => setSignature("signed")}
-              sx={{ textTransform: "none", fontSize: 12, bgcolor: PRIMARY, "&:hover": { bgcolor: PRIMARY_DARK } }}
-            >
-              Save
-            </Button>
-          </Box>
-        </Box>
-
-        {/* ATTACHMENTS CARD */}
-        <Box sx={{ backgroundColor: CARD, borderRadius: 3, p: 3, boxShadow: "0 12px 32px rgba(15,23,42,0.12)" }}>
-          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
-            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 1.2 }}>
-              Attach Files
-            </Typography>
-
-            <Button
-              component="label"
-              startIcon={<UploadFileIcon sx={{ fontSize: 18 }} />}
-              sx={{
-                textTransform: "none",
-                fontSize: 12,
-                fontWeight: 600,
-                borderRadius: 999,
-                bgcolor: "rgba(25,118,210,0.08)",
-                color: PRIMARY,
-                "&:hover": { bgcolor: "rgba(25,118,210,0.14)" },
-              }}
-            >
-              Add
-              <input hidden multiple type="file" onChange={handleFileAdd} />
-            </Button>
-          </Box>
-
-          {attachments.length === 0 ? (
-            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>No files attached yet.</Typography>
-          ) : (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-              {attachments.map((file, idx) => (
-                <Box
-                  key={`${file.name}_${idx}`}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    px: 1.5,
-                    py: 0.75,
-                    borderRadius: 2,
-                    bgcolor: "#F8FAFF",
-                  }}
-                >
-                  <Box sx={{ display: "flex", flexDirection: "column" }}>
-                    <Typography sx={{ fontSize: 13, fontWeight: 600, color: TEXT_PRIMARY }}>
-                      {file.name}
-                    </Typography>
-                    <Typography sx={{ fontSize: 11, color: TEXT_SECONDARY }}>
-                      {(file.size / 1024).toFixed(1)} KB
-                    </Typography>
-                  </Box>
-
-                  <IconButton size="small" onClick={() => handleRemoveAttachment(idx)}>
-                    <DeleteOutlineIcon sx={{ fontSize: 18, color: TEXT_SECONDARY }} />
-                  </IconButton>
-                </Box>
-              ))}
-            </Box>
-          )}
-        </Box>
+      <DialogContent
+        sx={{
+          px: 4,
+          py: 4,
+          bgcolor: BG,
+          flex: 1,
+          overflowY: "auto",
+        }}
+      >
+        <SignatureAttachmentsSection
+          hasDiscrepancy={hasDiscrepancy}
+          signatureDataUrl={signature}
+          onSignatureChange={setSignature}
+          attachments={attachments}
+          onAddAttachments={handleFileAdd}
+          onRemoveAttachment={handleRemoveAttachment}
+          primaryColor={PRIMARY}
+          primaryDark={PRIMARY_DARK}
+          textPrimary={TEXT_PRIMARY}
+          textSecondary={TEXT_SECONDARY}
+          cardBg={CARD}
+        />
       </DialogContent>
 
       <DialogActions sx={{ px: 4, py: 2.5, bgcolor: BG, flexShrink: 0 }}>
         <Button
           onClick={() => (hasDiscrepancy ? setStep("items") : setStep("question"))}
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          sx={{ textTransform: "none", color: TEXT_SECONDARY, fontWeight: 500 }}
+          sx={{
+            textTransform: "none",
+            color: TEXT_SECONDARY,
+            fontWeight: 500,
+          }}
           disabled={submitting}
         >
           Back
@@ -763,7 +924,6 @@ export default function PodFlowDialog({
     </>
   );
 
-  // MAIN DIALOG
   return (
     <Dialog
       open={open}
@@ -783,8 +943,7 @@ export default function PodFlowDialog({
       }}
     >
       {step === "question" && renderStepQuestion()}
-      {step === "items" && renderStepItems()}         {/* ✅ discrepancy path uses items component */}
-      {step === "editItem" && renderStepEditItem()}
+      {step === "items" && renderStepItems()}
       {step === "signature" && renderStepSignature()}
     </Dialog>
   );

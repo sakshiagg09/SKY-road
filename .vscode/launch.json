@@ -2,37 +2,44 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Attach",
-      "port": 9229,
-      "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
-      "type": "node"
-    },
-
-    {
-      "command": "npm start",
-      "name": "Run npm start",
-      "request": "launch",
-      "type": "node-terminal"
-    },
-
-
-
-    {
-      "name": "cds serve",
-      "request": "launch",
+      "name": "Approuter (local)",
       "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/approuter/run-local.js",
+      "cwd": "${workspaceFolder}/approuter",
+      "console": "integratedTerminal",
+      "env": {
+        "PORT": "5001",
+        "DEBUG": "approuter:*"
+      }
+    },
+    {
+      "name": "CAP service (hybrid debug)",
+      "type": "node",
+      "request": "launch",
       "cwd": "${workspaceFolder}",
-      "runtimeExecutable": "cds",
-      "args": [
-        "serve",
-        "--with-mocks",
-        "--in-memory?"
-      ],
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["cds"],
+      "program": "watch",
+      "args": ["--profile", "hybrid"],
+      "env": {
+        "PORT": "4004",
+        "CDS_ENV": "hybrid"
+      },
+      "console": "integratedTerminal",
+      "outputCapture": "std",
+      "autoAttachChildProcesses": true,
       "skipFiles": [
         "<node_internals>/**"
+      ]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Approuter + CAP (hybrid debug)",
+      "configurations": [
+        "CAP service (hybrid debug)",
+        "Approuter (local)"
       ]
     }
   ]

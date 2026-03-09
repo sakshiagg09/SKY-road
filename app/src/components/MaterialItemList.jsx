@@ -1,5 +1,5 @@
 // src/components/MaterialItemList.jsx
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -7,9 +7,11 @@ import {
   Divider,
   List,
   ListItemButton,
+  Chip,
 } from "@mui/material";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
+import { apiPost } from "../auth/api";
 
 // Color palette aligned with ShipmentDetails / ReportEvent
 const BG = "#EFF0F3";
@@ -18,62 +20,207 @@ const PRIMARY = "#1976D2";
 const TEXT_PRIMARY = "#071E54";
 const TEXT_SECONDARY = "#6B6C6E";
 
-/**
- * Props:
- *  - stop: {
- *      name1?, locid?, stopid?,
- *      FoId?,
- *      items?: array from /odata/v4/GTT/shipmentItems
- *    }
- *  - loading: boolean
- *  - onBack: () => void
- *  - onConfirm: () => void
- */
 export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
-  const items = Array.isArray(stop?.items) ? stop.items : [];
+  const [posting, setPosting] = useState(false);
+  // ---------- helpers ----------
+  const safeJsonArray = (v) => {
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s || s === "0") return [];
+      try {
+        const parsed = JSON.parse(s);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  const pick = (obj, ...keys) => {
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (v !== undefined && v !== null) {
+        const s = String(v).trim();
+        if (s !== "") return v;
+      }
+    }
+    return undefined;
+  };
+
+   const toS4TimestampUTC = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    d.getUTCFullYear() +
+    pad(d.getUTCMonth() + 1) +
+    pad(d.getUTCDate()) +
+    pad(d.getUTCHours()) +
+    pad(d.getUTCMinutes()) +
+    pad(d.getUTCSeconds())
+  );
+};
+
+  const toNum = (v) => {
+    if (v === undefined || v === null) return null;
+    const n = Number(String(v).trim());
+    return Number.isFinite(n) ? n : null;
+  };
 
   // Title & subtitle
-  const stopTitle =
-    stop?.name1 ||
-    stop?.locid ||
-    stop?.stopid ||
-    "Material Item List";
-
+  const stopTitle = stop?.name1 || stop?.locid || stop?.stopid || "Material Item List";
   const subtitleParts = [];
   if (stop?.locid) subtitleParts.push(`Location: ${stop.locid}`);
   if (stop?.FoId) subtitleParts.push(`FO: ${stop.FoId}`);
   const subtitle = subtitleParts.join(" • ");
 
-  // Normalize backend item shape -> UI-friendly
-  const normalizedItems = useMemo(
-    () =>
-      items.map((item, idx) => {
-        const qtyRaw = (item.Quantity ?? "").toString().trim();
-        const qty = qtyRaw === "" ? null : Number(qtyRaw);
-        const gwRaw = (item.GrossWeight ?? "").toString().trim();
-        const grossWeight = gwRaw === "" ? null : Number(gwRaw);
+  /**
+   * Your CAP response for shipmentItems is like:
+   * stop.items = [
+   *   { FoId, Location, StopId, LoadedItems:"[]", UnloadedItems:"[...]", ReturnLoaded:"[...]" ... }
+   * ]
+   *
+   * So we:
+   * 1) take the first row
+   * 2) choose which list to show (Loaded -> Unloaded -> ReturnLoaded -> ReturnUnloaded)
+   * 3) parse JSON string into array
+   */
+  const { rawItems, listLabel } = useMemo(() => {
+    const rows = Array.isArray(stop?.items) ? stop.items : [];
+    const row0 = rows[0] || {};
 
-        return {
-          _index: idx,
-          id:
-            item.PackageId ||
-            `${item.FoId || ""}-${item.Location || ""}-${idx}`,
-          foId: item.FoId,
-          location: item.Location,
-          packageId: item.PackageId,
-          name: item.ItemDescr || "Material",
-          // category: item.ItemCat || "ITEM", // no longer used
-          type: item.Type || "",
-          qty,
-          qtyUom: item.QuantityUom || "",
-          grossWeight,
-          grossWeightUom: item.GrossWeightUom || "",
-        };
-      }),
-    [items]
-  );
+    const loaded = safeJsonArray(row0.LoadedItems ?? row0.loadedItems);
+    if (loaded.length) return { rawItems: loaded, listLabel: "Loaded Items" };
+
+    const unloaded = safeJsonArray(row0.UnloadedItems ?? row0.unloadedItems);
+    if (unloaded.length) return { rawItems: unloaded, listLabel: "Unloaded Items" };
+
+    const retLoaded = safeJsonArray(row0.ReturnLoaded ?? row0.returnLoaded);
+    if (retLoaded.length) return { rawItems: retLoaded, listLabel: "Return Loaded" };
+
+    const retUnloaded = safeJsonArray(row0.ReturnUnloaded ?? row0.returnUnloaded);
+    if (retUnloaded.length) return { rawItems: retUnloaded, listLabel: "Return Unloaded" };
+
+    // If RouteTimeline ever passes already-parsed item array directly:
+    const direct = Array.isArray(stop?.items) ? stop.items : [];
+    // But direct is rows; so only use it if it looks like item objects (has itemDescr/packageid)
+    const looksLikeItems =
+      Array.isArray(direct) && direct.length && (direct[0]?.itemDescr || direct[0]?.packageid);
+    if (looksLikeItems) return { rawItems: direct, listLabel: "Items" };
+
+    return { rawItems: [], listLabel: "Items" };
+  }, [stop]);
+
+  // Normalize backend item shape -> UI-friendly
+  const normalizedItems = useMemo(() => {
+    const list = Array.isArray(rawItems) ? rawItems : [];
+
+    return list.map((it, idx) => {
+      const qty = toNum(pick(it, "quantity", "Quantity")) ?? 1;
+      const grossWeight = toNum(pick(it, "grossweight", "GrossWeight"));
+
+      const packageId = pick(it, "packageid", "PackageId", "packageId") || "";
+      const name = pick(it, "itemDescr", "ItemDescr", "itemdescr") || "Material";
+
+      return {
+        _index: idx,
+        id:
+          packageId ||
+          pick(it, "itemId", "ItemId") ||
+          `${stop?.FoId || ""}-${stop?.locid || ""}-${idx}`,
+        packageId,
+        name,
+        qty,
+        qtyUom: pick(it, "quantityuom", "QuantityUom", "quantityUom") || "",
+        grossWeight,
+        grossWeightUom: pick(it, "grossweightuom", "GrossWeightUom", "grossWeightUom") || "",
+      };
+    });
+  }, [rawItems, stop?.FoId, stop?.locid]);
 
   const totalPackages = normalizedItems.length;
+
+  const isReturnView = String(stop?.itemsType ?? "").toLowerCase() === "return";
+  const canReportReturn =
+  isReturnView && Boolean(stop?.isReturnPickup) && !Boolean(stop?.isLastStop);
+  const buildReturnItemsSetUrl = () => {
+    const fo = String(stop?.FoId ?? "").trim();
+
+    // Prefer the exact Location/StopId from the fetched items row (prevents posting to wrong stop)
+    const rows = Array.isArray(stop?.items) ? stop.items : [];
+    const row0 = rows[0] || {};
+
+    const loc = String(
+      stop?.resolvedLoc ??
+      row0.Location ??
+      row0.location ??
+      ""
+    ).trim();
+
+    const sid = String(
+      stop?.resolvedStopId ??
+      row0.StopId ??
+      row0.stopId ??
+      ""
+    ).trim();
+
+    if (!fo || !loc || !sid) return "";
+
+    // Same URL shape as fetchReturnItemsForStop GET
+    return (
+      `/odata/v4/GTT/ReturnItemsSet` +
+      `?$filter=FoId eq '${fo}' and Location eq '${loc}' and StopId eq '${sid}'`
+    );
+  };
+
+  const handleConfirmClick = async () => {
+    // ✅ Only call API if the items shown are for return
+    if (!isReturnView && !canReportReturn) {
+      onConfirm?.();
+      return;
+    }
+     if (!isReturnView) {
+    onConfirm?.();
+    return;
+  }
+
+    // Use the same resolved keys used for fetching (prefer resolved keys, then row0)
+    const rows = Array.isArray(stop?.items) ? stop.items : [];
+    const row0 = rows[0] || {};
+    const loc = String(stop?.resolvedLoc ?? row0.Location ?? row0.location ?? "").trim();
+    const sid = String(stop?.resolvedStopId ?? row0.StopId ?? row0.stopId ?? "").trim();
+    const fo = String(stop?.FoId ?? "").trim();
+
+    // POST should not include $filter when payload body is sent
+    const url =  `/odata/v4/GTT/ReturnItemsSet`;
+   const payload = {
+      StopId: sid,
+      Location: loc,
+      FoId: fo,
+      Timestamp: toS4TimestampUTC(new Date()),
+    };
+
+
+    if (!fo || !loc || !sid) {
+      alert("Missing FoId/Location/StopId for ReturnItemsSet POST.");
+      return;
+    }
+
+    try {
+      setPosting(true);
+      await apiPost(url, payload);
+      onConfirm?.({ ok: true });
+    } catch (e) {
+      alert(e?.message || "Failed to post ReturnItemsSet.");
+    } finally {
+      setPosting(false);
+    }
+  };
 
   return (
     <Box
@@ -84,8 +231,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
         bgcolor: BG,
         display: "flex",
         flexDirection: "column",
-        fontFamily:
-          "Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+        fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
       {/* HEADER */}
@@ -105,16 +251,11 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
           <ArrowBackIosNewIcon sx={{ fontSize: 18 }} />
         </IconButton>
 
-        <Box sx={{ textAlign: "center", flex: 1 }}>
-          <Typography
-            sx={{
-              fontSize: 16,
-              fontWeight: 600,
-              color: TEXT_PRIMARY,
-            }}
-          >
+        <Box sx={{ textAlign: "center", flex: 1, minWidth: 0 }}>
+          <Typography sx={{ fontSize: 16, fontWeight: 600, color: TEXT_PRIMARY }}>
             {stopTitle}
           </Typography>
+
           {subtitle && (
             <Typography
               sx={{
@@ -131,20 +272,18 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
           )}
         </Box>
 
-        <IconButton size="small" onClick={onConfirm} sx={{ color: PRIMARY }}>
+        <IconButton
+          size="small"
+          onClick={handleConfirmClick}
+          disabled= {posting || (isReturnView && !canReportReturn) }
+          sx={{ color: PRIMARY }}
+        >
           <CheckIcon sx={{ fontSize: 22 }} />
         </IconButton>
       </Box>
 
-      {/* SUMMARY STRIP – ONLY TOTAL PACKAGES */}
-      <Box
-        sx={{
-          px: 2,
-          pt: 1.5,
-          pb: 1,
-          bgcolor: BG,
-        }}
-      >
+      {/* SUMMARY STRIP */}
+      <Box sx={{ px: 2, pt: 1.5, pb: 1, bgcolor: BG }}>
         <Box
           sx={{
             borderRadius: 2,
@@ -153,12 +292,11 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
             alignItems: "center",
             justifyContent: "space-between",
             gap: 1.5,
-            background:
-              "linear-gradient(135deg, #ffffff 0%, #f3f6ff 40%, #e0ebff 100%)",
+            background: "linear-gradient(135deg, #ffffff 0%, #f3f6ff 40%, #e0ebff 100%)",
             boxShadow: "6px 6px 14px #d7dae2, -6px -6px 14px #ffffff",
           }}
         >
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.4 }}>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.6 }}>
             <Typography
               sx={{
                 fontSize: 11,
@@ -169,6 +307,20 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
             >
               Total Packages : {totalPackages || "—"}
             </Typography>
+
+            <Box>
+              <Chip
+                size="small"
+                label={listLabel}
+                sx={{
+                  height: 22,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: PRIMARY,
+                  bgcolor: "#EAF4FF",
+                }}
+              />
+            </Box>
           </Box>
         </Box>
       </Box>
@@ -187,9 +339,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
       >
         {loading && (
           <Box sx={{ px: 2, py: 2 }}>
-            <Typography
-              sx={{ fontSize: 13, color: TEXT_SECONDARY, fontStyle: "italic" }}
-            >
+            <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, fontStyle: "italic" }}>
               Loading items…
             </Typography>
           </Box>
@@ -224,7 +374,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
                     "&:hover": { backgroundColor: "#F7F8FC" },
                   }}
                 >
-                  {/* First row: ItemDescr + PackageId together */}
+                  {/* Title */}
                   <Box
                     sx={{
                       width: "100%",
@@ -245,68 +395,27 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
                       }}
-                      title={
-                        item.packageId
-                          ? `${item.name} (${item.packageId})`
-                          : item.name
-                      }
+                      title={item.packageId ? `${item.name} (${item.packageId})` : item.name}
                     >
-                      {item.packageId
-                        ? `Id:${item.packageId} (${item.name})`
-                        : item.name}
+                      {item.packageId ? `Pkg Id:${item.packageId} (${item.name})` : item.name}
                     </Typography>
                   </Box>
 
-                  {/* Third row: Quantity + Gross Weight together */}
-                  <Box
-                    sx={{
-                      display: "flex",
-                      gap: 1,
-                      mt: 0.5,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        px: 1.2,
-                        py: 0.5,
-                        borderRadius: 999,
-                        bgcolor: "#eff6ff",
-                      }}
-                    >
-                      <Typography
-                        sx={{
-                          fontSize: 11,
-                          color: TEXT_SECONDARY,
-                        }}
-                      >
+                  {/* Chips */}
+                  <Box sx={{ display: "flex", gap: 1, mt: 0.5, flexWrap: "wrap" }}>
+                    <Box sx={{ px: 1.2, py: 0.5, borderRadius: 999, bgcolor: "#eff6ff" }}>
+                      <Typography sx={{ fontSize: 11, color: TEXT_SECONDARY }}>
                         Qty:&nbsp;
-                        <b style={{ color: TEXT_PRIMARY }}>
-                          {item.qty != null ? item.qty : "1"}
-                        </b>{" "}
+                        <b style={{ color: TEXT_PRIMARY }}>{item.qty != null ? item.qty : "1"}</b>{" "}
                         {item.qtyUom}
                       </Typography>
                     </Box>
 
                     {item.grossWeight != null && (
-                      <Box
-                        sx={{
-                          px: 1.2,
-                          py: 0.5,
-                          borderRadius: 999,
-                           bgcolor: "#eff6ff"
-                        }}
-                      >
-                        <Typography
-                          sx={{
-                            fontSize: 11,
-                            color: TEXT_SECONDARY,
-                          }}
-                        >
+                      <Box sx={{ px: 1.2, py: 0.5, borderRadius: 999, bgcolor: "#eff6ff" }}>
+                        <Typography sx={{ fontSize: 11, color: TEXT_SECONDARY }}>
                           GrossWt:&nbsp;
-                          <b style={{ color: TEXT_PRIMARY }}>
-                            {item.grossWeight}
-                          </b>{" "}
+                          <b style={{ color: TEXT_PRIMARY }}>{item.grossWeight}</b>{" "}
                           {item.grossWeightUom}
                         </Typography>
                       </Box>
@@ -315,14 +424,7 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
                 </ListItemButton>
 
                 {index !== normalizedItems.length - 1 && (
-                  <Divider
-                    component="li"
-                    sx={{
-                      mx: 2,
-                      mb: 0.2,
-                      borderColor: "transparent",
-                    }}
-                  />
+                  <Divider component="li" sx={{ mx: 2, mb: 0.2, borderColor: "transparent" }} />
                 )}
               </React.Fragment>
             ))}
@@ -330,7 +432,6 @@ export default function MaterialItemList({ stop, loading, onBack, onConfirm }) {
         )}
       </Box>
 
-      {/* Optional bottom safe area (for devices with gesture bar) */}
       <Box sx={{ height: 8, bgcolor: CARD }} />
     </Box>
   );

@@ -3,15 +3,20 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Ensure assets resolve when served behind the BTP approuter
+  base: './',
   plugins: [react()],
   server: {
-    port: 5173,          // optional: Vite default port
-    open: true,          // optional: auto-open browser
+    port: 5173,
     proxy: {
-      // Forward all API calls to CAP backend
+      // Match approuter routes during local dev
+      '/api': {
+        target: 'http://localhost:4004',
+        changeOrigin: true
+      },
       '/odata': {
         target: 'http://localhost:4004',
-        changeOrigin: true,
+        changeOrigin: true
       }
     }
   }

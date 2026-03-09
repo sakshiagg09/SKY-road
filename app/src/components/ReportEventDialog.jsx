@@ -1,9 +1,7 @@
 // src/components/ReportEventDialog.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Button,
-  Menu,
-  MenuItem,
   Dialog,
   DialogContent,
   TextField,
@@ -12,125 +10,328 @@ import {
   FormControl,
   Typography,
   Box,
-  Divider,
   InputAdornment,
   Chip,
   Fade,
   Paper,
   IconButton,
+  MenuItem,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-
-// Icons
+import { apiGet, apiPost } from "../auth/api";
 import ReportOutlinedIcon from "@mui/icons-material/ReportOutlined";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import EventIcon from "@mui/icons-material/Event";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import LanguageIcon from "@mui/icons-material/Language";
-import MyLocationIcon from "@mui/icons-material/MyLocation";
-import PersonIcon from "@mui/icons-material/Person";
-import FlagIcon from "@mui/icons-material/Flag";
-import NotesIcon from "@mui/icons-material/Notes";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import NotesIcon from "@mui/icons-material/Notes";
 
 export default function ReportEventDialog({
   selectedShipment = null,
   open: controlledOpen,
-  mode: controlledMode,
   onClose: controlledOnClose,
-  initialMode = "unplanned",
+  onReported,
 }) {
-  const FoId = selectedShipment?.FoId || "";
+  // Support both shapes: trackingDetails row OR { raw: row }
+  const raw = selectedShipment?.raw ?? selectedShipment ?? {};
+  const FoId = raw?.FoId ?? selectedShipment?.FoId ?? "";
 
-  // COLOR PALETTE (aligned with ShipmentDetailsPage)
   const BG = "#EFF0F3";
   const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";
   const TEXT_PRIMARY = "#071E54";
   const TEXT_SECONDARY = "#6B6C6E";
-  const GREEN = "#2E7D32";
 
-  const [menuAnchor, setMenuAnchor] = useState(null);
-  const menuOpen = Boolean(menuAnchor);
-
-  // internal state
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState(initialMode);
 
-  // form fields
-  const [plannedEventCode, setPlannedEventCode] = useState("DEP");
-  const [unplannedEvent, setUnplannedEvent] = useState("Delay");
-  const [referencedPlannedEvent, setReferencedPlannedEvent] = useState("");
-  const [actualBusinessTime, setActualBusinessTime] = useState(() => {
-    const d = new Date();
-    const tzOffset = d.getTimezoneOffset() * 60000;
-    return new Date(d - tzOffset).toISOString().slice(0, 16);
-  });
-  const [timeZone, setTimeZone] = useState("Asia/Kolkata");
-  const [latitude, setLatitude] = useState("");
-  const [longitude, setLongitude] = useState("");
-  const [reportedBy, setReportedBy] = useState(
-    "vaibhav.suryawanshi@nav-it.com"
-  );
-  const [priority, setPriority] = useState("Normal");
-  const [notes, setNotes] = useState("Reported from mobile demo");
-
-  // sync controlled props
+  // ---- dialog open/close sync ----
   useEffect(() => {
     if (typeof controlledOpen === "boolean") setOpen(controlledOpen);
   }, [controlledOpen]);
 
+  const isOpen = typeof controlledOpen === "boolean" ? controlledOpen : open;
+
   useEffect(() => {
-    if (controlledMode) setMode(controlledMode);
-  }, [controlledMode]);
+    if (!isOpen) return;
 
-  // handlers
-  const handleMenuOpen = (e) => setMenuAnchor(e.currentTarget);
-  const handleMenuClose = () => setMenuAnchor(null);
+    console.log("[DelayDialog] OPENED", {
+      FoId,
+      hasRaw: !!raw,
+      StopsType: typeof raw?.Stops,
+      FinalInfoType: typeof raw?.FinalInfo,
+    });
+  }, [isOpen, FoId, raw]);
 
-  const openDialog = (which) => {
-    setMode(which);
-    setOpen(true);
-    handleMenuClose();
-  };
+  const handleOpen = () => setOpen(true);
 
   const closeDialog = () => {
     if (typeof controlledOnClose === "function") controlledOnClose();
     else setOpen(false);
   };
 
-  const buildPayload = () => {
-    const base = {
-      FoId,
-      ActualBusinessTime: new Date(actualBusinessTime).toISOString(),
-      ActualBusinessTimeZone: timeZone,
-      Longitude: longitude || null,
-      Latitude: latitude || null,
-      ReportedBy: reportedBy,
-      Priority: priority,
-      Notes: notes,
-      ReferencedPlannedEvent: referencedPlannedEvent || null,
-    };
+  // ---------------- FORM STATE ----------------
 
-    if (mode === "planned") {
-      return { ...base, Type: "Planned", EventCode: plannedEventCode };
+  const EVENT_VALUE = "Delay"; // UI label only
+  const [referencedPlannedEvent] = useState("Arrival at Destination");
+  const [selectedStop, setSelectedStop] = useState("");
+
+  const [estimatedTime, setEstimatedTime] = useState(() => {
+    const d = new Date();
+    const tzOffset = d.getTimezoneOffset() * 60000;
+    return new Date(d - tzOffset).toISOString().slice(0, 16);
+  });
+  const [estimatedTimeZone, setEstimatedTimeZone] = useState("UTC");
+
+  const [reasonCode, setReasonCode] = useState(""); // EvtReasonCode
+  const [reasonDescription, setReasonDescription] = useState("");
+
+  const [reasonOptions, setReasonOptions] = useState([]);
+  const [reasonsLoading, setReasonsLoading] = useState(false);
+  const [reasonsError, setReasonsError] = useState("");
+
+  // ---------------- NEW PAYLOAD ARRAYS ----------------
+
+  const safeJsonArray = (v) => {
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s || s === "0") return [];
+      try {
+        const arr = JSON.parse(s);
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return [];
+      }
     }
-    return { ...base, Type: "Unplanned", Event: unplannedEvent };
+    return [];
   };
 
-  const handleSubmit = () => {
-    const payload = buildPayload();
-    console.log("Report payload (mock):", payload);
-    alert("Event reported (mock). Check console for payload.");
-    closeDialog();
+  const finalInfoArr = useMemo(() => safeJsonArray(raw?.FinalInfo), [raw?.FinalInfo]);
+  const stopsArr = useMemo(() => safeJsonArray(raw?.Stops), [raw?.Stops]);
+
+  // ---------------- STOP FILTERING ----------------
+  // Only show stops which are NOT departed (departure info is in FinalInfo, not Stops)
+
+  const isStopDeparted = (stop) => {
+    const locid = String(stop?.locid ?? stop?.locId ?? "").trim();
+    const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "")
+      .trim()
+      .toUpperCase();
+
+    const fi = (finalInfoArr || []).find((x) => {
+      const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+      const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "")
+        .trim()
+        .toUpperCase();
+      return fLoc === locid && fSeq === seq;
+    });
+
+    const ev = String(fi?.event ?? fi?.Event ?? "").toUpperCase();
+    return ev.includes("DEPART"); // DEPARTURE/DEPT etc.
   };
 
-  const isOpen = typeof controlledOpen === "boolean" ? controlledOpen : open;
+  // ✅ NEW: do NOT show delay option for the first stop
+  // - exclude index 0
+  // - exclude any stopseqpos === "F" (safety)
+  const upcomingStops = useMemo(() => {
+    return (stopsArr || []).filter((s, idx) => {
+      if (idx === 0) return false; // ✅ remove first stop
+      const seq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
+      if (seq === "F") return false; // ✅ safety
+      return !isStopDeparted(s);
+    });
+  }, [stopsArr, finalInfoArr]);
 
-  // Flat modern input style using primary blue
+  const getStopLabel = (stop, idx) => {
+    const loc =
+      stop.LocationName ||
+      stop.locationName ||
+      stop.name ||
+      stop.name1 ||
+      stop.locId ||
+      stop.locid ||
+      "";
+
+    const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "")
+      .trim()
+      .toUpperCase();
+
+    return `${loc ? `${loc}` : ""}${seq ? ` (${seq})` : ""}`;
+  };
+
+  // IMPORTANT: Delay event needs StopId from FinalInfo, but Stops array does NOT include stopid.
+  // So for dropdown we keep a "synthetic" value: `${locid}|${seq}|${idx}`.
+  const getStopValue = (stop, idx) => {
+    const locid = String(stop?.locid ?? stop?.locId ?? "").trim();
+    const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "")
+      .trim()
+      .toUpperCase();
+    return `${locid}|${seq}|${idx}`;
+  };
+
+  // initialise selected stop whenever shipment / stops change
+  useEffect(() => {
+    console.log("[DelayDialog] upcomingStops count:", upcomingStops.length);
+
+    if (upcomingStops.length > 0) {
+      const first = upcomingStops[0];
+      const val = getStopValue(first, 0);
+
+      console.log("[DelayDialog] Auto-selected first stop:", {
+        value: val,
+        label: getStopLabel(first, 0),
+        locid: first?.locid ?? first?.locId,
+        seq: first?.stopseqpos ?? first?.stopSeqPos,
+      });
+
+      setSelectedStop(val);
+    } else {
+      console.log("[DelayDialog] No upcoming stops -> selectedStop cleared");
+      setSelectedStop("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [upcomingStops]);
+
+  const getCurrentLatLng = () => {
+  const rawLoc = localStorage.getItem("sky_last_loc");
+  if (!rawLoc) return null;
+
+  try {
+    const p = JSON.parse(rawLoc);
+    const lat = Number(p?.Latitude);
+    const lng = Number(p?.Longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat, lng };
+  } catch {
+    return null;
+  }
+};
+
+
+  // ---------------- COORD + STOPID RESOLUTION ----------------
+
+  const resolveStopIdAndCoords = (selectedValue) => {
+    // selectedValue is `${locid}|${seq}|${idx}`
+    const parts = String(selectedValue || "").split("|");
+    const locid = String(parts?.[0] ?? "").trim();
+    const seq = String(parts?.[1] ?? "").trim().toUpperCase();
+
+    // 1) coords from Stops (best match by locid+seq)
+    const st = (stopsArr || []).find((s) => {
+      const sLoc = String(s?.locid ?? s?.locId ?? "").trim();
+      const sSeq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "")
+        .trim()
+        .toUpperCase();
+      return sLoc === locid && sSeq === seq;
+    });
+
+    const lat = Number(st?.latitude ?? st?.Latitude ?? null);
+    const lng = Number(st?.longitude ?? st?.Longitude ?? null);
+
+    // 2) StopId from FinalInfo.
+    // ✅ CRITICAL: RouteTimeline uses PKG rows for "I" stops.
+    // So here we must resolve StopId the same way, otherwise Delay won't match timeline stopid.
+    let fi = null;
+
+    if (seq === "I") {
+      // Prefer itemcat === "PKG"
+      fi = (finalInfoArr || []).find((x) => {
+        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+        const itemCat = String(x?.itemcat ?? x?.item_cat ?? x?.itemCat ?? "")
+          .trim()
+          .toUpperCase();
+        return fLoc === locid && fSeq === "I" && itemCat === "PKG";
+      });
+
+      // Fallback: any match by locid+seq
+      if (!fi) {
+        fi = (finalInfoArr || []).find((x) => {
+          const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+          const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+          return fLoc === locid && fSeq === "I";
+        });
+      }
+    } else {
+      // Non-I stops: same as before
+      fi = (finalInfoArr || []).find((x) => {
+        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "")
+          .trim()
+          .toUpperCase();
+        return fLoc === locid && fSeq === seq;
+      });
+    }
+
+    const stopId = String(fi?.stopid ?? fi?.stopId ?? "").trim();
+    const itemCatResolved = String(fi?.itemcat ?? fi?.item_cat ?? fi?.itemCat ?? "")
+      .trim()
+      .toUpperCase();
+
+    console.log("[DelayDialog] Resolving StopId", {
+      selectedValue,
+      locid,
+      seq,
+      resolvedStopId: stopId,
+      resolvedItemCat: itemCatResolved,
+      latitude: lat,
+      longitude: lng,
+    });
+
+    return {
+      StopId: stopId,
+      Latitude: Number.isFinite(lat) ? lat : null,
+      Longitude: Number.isFinite(lng) ? lng : null,
+    };
+  };
+
+  // ---------------- REASON CODES (from CAP delayEvents) ----------------
+
+  const fetchReasonCodes = async () => {
+    setReasonsLoading(true);
+    setReasonsError("");
+
+    try {
+      const data = await apiGet("/odata/v4/GTT/delayEvents");
+      const rows = Array.isArray(data.value) ? data.value : [];
+      setReasonOptions(rows);
+
+      if (rows.length > 0 && !reasonCode) {
+        const first = rows[0];
+        const firstCode = first.EvtReasonCode;
+        setReasonCode(firstCode || "");
+        setReasonDescription(first.Description || "");
+      }
+    } catch (err) {
+      console.error("Failed to load delay reasons:", err);
+      setReasonsError("Failed to load reason codes.");
+      setReasonOptions([]);
+    } finally {
+      setReasonsLoading(false);
+    }
+  };
+
+  // load reasons when dialog opens
+  useEffect(() => {
+    if (isOpen) fetchReasonCodes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
+  // update description when reason changes (pre-fill from master)
+  useEffect(() => {
+    if (!reasonCode || reasonOptions.length === 0) return;
+    const match = reasonOptions.find((r) => r.EvtReasonCode === reasonCode);
+    if (match && !reasonDescription) {
+      setReasonDescription(match.Description || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reasonCode, reasonOptions]);
+
+  // ---------------- STYLES ----------------
+
   const modernInputStyle = {
     "& .MuiOutlinedInput-root": {
       backgroundColor: "#F7F8FC",
@@ -142,44 +343,110 @@ export default function ReportEventDialog({
       },
       "&:hover": {
         backgroundColor: CARD,
-        "& fieldset": {
-          borderColor: PRIMARY,
-        },
+        "& fieldset": { borderColor: PRIMARY },
       },
       "&.Mui-focused": {
         backgroundColor: CARD,
-        "& fieldset": {
-          borderColor: PRIMARY,
-          borderWidth: "1.5px",
-        },
+        "& fieldset": { borderColor: PRIMARY, borderWidth: "1.5px" },
         boxShadow: `0 0 0 2px ${alpha(PRIMARY, 0.15)}`,
       },
     },
     "& .MuiInputLabel-root": {
       color: TEXT_SECONDARY,
       fontWeight: 500,
-      "&.Mui-focused": {
-        color: PRIMARY,
-      },
+      "&.Mui-focused": { color: PRIMARY },
     },
   };
 
-  const priorityColors = {
-    Low: { bg: "#E3F4E8", color: GREEN, icon: GREEN },
-    Normal: { bg: "#FFF1DA", color: "#EA7600", icon: "#EA7600" },
-    High: { bg: "#FDE4E4", color: "#D32F2F", icon: "#D32F2F" },
+  // ---------------- HELPERS ----------------
+
+  const toS4TimestampUTC = (val) => {
+    if (!val) return null;
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) return null;
+
+    const pad = (n) => String(n).padStart(2, "0");
+
+    return (
+      d.getUTCFullYear() +
+      pad(d.getUTCMonth() + 1) +
+      pad(d.getUTCDate()) +
+      pad(d.getUTCHours()) +
+      pad(d.getUTCMinutes()) +
+      pad(d.getUTCSeconds())
+    );
   };
+
+  // ---------------- PAYLOAD ----------------
+
+  const buildPayload = () => {
+    const reasonObj = reasonOptions.find((r) => r.EvtReasonCode === reasonCode) || {};
+    const { StopId, Latitude, Longitude } = resolveStopIdAndCoords(selectedStop);
+
+     const current = getCurrentLatLng();
+    const useLat = current?.lat ?? Latitude;
+    const useLng = current?.lng ?? Longitude;
+
+    return {
+      FoId,
+      StopId: StopId || "", // resolved from FinalInfo
+      ETA: toS4TimestampUTC(estimatedTime),
+      RefEvent: "Arrival",
+      EventCode: reasonObj.EvtReasonCode || "DELAYED",
+
+      // keep as string (existing behavior), but avoid "null"/"undefined"
+      Latitude: useLat == null ? "" : String(useLat),
+      Longitude: useLng == null ? "" : String(useLng),
+
+      Timestamp: toS4TimestampUTC(new Date()),
+    };
+  };
+
+  const handleSubmit = async () => {
+    const payload = buildPayload();
+    console.log("[DelayDialog] FINAL payload => /delayEvents:", JSON.stringify(payload, null, 2));
+
+    if (!payload.FoId) return alert("Missing FoId");
+    if (!payload.StopId) return alert("Missing StopId (could not resolve from FinalInfo)");
+    if (!payload.Latitude || !payload.Longitude) {
+      console.warn("[DelayDialog] Latitude/Longitude missing for selected stop:", selectedStop);
+    }
+
+    try {
+      const result = await apiPost("/odata/v4/GTT/delayEvents", payload);
+      console.log("[DelayDialog] Backend response from /delayEvents:", JSON.stringify(result, null, 2));
+
+      const stopId = (result && result.StopId) || payload.StopId;
+
+      if (typeof onReported === "function") {
+        const evt = {
+          event: "Delay",
+          stopId,
+          foId: payload.FoId,
+          ts: Date.now(),
+        };
+        console.log("[DelayDialog] onReported payload:", evt);
+        onReported(evt);
+      }
+
+      alert("Unplanned delay reported successfully.");
+      closeDialog();
+    } catch (err) {
+      console.error("Failed to post delay event:", err);
+      alert("Failed to report delay. Please try again.");
+    }
+  };
+
+  // ---------------- RENDER ----------------
 
   return (
     <>
-      {/* Trigger Button (only when not controlled by parent) */}
       {typeof controlledOpen !== "boolean" && (
         <Box sx={{ display: "inline-block" }}>
           <Button
             variant="contained"
-            onClick={handleMenuOpen}
+            onClick={handleOpen}
             startIcon={<ReportOutlinedIcon />}
-            endIcon={<ExpandMoreIcon />}
             sx={{
               background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)",
               color: "#fff",
@@ -195,86 +462,11 @@ export default function ReportEventDialog({
               },
             }}
           >
-            Report Event
+            Report Delay
           </Button>
-
-          <Menu
-            anchorEl={menuAnchor}
-            open={menuOpen}
-            onClose={handleMenuClose}
-            TransitionComponent={Fade}
-            PaperProps={{
-              elevation: 4,
-              sx: {
-                mt: 1.5,
-                borderRadius: "12px",
-                border: "1px solid rgba(0, 0, 0, 0.06)",
-                overflow: "hidden",
-              },
-            }}
-          >
-            <MenuItem
-              onClick={() => openDialog("planned")}
-              sx={{
-                py: 1.2,
-                px: 2,
-                "&:hover": {
-                  backgroundColor: "rgba(25,118,210,0.06)",
-                },
-              }}
-            >
-              <EventIcon sx={{ mr: 2, color: PRIMARY }} />
-              <Box>
-                <Typography
-                  variant="body2"
-                  fontWeight={600}
-                  sx={{ color: TEXT_PRIMARY }}
-                >
-                  Planned Event
-                </Typography>
-                <Typography
-                  variant="caption"
-                  sx={{ color: TEXT_SECONDARY }}
-                >
-                  Schedule departure, arrival, etc.
-                </Typography>
-              </Box>
-            </MenuItem>
-
-            <Divider sx={{ my: 0.5 }} />
-
-            <MenuItem
-              onClick={() => openDialog("unplanned")}
-              sx={{
-                py: 1.2,
-                px: 2,
-                "&:hover": {
-                  backgroundColor: "rgba(25,118,210,0.06)",
-                },
-              }}
-            >
-              <WarningAmberIcon sx={{ mr: 2, color: "#EA7600" }} />
-              <Box>
-                <Typography
-                  variant="body2"
-                  fontWeight={600}
-                  sx={{ color: TEXT_PRIMARY }}
-                >
-                  Unplanned Event
-                </Typography>
-                <Typography
-                  variant="caption"
-                  sx={{ color: TEXT_SECONDARY }}
-                >
-                  Report delays, incidents
-                </Typography>
-              </Box>
-            </MenuItem>
-          </Menu>
         </Box>
       )}
 
-      {/* Dialog */}
       <Dialog
         open={isOpen}
         onClose={closeDialog}
@@ -296,7 +488,7 @@ export default function ReportEventDialog({
           },
         }}
       >
-        {/* Header */}
+        {/* HEADER */}
         <Box
           sx={{
             background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)",
@@ -307,18 +499,13 @@ export default function ReportEventDialog({
           <Box
             sx={{
               display: "flex",
-              flexDirection: "row",
               alignItems: "center",
               justifyContent: "space-between",
               gap: 2,
             }}
           >
             <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-              {mode === "planned" ? (
-                <EventIcon sx={{ color: "#fff", fontSize: 26 }} />
-              ) : (
-                <WarningAmberIcon sx={{ color: "#fff", fontSize: 26 }} />
-              )}
+              <WarningAmberIcon sx={{ color: "#fff", fontSize: 26 }} />
               <Box>
                 <Typography
                   sx={{
@@ -329,7 +516,7 @@ export default function ReportEventDialog({
                     textTransform: "uppercase",
                   }}
                 >
-                  {mode === "planned" ? "Scheduled Event" : "Exception Event"}
+                  Exception Event
                 </Typography>
                 <Typography
                   sx={{
@@ -339,9 +526,7 @@ export default function ReportEventDialog({
                     mt: 0.2,
                   }}
                 >
-                  {mode === "planned"
-                    ? "Report Planned Event"
-                    : "Report Unplanned Event"}
+                  Report Unplanned Delay
                 </Typography>
               </Box>
             </Box>
@@ -351,16 +536,13 @@ export default function ReportEventDialog({
               sx={{
                 color: "#fff",
                 backgroundColor: "rgba(15,23,42,0.18)",
-                "&:hover": {
-                  backgroundColor: "rgba(15,23,42,0.32)",
-                },
+                "&:hover": { backgroundColor: "rgba(15,23,42,0.32)" },
               }}
             >
               <CloseRoundedIcon />
             </IconButton>
           </Box>
 
-          {/* Freight ID */}
           <Paper
             elevation={0}
             sx={{
@@ -386,28 +568,15 @@ export default function ReportEventDialog({
               >
                 Freight Order ID
               </Typography>
-              <Typography
-                sx={{
-                  fontSize: 13,
-                  fontWeight: 700,
-                  color: TEXT_PRIMARY,
-                }}
-              >
+              <Typography sx={{ fontSize: 13, fontWeight: 700, color: TEXT_PRIMARY }}>
                 {FoId || "Not Selected"}
               </Typography>
             </Box>
           </Paper>
         </Box>
 
-        {/* Content */}
-        <DialogContent
-          sx={{
-            px: 3,
-            py: 3,
-            backgroundColor: BG,
-          }}
-        >
-          {/* Event Selection Section */}
+        <DialogContent sx={{ px: 3, py: 3, backgroundColor: BG }}>
+          {/* Event = Delay + Stop selector */}
           <Box
             sx={{
               mb: 3,
@@ -430,201 +599,73 @@ export default function ReportEventDialog({
                 textTransform: "uppercase",
               }}
             >
-              {mode === "planned" ? (
-                <EventIcon sx={{ fontSize: 16, color: PRIMARY }} />
-              ) : (
-                <WarningAmberIcon
-                  sx={{ fontSize: 16, color: "#EA7600" }}
-                />
-              )}
+              <WarningAmberIcon sx={{ fontSize: 16, color: "#EA7600" }} />
               Event Details
             </Typography>
 
-            {mode === "planned" ? (
-              <>
-                <FormControl
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: { xs: "column", sm: "row" },
+                gap: 1.5,
+              }}
+            >
+              {/* Event: always Delay (read only) */}
+              <Box sx={{ flex: 1 }}>
+                <TextField
+                  label="Event"
                   fullWidth
-                  sx={{ ...modernInputStyle, mb: 2 }}
+                  value={EVENT_VALUE}
+                  disabled
+                  sx={modernInputStyle}
                   margin="dense"
-                >
-                  <InputLabel>Select Planned Event</InputLabel>
+                />
+              </Box>
+
+              {/* Stop: only NOT departed stops (excluding first stop) */}
+              <Box sx={{ flex: 1 }}>
+                <FormControl fullWidth sx={modernInputStyle} margin="dense">
+                  <InputLabel>Stop</InputLabel>
                   <Select
-                    value={plannedEventCode}
-                    label="Select Planned Event"
-                    onChange={(e) => setPlannedEventCode(e.target.value)}
+                    value={selectedStop}
+                    label="Stop"
+                    onChange={(e) => {
+                      console.log("[DelayDialog] Stop selected (raw value):", e.target.value);
+                      setSelectedStop(e.target.value);
+                    }}
+                    disabled={upcomingStops.length === 0}
                   >
-                    <MenuItem value="DEP">
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 2,
-                        }}
-                      >
-                        <Chip
-                          label="DEP"
-                          size="small"
-                          sx={{
-                            bgcolor: "#E0EBFF",
-                            color: PRIMARY,
-                            fontWeight: 600,
-                          }}
-                        />
-                        <Typography sx={{ color: TEXT_PRIMARY }}>
-                          Departure
+                    {upcomingStops.length === 0 && (
+                      <MenuItem value="">
+                        <Typography variant="body2" sx={{ color: TEXT_SECONDARY }}>
+                          No pending (non-departed) stops
                         </Typography>
-                      </Box>
-                    </MenuItem>
-                    <MenuItem value="ARR">
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 2,
-                        }}
-                      >
-                        <Chip
-                          label="ARR"
-                          size="small"
-                          sx={{
-                            bgcolor: "#E3F4E8",
-                            color: GREEN,
-                            fontWeight: 600,
-                          }}
-                        />
-                        <Typography sx={{ color: TEXT_PRIMARY }}>
-                          Arrival
-                        </Typography>
-                      </Box>
-                    </MenuItem>
-                    <MenuItem value="POD">
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 2,
-                        }}
-                      >
-                        <Chip
-                          label="POD"
-                          size="small"
-                          sx={{
-                            bgcolor: "#FFF1DA",
-                            color: "#EA7600",
-                            fontWeight: 600,
-                          }}
-                        />
-                        <Typography sx={{ color: TEXT_PRIMARY }}>
-                          Proof of Delivery
-                        </Typography>
-                      </Box>
-                    </MenuItem>
+                      </MenuItem>
+                    )}
+
+                    {upcomingStops.map((stop, idx) => {
+                      const value = getStopValue(stop, idx);
+                      const label = getStopLabel(stop, idx);
+                      return (
+                        <MenuItem key={value} value={value}>
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                            <Chip
+                              label={idx + 1}
+                              size="small"
+                              sx={{ bgcolor: "#E0EBFF", color: PRIMARY, fontWeight: 600 }}
+                            />
+                            <Typography sx={{ color: TEXT_PRIMARY }}>{label}</Typography>
+                          </Box>
+                        </MenuItem>
+                      );
+                    })}
                   </Select>
                 </FormControl>
-
-                <TextField
-                  label="Referenced Planned Event (Optional)"
-                  fullWidth
-                  margin="dense"
-                  value={referencedPlannedEvent}
-                  onChange={(e) => setReferencedPlannedEvent(e.target.value)}
-                  sx={modernInputStyle}
-                  placeholder="Enter reference if applicable"
-                />
-              </>
-            ) : (
-              <>
-                <FormControl
-                  fullWidth
-                  sx={{ ...modernInputStyle, mb: 2 }}
-                  margin="dense"
-                >
-                  <InputLabel>Select Unplanned Event</InputLabel>
-                  <Select
-                    value={unplannedEvent}
-                    label="Select Unplanned Event"
-                    onChange={(e) => setUnplannedEvent(e.target.value)}
-                  >
-                    <MenuItem value="Delay">
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 2,
-                        }}
-                      >
-                        <Chip
-                          label="⏱"
-                          size="small"
-                          sx={{
-                            bgcolor: "#FDE4E4",
-                            color: "#D32F2F",
-                          }}
-                        />
-                        <Typography sx={{ color: TEXT_PRIMARY }}>
-                          Delay
-                        </Typography>
-                      </Box>
-                    </MenuItem>
-                    <MenuItem value="Accident">
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 2,
-                        }}
-                      >
-                        <Chip
-                          label="⚠"
-                          size="small"
-                          sx={{
-                            bgcolor: "#FDE4E4",
-                            color: "#D32F2F",
-                          }}
-                        />
-                        <Typography sx={{ color: TEXT_PRIMARY }}>
-                          Accident
-                        </Typography>
-                      </Box>
-                    </MenuItem>
-                    <MenuItem value="Customs Hold">
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 2,
-                        }}
-                      >
-                        <Chip
-                          label="🛃"
-                          size="small"
-                          sx={{
-                            bgcolor: "#FFF1DA",
-                            color: "#EA7600",
-                          }}
-                        />
-                        <Typography sx={{ color: TEXT_PRIMARY }}>
-                          Customs Hold
-                        </Typography>
-                      </Box>
-                    </MenuItem>
-                  </Select>
-                </FormControl>
-
-                <TextField
-                  label="Referenced Planned Event (Optional)"
-                  fullWidth
-                  margin="dense"
-                  value={referencedPlannedEvent}
-                  onChange={(e) => setReferencedPlannedEvent(e.target.value)}
-                  sx={modernInputStyle}
-                  placeholder="Enter reference if applicable"
-                />
-              </>
-            )}
+              </Box>
+            </Box>
           </Box>
 
-          {/* Time Section: ALL FIELDS STACKED */}
+          {/* Reference Event + ETA */}
           <Box
             sx={{
               mb: 3,
@@ -641,87 +682,57 @@ export default function ReportEventDialog({
                 color: TEXT_SECONDARY,
                 letterSpacing: 0.7,
                 mb: 2,
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
                 textTransform: "uppercase",
               }}
             >
-              <AccessTimeIcon sx={{ fontSize: 16, color: PRIMARY }} />
-              Time & Location
+              Reference Event
             </Typography>
 
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-              <TextField
-                label="Actual Business Time"
-                type="datetime-local"
-                fullWidth
-                value={actualBusinessTime}
-                onChange={(e) => setActualBusinessTime(e.target.value)}
-                InputLabelProps={{ shrink: true }}
-                sx={modernInputStyle}
-                margin="dense"
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <AccessTimeIcon
-                        sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                      />
-                    </InputAdornment>
-                  ),
-                }}
-              />
+            <TextField
+              label="Reference Planned Event"
+              fullWidth
+              value={referencedPlannedEvent}
+              disabled
+              sx={{ ...modernInputStyle, mb: 2 }}
+              margin="dense"
+            />
 
-              <TextField
-                label="Time Zone"
-                fullWidth
-                value={timeZone}
-                onChange={(e) => setTimeZone(e.target.value)}
-                sx={modernInputStyle}
-                margin="dense"
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <LanguageIcon
-                        sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                      />
-                    </InputAdornment>
-                  ),
-                }}
-              />
+            <TextField
+              label="Estimated Time"
+              type="datetime-local"
+              fullWidth
+              value={estimatedTime}
+              onChange={(e) => setEstimatedTime(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={modernInputStyle}
+              margin="dense"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <AccessTimeIcon sx={{ color: TEXT_SECONDARY, fontSize: 20 }} />
+                  </InputAdornment>
+                ),
+              }}
+            />
 
-              <TextField
-                label="Latitude"
-                fullWidth
-                value={latitude}
-                onChange={(e) => setLatitude(e.target.value)}
-                sx={modernInputStyle}
-                margin="dense"
-                placeholder="0.0000"
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <MyLocationIcon
-                        sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                      />
-                    </InputAdornment>
-                  ),
-                }}
-              />
-
-              <TextField
-                label="Longitude"
-                fullWidth
-                value={longitude}
-                onChange={(e) => setLongitude(e.target.value)}
-                sx={modernInputStyle}
-                margin="dense"
-                placeholder="0.0000"
-              />
-            </Box>
+            <TextField
+              label="Time Zone"
+              fullWidth
+              value={estimatedTimeZone}
+              onChange={(e) => setEstimatedTimeZone(e.target.value)}
+              sx={modernInputStyle}
+              margin="dense"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <LanguageIcon sx={{ color: TEXT_SECONDARY, fontSize: 20 }} />
+                  </InputAdornment>
+                ),
+              }}
+            />
           </Box>
 
-          {/* Metadata Section: ALL FIELDS STACKED */}
+          {/* Additional Details */}
           <Box
             sx={{
               mb: 2.5,
@@ -738,176 +749,64 @@ export default function ReportEventDialog({
                 color: TEXT_SECONDARY,
                 letterSpacing: 0.7,
                 mb: 2,
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
                 textTransform: "uppercase",
               }}
             >
-              <PersonIcon sx={{ fontSize: 16, color: PRIMARY }} />
-              Reporter Details
+              Additional Details
             </Typography>
 
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-              <TextField
-                label="Reported By"
-                fullWidth
-                value={reportedBy}
-                onChange={(e) => setReportedBy(e.target.value)}
-                sx={modernInputStyle}
-                margin="dense"
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <PersonIcon
-                        sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                      />
-                    </InputAdornment>
-                  ),
+            <FormControl fullWidth sx={{ ...modernInputStyle, mb: 1 }} margin="dense">
+              <InputLabel>Reason Code</InputLabel>
+              <Select
+                value={reasonCode}
+                label="Reason Code"
+                onChange={(e) => {
+                  setReasonCode(e.target.value);
+                  setReasonDescription("");
                 }}
-              />
-
-              <FormControl
-                fullWidth
-                sx={modernInputStyle}
-                margin="dense"
+                disabled={reasonsLoading}
               >
-                <InputLabel>Priority</InputLabel>
-                <Select
-                  value={priority}
-                  label="Priority"
-                  onChange={(e) => setPriority(e.target.value)}
-                  renderValue={(val) => (
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1,
-                      }}
-                    >
-                      <FlagIcon
-                        sx={{
-                          fontSize: 18,
-                          color: priorityColors[val].icon,
-                        }}
-                      />
-                      <Typography
-                        sx={{
-                          fontSize: 14,
-                          color: TEXT_PRIMARY,
-                        }}
-                      >
-                        {val}
-                      </Typography>
-                    </Box>
-                  )}
-                >
-                  <MenuItem value="Low">
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1.5,
-                      }}
-                    >
-                      <FlagIcon sx={{ fontSize: 18, color: GREEN }} />
-                      <span>Low</span>
-                    </Box>
+                {reasonOptions.map((r) => (
+                  <MenuItem key={r.EvtReasonCode} value={r.EvtReasonCode}>
+                    {r.Description}
                   </MenuItem>
-                  <MenuItem value="Normal">
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1.5,
-                      }}
-                    >
-                      <FlagIcon
-                        sx={{ fontSize: 18, color: "#EA7600" }}
-                      />
-                      <span>Normal</span>
-                    </Box>
-                  </MenuItem>
-                  <MenuItem value="High">
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1.5,
-                      }}
-                    >
-                      <FlagIcon
-                        sx={{ fontSize: 18, color: "#D32F2F" }}
-                      />
-                      <span>High</span>
-                    </Box>
-                  </MenuItem>
-                </Select>
-              </FormControl>
+                ))}
+              </Select>
+            </FormControl>
 
-              <TextField
-                label="Additional Notes"
-                fullWidth
-                multiline
-                minRows={3}
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                sx={{
-                  ...modernInputStyle,
-                  "& .MuiOutlinedInput-root": {
-                    ...modernInputStyle["& .MuiOutlinedInput-root"],
-                    padding: "10px",
-                  },
-                }}
-                margin="dense"
-                placeholder="Add any relevant details about this event..."
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment
-                      position="start"
-                      sx={{ alignSelf: "flex-start", mt: 0.5 }}
-                    >
-                      <NotesIcon
-                        sx={{ color: TEXT_SECONDARY, fontSize: 20 }}
-                      />
-                    </InputAdornment>
-                  ),
-                }}
-              />
-            </Box>
-          </Box>
+            {reasonsError && (
+              <Typography variant="caption" sx={{ color: "red", display: "block", mb: 1 }}>
+                {reasonsError}
+              </Typography>
+            )}
 
-          {/* Visual Priority Indicator */}
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-              p: 1.25,
-              borderRadius: "10px",
-              backgroundColor: priorityColors[priority].bg,
-              border: `1px solid ${alpha(priorityColors[priority].color, 0.4)}`,
-            }}
-          >
-            <FlagIcon
+            <TextField
+              label="Description"
+              fullWidth
+              multiline
+              minRows={3}
+              value={reasonDescription}
+              onChange={(e) => setReasonDescription(e.target.value)}
               sx={{
-                color: priorityColors[priority].icon,
-                fontSize: 18,
+                ...modernInputStyle,
+                "& .MuiOutlinedInput-root": {
+                  ...modernInputStyle["& .MuiOutlinedInput-root"],
+                  padding: "10px",
+                },
+              }}
+              margin="dense"
+              placeholder="Enter your description here..."
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start" sx={{ alignSelf: "flex-start", mt: 0.5 }}>
+                    <NotesIcon sx={{ color: TEXT_SECONDARY, fontSize: 20 }} />
+                  </InputAdornment>
+                ),
               }}
             />
-            <Typography
-              sx={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: priorityColors[priority].color,
-              }}
-            >
-              Priority: {priority}
-            </Typography>
           </Box>
         </DialogContent>
 
-        {/* Actions */}
         <Box
           sx={{
             px: 3,
@@ -928,9 +827,7 @@ export default function ReportEventDialog({
                 fontWeight: 500,
                 textTransform: "none",
                 backgroundColor: "#F7F8FC",
-                "&:hover": {
-                  backgroundColor: "#E4E7F1",
-                },
+                "&:hover": { backgroundColor: "#E4E7F1" },
               }}
             >
               Cancel
@@ -943,15 +840,13 @@ export default function ReportEventDialog({
                 px: 3.5,
                 py: 1,
                 borderRadius: "10px",
-                background:
-                  "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)",
+                background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)",
                 color: "#fff",
                 fontWeight: 600,
                 textTransform: "none",
                 boxShadow: "0 8px 18px rgba(25,118,210,0.35)",
                 "&:hover": {
-                  background:
-                    "linear-gradient(135deg, #1565C0 0%, #42A5F5 100%)",
+                  background: "linear-gradient(135deg, #1565C0 0%, #42A5F5 100%)",
                   boxShadow: "0 10px 24px rgba(25,118,210,0.45)",
                 },
               }}

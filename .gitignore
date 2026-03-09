@@ -7,7 +7,7 @@ default-*.json
 .cdsrc-private.json
 gen/
 node_modules/
-target/
+target/ 
 
 # Web IDE, App Studio
 .che/
@@ -32,3 +32,8 @@ mta_archives/
 
 # @cap-js/cds-typer
 @cds-models
+
+approuter/default-env.json
+
+index-*.js
+index-*.css

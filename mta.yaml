@@ -10,6 +10,9 @@ build-parameters:
     - builder: custom
       commands:
         - npm ci
+        - npm --prefix app ci
+        - npm --prefix app run build
+        - sh -lc "rm -rf approuter/resources/* && cp -R app/dist/* approuter/resources/"
         - npx cds build --production
 
 modules:
