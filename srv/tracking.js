@@ -643,6 +643,91 @@ module.exports = cds.service.impl(async function () {
 
 
   // ---------------------------------------------------------------------------
+  // VOICE ACTION: interpretVoice (pure rule-based, no external AI)
+  // ---------------------------------------------------------------------------
+  this.on("interpretVoice", async (req) => {
+    const { transcript = "" } = req.data || {};
+    const t = String(transcript).toLowerCase().trim();
+
+    // --- Classify event type ---
+    let eventType = "Other";
+    if (/delay|late|behind|stuck|traffic|slow|held up|running late/.test(t)) {
+      eventType = "Delay";
+    } else if (/accident|crash|breakdown|broke down|collision/.test(t)) {
+      eventType = "Accident";
+    } else if (/customs|border|clearance|inspection/.test(t)) {
+      eventType = "Customs Hold";
+    }
+
+    // --- Normalise number words → digits (speech recognition returns words) ---
+    const wordNums = {
+      "zero":0,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,
+      "eight":8,"nine":9,"ten":10,"eleven":11,"twelve":12,"thirteen":13,
+      "fourteen":14,"fifteen":15,"sixteen":16,"seventeen":17,"eighteen":18,
+      "nineteen":19,"twenty":20,"thirty":30,"forty":40,"fifty":50,"sixty":60,
+    };
+    const tn = t.replace(/\b(twenty|thirty|forty|fifty)[\s-](one|two|three|four|five|six|seven|eight|nine)\b/g, (_, tens, ones) =>
+      String((wordNums[tens] || 0) + (wordNums[ones] || 0))
+    ).replace(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty)\b/g,
+      (w) => String(wordNums[w] ?? w)
+    );
+
+    // --- Extract delay minutes ---
+    let delayMinutes = 0;
+
+    // "an hour" / "a hour" = 1 hour
+    const anHourMatch = /\ban?\s+hours?/.test(tn);
+    // "a half hour" / "half an hour" = 30 min
+    const halfHourMatch = /half\s+(?:an?\s+)?hours?/.test(tn);
+    // "X hours" (digit)
+    const hoursMatch = tn.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)/);
+    // "X minutes" (digit)
+    const minsMatch  = tn.match(/(\d+)\s*(?:minutes?|mins?)/);
+
+    if (halfHourMatch) {
+      delayMinutes = 30;
+    } else if (hoursMatch) {
+      const h = parseFloat(hoursMatch[1]);
+      const m = minsMatch ? parseInt(minsMatch[1], 10) : 0;
+      delayMinutes = Math.round(h * 60) + m;
+    } else if (anHourMatch) {
+      const m = minsMatch ? parseInt(minsMatch[1], 10) : 0;
+      delayMinutes = 60 + m;
+    } else if (minsMatch) {
+      delayMinutes = parseInt(minsMatch[1], 10);
+    }
+
+    // Fallback: bare "X late/delay/behind"
+    if (delayMinutes === 0) {
+      const bareMatch = tn.match(/(\d+)\s*(?:late|delay|behind)/);
+      if (bareMatch) delayMinutes = parseInt(bareMatch[1], 10);
+    }
+
+    // --- Priority: <30 → Low, 30–60 → Normal, >60 → High ---
+    let priority = "Low";
+    if (delayMinutes > 60)      priority = "High";
+    else if (delayMinutes >= 30) priority = "Normal";
+
+    // --- reasonCode: leave empty — dialog fuzzy-matches reasonHint against S/4 descriptions ---
+    const reasonCode = "";
+
+    // reasonHint: keyword used to fuzzy-match against S/4 reason code Descriptions
+    let reasonHint = "";
+    if (/traffic|congestion/.test(t))            reasonHint = "traffic";
+    else if (/accident|crash|collision/.test(t)) reasonHint = "accident";
+    else if (/breakdown|broke down|mechanical/.test(t)) reasonHint = "breakdown";
+    else if (/customs|border|clearance|inspection/.test(t)) reasonHint = "customs";
+    else if (/weather|storm|snow|flood|fog/.test(t)) reasonHint = "weather";
+    else if (/road|construction|closure|detour/.test(t)) reasonHint = "road";
+    else if (eventType === "Delay") reasonHint = "delay";
+
+    const refEvent = eventType !== "Other" ? "ARR" : "";
+    const notes    = String(transcript).trim().slice(0, 200);
+
+    return { eventType, delayMinutes, priority, notes, reasonCode, reasonHint, refEvent };
+  });
+
+  // ---------------------------------------------------------------------------
   // OCR ACTION: extractLicenseNumber
   // ---------------------------------------------------------------------------
   this.on("extractLicenseNumber", async (req) => {

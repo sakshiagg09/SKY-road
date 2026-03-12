@@ -33,6 +33,7 @@ export default function ReportEventDialog({
   open: controlledOpen,
   onClose: controlledOnClose,
   onReported,
+  initialValues = null,
 }) {
   // Support both shapes: trackingDetails row OR { raw: row }
   const raw = selectedShipment?.raw ?? selectedShipment ?? {};
@@ -301,8 +302,7 @@ export default function ReportEventDialog({
 
       if (rows.length > 0 && !reasonCode) {
         const first = rows[0];
-        const firstCode = first.EvtReasonCode;
-        setReasonCode(firstCode || "");
+        setReasonCode(first.EvtReasonCode || "");
         setReasonDescription(first.Description || "");
       }
     } catch (err) {
@@ -313,6 +313,41 @@ export default function ReportEventDialog({
       setReasonsLoading(false);
     }
   };
+
+  // pre-fill from voice result when dialog opens with initialValues
+  useEffect(() => {
+    if (!isOpen || !initialValues) return;
+    if (initialValues.estimatedDelayMinutes > 0) {
+      const d = new Date(Date.now() + initialValues.estimatedDelayMinutes * 60000);
+      const tzOffset = d.getTimezoneOffset() * 60000;
+      setEstimatedTime(new Date(d - tzOffset).toISOString().slice(0, 16));
+    }
+    if (initialValues.reasonCode) setReasonCode(initialValues.reasonCode);
+    if (initialValues.notes) setReasonDescription(initialValues.notes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialValues]);
+
+  // apply reasonCode from initialValues once options load
+  useEffect(() => {
+    if (!initialValues?.reasonCode || reasonOptions.length === 0) return;
+    setReasonCode(initialValues.reasonCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reasonOptions, initialValues?.reasonCode]);
+
+  // fuzzy-match reasonHint against S/4 reason code Descriptions
+  useEffect(() => {
+    if (!initialValues?.reasonHint || reasonOptions.length === 0) return;
+    if (initialValues.reasonCode) return; // exact code already set — skip
+    const hint = initialValues.reasonHint.toLowerCase();
+    const match = reasonOptions.find((r) =>
+      (r.Description || "").toLowerCase().includes(hint)
+    );
+    if (match) {
+      setReasonCode(match.EvtReasonCode);
+      setReasonDescription(match.Description || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reasonOptions, initialValues?.reasonHint]);
 
   // load reasons when dialog opens
   useEffect(() => {

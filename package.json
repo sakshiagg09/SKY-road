@@ -40,7 +40,15 @@
         "destination": "Sky_App"
       }
     },
-    "destinations": true
+    "destinations": true,
+    "[hybrid]": {
+      "requires": {
+        "db": {
+          "kind": "sqlite",
+          "credentials": { "url": ":memory:" }
+        }
+      }
+    }
   },
   "[production]": {
     "requires": {

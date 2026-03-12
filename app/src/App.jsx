@@ -5,10 +5,12 @@ import ShipmentSearchPage from "./pages/ShipmentSearchPage";
 import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
 import BottomBar from "./components/BottomBar";
 import ReportEventDialog from "./components/ReportEventDialog";
+import VoiceDelaySheet from "./components/VoiceDelaySheet";
+import WakeWordListener from "./components/WakeWordListener";
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
 import { Capacitor } from "@capacitor/core";
 import { loginPKCE, loadToken } from "./auth/auth";
-import AttachmentsPage from "./pages/AttachmentsPage"; // ✅ NEW
+import AttachmentsPage from "./pages/AttachmentsPage";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
@@ -19,6 +21,9 @@ export default function App() {
 
   const [reportOpen, setReportOpen] = useState(false);
   const [reportMode, setReportMode] = useState("unplanned");
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceAutoStart, setVoiceAutoStart] = useState(false);
+  const [reportInitialValues, setReportInitialValues] = useState(null);
 
   const BAR_HEIGHT = 64;
   const contentPaddingBottom = BAR_HEIGHT + 70;
@@ -46,6 +51,35 @@ export default function App() {
       else setAuthenticated(true);
     })().catch((e) => console.log("AUTH init error", e));
   }, []);
+
+  const parseSapDt = (dt) => {
+    if (!dt || String(dt).length < 14) return null;
+    const s = String(dt);
+    return new Date(`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}T${s.slice(8,10)}:${s.slice(10,12)}:${s.slice(12,14)}Z`);
+  };
+
+  const formatSapDt = (date) => {
+    if (!(date instanceof Date) || isNaN(date.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    return date.getUTCFullYear() + pad(date.getUTCMonth() + 1) + pad(date.getUTCDate()) +
+      pad(date.getUTCHours()) + pad(date.getUTCMinutes()) + pad(date.getUTCSeconds());
+  };
+
+  const handleVoiceResult = (result) => {
+    setVoiceOpen(false);
+
+
+    setReportInitialValues({
+      estimatedDelayMinutes: result.delayMinutes,
+      reasonCode: result.reasonCode,
+      reasonHint: result.reasonHint,
+      refEvent: result.refEvent,
+      notes: result.notes,
+      eventType: result.eventType,
+    });
+    setReportMode("unplanned");
+    setReportOpen(true);
+  };
 
   const handleOpenReport = (mode = "unplanned") => {
     setReportMode(mode);
@@ -300,6 +334,10 @@ const openFullRouteInMaps = useCallback(() => {
       }}
     >
       <DriverTrackingManager authenticated={authenticated} selectedShipment={selectedShipment} />
+      <WakeWordListener
+        enabled={hasShipment && !voiceOpen}
+        onWakeWord={() => { setVoiceAutoStart(true); setVoiceOpen(true); }}
+      />
 
       <div style={{ flex: 1, overflowY: "auto", paddingBottom: contentPaddingBottom }}>
         {renderPage()}
@@ -309,17 +347,26 @@ const openFullRouteInMaps = useCallback(() => {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onReportClick={() => handleOpenReport("unplanned")}
-        onMapClick={openFullRouteInMaps}   // ✅ now opens full route
-        // ✅ NEW: attachments wiring
+        onMapClick={openFullRouteInMaps}
         hasShipment={hasShipment}
         onAttachmentsClick={() => setActiveTab("attachments")}
+        onVoiceClick={() => { setVoiceAutoStart(false); setVoiceOpen(true); }}
+        voiceEnabled={hasShipment && activeTab === "track"}
+      />
+
+      <VoiceDelaySheet
+        open={voiceOpen}
+        autoStart={voiceAutoStart}
+        onClose={() => { setVoiceOpen(false); setVoiceAutoStart(false); }}
+        onResult={handleVoiceResult}
       />
 
       <ReportEventDialog
         selectedShipment={selectedShipment}
         open={reportOpen}
         mode={reportMode}
-        onClose={handleCloseReport}
+        initialValues={reportInitialValues}
+        onClose={() => { handleCloseReport(); setReportInitialValues(null); }}
         onReported={(info) => setDelayReportedInfo(info)}
       />
     </div>

@@ -142,4 +142,16 @@ service GTT {
     confidence    : Decimal(5,4);
   };
 
+  // ----- VOICE AI ACTION (rule-based transcript interpretation)
+  action interpretVoice(
+    transcript : LargeString
+  ) returns {
+    eventType    : String;   // "Delay" | "Accident" | "Customs Hold" | "Other"
+    delayMinutes : Integer;
+    priority     : String;   // "Low" | "Normal" | "High"
+    notes        : String;
+    reasonCode   : String;   // "DELAYED" | "ACCIDENT" | "CUSTOMS" | ""
+    refEvent     : String;   // "ARR" or ""
+  };
+
 }

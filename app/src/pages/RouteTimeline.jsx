@@ -44,7 +44,8 @@ export default function RouteTimeline({
   onAction,
   eventsUrl = "/odata/v4/GTT/eventReporting",
   podCompletedInfo,
-  delayReportedInfo
+  delayReportedInfo,
+  liveStopEtas = new Map(),
 }) {
   const CARD = "#FFFFFF";
   const PRIMARY = "#1976D2";
@@ -1229,6 +1230,17 @@ export default function RouteTimeline({
                   >
                     {plannedText}
                   </p>
+
+                  {!departed && liveStopEtas.has(stop.stopid) && (
+                    <>
+                      <p className="text-[12px] mt-2" style={{ color: TEXT_SECONDARY }}>
+                        Estimated Arrival
+                      </p>
+                      <p className="text-[12px] mt-0" style={{ color: "#1976D2", fontWeight: 600 }}>
+                        {liveStopEtas.get(stop.stopid).text}
+                      </p>
+                    </>
+                  )}
 
                   {/* Materials + Return (always show return when present) */}
                   <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13, fontWeight: 700 }}>
