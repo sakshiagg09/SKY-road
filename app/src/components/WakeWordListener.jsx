@@ -7,14 +7,14 @@ import { SpeechRecognition } from "@capacitor-community/speech-recognition";
 // Exact phrases to match (after punctuation stripped)
 const WAKE_PHRASES = [
   "hey sky", "hi sky", "okay sky", "ok sky", "hey ski", "hi ski",
-  "a sky", "the sky please", "hey sky please",
+  "sky report", "sky delay", "a sky", "the sky please", "hey sky please",
 ];
 // Activation words — any of these + "sky"/"ski" anywhere in utterance triggers
 const ACTIVATION_WORDS = new Set(["hey", "hi", "okay", "ok", "aye"]);
 
 export default function WakeWordListener({ enabled, onWakeWord }) {
   const enabledRef = useRef(enabled);
-  const cooldownRef = useRef(false); // prevent double-trigger within 3s
+  const cooldownRef = useRef(false);
   const onWakeWordRef = useRef(onWakeWord);
 
   useEffect(() => { enabledRef.current = enabled; }, [enabled]);
@@ -55,6 +55,7 @@ export default function WakeWordListener({ enabled, onWakeWord }) {
           // Remove stale listeners (e.g. from VoiceDelaySheet cleanup race)
           await SpeechRecognition.removeAllListeners();
 
+          // Add listener FIRST before starting — catches all partial results
           await SpeechRecognition.addListener("partialResults", (data) => {
             if (!active) return;
             const text = Array.isArray(data?.matches) ? data.matches[0] : "";
@@ -112,28 +113,18 @@ export default function WakeWordListener({ enabled, onWakeWord }) {
         };
 
         rec.onend = () => {
-          // Browser stops recognition after silence — auto-restart
-          if (alive && enabledRef.current) {
-            setTimeout(start, 300);
-          }
+          if (alive && enabledRef.current) setTimeout(start, 300);
         };
 
         rec.onerror = (e) => {
           if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-            alive = false; // mic permission denied — stop trying
+            alive = false;
             return;
           }
-          // Transient errors — retry after a short delay
-          if (alive && enabledRef.current) {
-            setTimeout(start, 1500);
-          }
+          if (alive && enabledRef.current) setTimeout(start, 1500);
         };
 
-        try {
-          rec.start();
-        } catch {
-          // already started or other transient error — ignore
-        }
+        try { rec.start(); } catch {}
       };
 
       start();
@@ -143,7 +134,7 @@ export default function WakeWordListener({ enabled, onWakeWord }) {
         try { rec?.stop(); } catch {}
       };
     }
-  }, [enabled]); // restarts cleanly when enabled toggles
+  }, [enabled]);
 
   return null;
 }

@@ -1,5 +1,6 @@
 // src/App.jsx
 import { useState, useEffect, useCallback } from "react";
+import { Snackbar, Alert, Backdrop, CircularProgress, Typography, Box } from "@mui/material";
 
 import ShipmentSearchPage from "./pages/ShipmentSearchPage";
 import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
@@ -10,6 +11,7 @@ import WakeWordListener from "./components/WakeWordListener";
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
 import { Capacitor } from "@capacitor/core";
 import { loginPKCE, loadToken } from "./auth/auth";
+import { apiGet, apiPost } from "./auth/api";
 import AttachmentsPage from "./pages/AttachmentsPage";
 
 export default function App() {
@@ -29,6 +31,8 @@ export default function App() {
   const contentPaddingBottom = BAR_HEIGHT + 70;
 
   const [delayReportedInfo, setDelayReportedInfo] = useState(null);
+  const [snack, setSnack] = useState({ open: false, message: "", severity: "success" });
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     console.log("AUTH: App mounted");
@@ -65,20 +69,166 @@ export default function App() {
       pad(date.getUTCHours()) + pad(date.getUTCMinutes()) + pad(date.getUTCSeconds());
   };
 
+  const toS4TimestampUTC = (d) => {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      d.getUTCFullYear() +
+      pad(d.getUTCMonth() + 1) +
+      pad(d.getUTCDate()) +
+      pad(d.getUTCHours()) +
+      pad(d.getUTCMinutes()) +
+      pad(d.getUTCSeconds())
+    );
+  };
+
+  const autoSubmitVoiceDelay = async (result) => {
+    setSubmitting(true);
+    const raw = selectedShipment?.raw ?? selectedShipment ?? {};
+    const FoId = raw?.FoId ?? selectedShipment?.FoId ?? "";
+
+    const safeJsonArray = (v) => {
+      if (!v) return [];
+      if (Array.isArray(v)) return v;
+      if (typeof v === "string") {
+        const s = v.trim();
+        if (!s || s === "0") return [];
+        try { const arr = JSON.parse(s); return Array.isArray(arr) ? arr : []; } catch { return []; }
+      }
+      return [];
+    };
+
+    const finalInfoArr = safeJsonArray(raw?.FinalInfo);
+    const stopsArr = safeJsonArray(raw?.Stops);
+
+    const isStopDeparted = (stop) => {
+      const locid = String(stop?.locid ?? stop?.locId ?? "").trim();
+      const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "").trim().toUpperCase();
+      const fi = finalInfoArr.find((x) => {
+        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+        return fLoc === locid && fSeq === seq;
+      });
+      return String(fi?.event ?? fi?.Event ?? "").toUpperCase().includes("DEPART");
+    };
+
+    const upcomingStops = stopsArr.filter((s, idx) => {
+      if (idx === 0) return false;
+      const seq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
+      if (seq === "F") return false;
+      return !isStopDeparted(s);
+    });
+
+    if (upcomingStops.length === 0 || !FoId) {
+      setSubmitting(false);
+      setSnack({ open: true, message: "Could not auto-submit: no upcoming stops or missing shipment.", severity: "warning" });
+      return;
+    }
+
+    const firstStop = upcomingStops[0];
+    const locid = String(firstStop?.locid ?? firstStop?.locId ?? "").trim();
+    const seq = String(firstStop?.stopseqpos ?? firstStop?.stopSeqPos ?? "").trim().toUpperCase();
+
+    // Resolve StopId from FinalInfo (same logic as ReportEventDialog)
+    let fi = null;
+    if (seq === "I") {
+      fi = finalInfoArr.find((x) => {
+        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+        const itemCat = String(x?.itemcat ?? x?.item_cat ?? x?.itemCat ?? "").trim().toUpperCase();
+        return fLoc === locid && fSeq === "I" && itemCat === "PKG";
+      });
+      if (!fi) {
+        fi = finalInfoArr.find((x) => {
+          const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+          const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+          return fLoc === locid && fSeq === "I";
+        });
+      }
+    } else {
+      fi = finalInfoArr.find((x) => {
+        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
+        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
+        return fLoc === locid && fSeq === seq;
+      });
+    }
+
+    const StopId = String(fi?.stopid ?? fi?.stopId ?? "").trim();
+
+    // Coords from Stops
+    const st = stopsArr.find((s) => {
+      const sLoc = String(s?.locid ?? s?.locId ?? "").trim();
+      const sSeq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
+      return sLoc === locid && sSeq === seq;
+    });
+    const stopLat = Number(st?.latitude ?? st?.Latitude ?? null);
+    const stopLng = Number(st?.longitude ?? st?.Longitude ?? null);
+
+    // GPS from localStorage
+    let useLat = null;
+    let useLng = null;
+    try {
+      const rawLoc = localStorage.getItem("sky_last_loc");
+      if (rawLoc) {
+        const p = JSON.parse(rawLoc);
+        const lat = Number(p?.Latitude);
+        const lng = Number(p?.Longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) { useLat = lat; useLng = lng; }
+      }
+    } catch {}
+    useLat = useLat ?? (Number.isFinite(stopLat) ? stopLat : null);
+    useLng = useLng ?? (Number.isFinite(stopLng) ? stopLng : null);
+
+    // Fetch reason codes + fuzzy-match reasonHint
+    let eventCode = "DELAYED";
+    try {
+      const data = await apiGet("/odata/v4/GTT/delayEvents");
+      const rows = Array.isArray(data.value) ? data.value : [];
+      if (rows.length > 0) {
+        let matched = null;
+        if (result.reasonHint) {
+          const hint = result.reasonHint.toLowerCase();
+          matched = rows.find((r) => (r.Description || "").toLowerCase().includes(hint));
+        }
+        eventCode = ((matched ?? rows[0]).EvtReasonCode) || "DELAYED";
+      }
+    } catch (e) {
+      console.log("autoSubmit: failed to fetch reason codes, using DELAYED", e);
+    }
+
+    const etaDate = new Date(Date.now() + (result.delayMinutes || 0) * 60000);
+    const payload = {
+      FoId,
+      StopId: StopId || "",
+      ETA: toS4TimestampUTC(etaDate),
+      RefEvent: "Arrival",
+      EventCode: eventCode,
+      Latitude: useLat == null ? "" : String(useLat),
+      Longitude: useLng == null ? "" : String(useLng),
+      Timestamp: toS4TimestampUTC(new Date()),
+    };
+
+    if (!payload.StopId) {
+      console.warn("[autoSubmit] Could not resolve StopId, submitting anyway without it");
+    }
+
+    try {
+      await apiPost("/odata/v4/GTT/delayEvents", payload);
+      const delayLabel = result.delayMinutes > 0 ? ` (${result.delayMinutes} min)` : "";
+      setDelayReportedInfo({ event: "Delay", stopId: StopId, foId: FoId, ts: Date.now() });
+      setSnack({ open: true, message: `Delay reported successfully${delayLabel}.`, severity: "success" });
+    } catch (err) {
+      console.error("autoSubmit delay failed:", err);
+      setSnack({ open: true, message: "Failed to report delay. Please try again.", severity: "error" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleVoiceResult = (result) => {
     setVoiceOpen(false);
-
-
-    setReportInitialValues({
-      estimatedDelayMinutes: result.delayMinutes,
-      reasonCode: result.reasonCode,
-      reasonHint: result.reasonHint,
-      refEvent: result.refEvent,
-      notes: result.notes,
-      eventType: result.eventType,
-    });
-    setReportMode("unplanned");
-    setReportOpen(true);
+    setVoiceAutoStart(false);
+    autoSubmitVoiceDelay(result);
   };
 
   const handleOpenReport = (mode = "unplanned") => {
@@ -369,6 +519,34 @@ const openFullRouteInMaps = useCallback(() => {
         onClose={() => { handleCloseReport(); setReportInitialValues(null); }}
         onReported={(info) => setDelayReportedInfo(info)}
       />
+
+      <Backdrop open={submitting} sx={{ zIndex: 2000, flexDirection: "column", gap: 2 }}>
+        <CircularProgress size={52} thickness={4} sx={{ color: "#fff" }} />
+        <Box sx={{ textAlign: "center" }}>
+          <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>
+            Reporting delay…
+          </Typography>
+          <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: 13, mt: 0.5 }}>
+            Please wait
+          </Typography>
+        </Box>
+      </Backdrop>
+
+      <Snackbar
+        open={snack.open}
+        autoHideDuration={4000}
+        onClose={() => setSnack((s) => ({ ...s, open: false }))}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+      >
+        <Alert
+          onClose={() => setSnack((s) => ({ ...s, open: false }))}
+          severity={snack.severity}
+          variant="filled"
+          sx={{ width: "100%", borderRadius: "12px", fontWeight: 600 }}
+        >
+          {snack.message}
+        </Alert>
+      </Snackbar>
     </div>
   );
 }

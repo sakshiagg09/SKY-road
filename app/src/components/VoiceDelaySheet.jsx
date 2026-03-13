@@ -78,6 +78,8 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
       const data = await res.json();
       setResult(data);
       setVoiceState("result");
+      // Auto-submit: open pre-filled delay dialog immediately, no "Report Now" tap needed
+      if (onResult) onResult(data);
     } catch (e) {
       setErrorMsg(e.message || "Failed to interpret message.");
       setVoiceState("error");
@@ -370,6 +372,7 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
               <Box sx={{
                 position: "absolute", width: 112, height: 112, borderRadius: "50%",
                 bgcolor: "rgba(211,47,47,0.14)",
+                pointerEvents: "none", // don't swallow touches
                 animation: "pulse-ring 1.4s ease-out infinite",
                 "@keyframes pulse-ring": {
                   "0%":   { transform: "scale(0.82)", opacity: 1 },
@@ -377,18 +380,19 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
                 },
               }} />
               <Box
-                onClick={stopListening}
+                onPointerDown={stopListening}  // instant response on mobile, no 300ms delay
                 sx={{
-                  width: 88, height: 88, borderRadius: "50%",
+                  width: 96, height: 96, borderRadius: "50%", // slightly larger hit area
                   background: "linear-gradient(135deg, #D32F2F 0%, #EF5350 100%)",
                   display: "flex", alignItems: "center", justifyContent: "center",
                   cursor: "pointer", zIndex: 1,
                   boxShadow: "0 8px 24px rgba(211,47,47,0.4)",
-                  transition: "transform 0.15s",
-                  "&:active": { transform: "scale(0.94)" },
+                  touchAction: "manipulation",
+                  userSelect: "none",
+                  "&:active": { transform: "scale(0.92)", opacity: 0.9 },
                 }}
               >
-                <StopIcon sx={{ fontSize: 40, color: "#fff" }} />
+                <StopIcon sx={{ fontSize: 44, color: "#fff" }} />
               </Box>
             </Box>
 
