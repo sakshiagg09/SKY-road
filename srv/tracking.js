@@ -711,15 +711,30 @@ module.exports = cds.service.impl(async function () {
     // --- reasonCode: leave empty — dialog fuzzy-matches reasonHint against S/4 descriptions ---
     const reasonCode = "";
 
-    // reasonHint: keyword used to fuzzy-match against S/4 reason code Descriptions
+    // reasonHint: keyword(s) used to fuzzy-match against S/4 reason code Descriptions.
+    // Use pipe-separated list ordered by confidence so dialog can try each in turn.
     let reasonHint = "";
-    if (/traffic|congestion/.test(t))            reasonHint = "traffic";
-    else if (/accident|crash|collision/.test(t)) reasonHint = "accident";
-    else if (/breakdown|broke down|mechanical/.test(t)) reasonHint = "breakdown";
-    else if (/customs|border|clearance|inspection/.test(t)) reasonHint = "customs";
-    else if (/weather|storm|snow|flood|fog/.test(t)) reasonHint = "weather";
-    else if (/road|construction|closure|detour/.test(t)) reasonHint = "road";
-    else if (eventType === "Delay") reasonHint = "delay";
+    if (/traffic|congestion|jam|gridlock|bumper|motorway|highway|freeway/.test(t))
+      reasonHint = "traffic|congestion|road";
+    else if (/flat.?tyre|flat.?tire|puncture|tyre|tire/.test(t))
+      reasonHint = "tyre|tire|breakdown|mechanical";
+    else if (/breakdown|broke.?down|mechanical|engine|overheated|vehicle/.test(t))
+      reasonHint = "breakdown|mechanical|vehicle";
+    else if (/accident|crash|collision|pile.?up/.test(t))
+      reasonHint = "accident|crash|collision";
+    else if (/customs|border|clearance|inspection|port|immigration/.test(t))
+      reasonHint = "customs|border|clearance";
+    else if (/weather|storm|snow|rain|flood|fog|ice|icy|slippery|hail/.test(t))
+      reasonHint = "weather|storm|flood";
+    else if (/road.?work|construction|closure|detour|diversion|blocked/.test(t))
+      reasonHint = "road|construction|closure";
+    else if (/strike|protest|demonstration/.test(t))
+      reasonHint = "strike|labour";
+    else if (/police|checkpoint|inspection/.test(t))
+      reasonHint = "police|checkpoint";
+    else if (eventType === "Delay")        reasonHint = "delay|late";
+    else if (eventType === "Accident")     reasonHint = "accident";
+    else if (eventType === "Customs Hold") reasonHint = "customs";
 
     const refEvent = eventType !== "Other" ? "ARR" : "";
     const notes    = String(transcript).trim().slice(0, 200);

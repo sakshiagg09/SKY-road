@@ -334,20 +334,41 @@ export default function ReportEventDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reasonOptions, initialValues?.reasonCode]);
 
-  // fuzzy-match reasonHint against S/4 reason code Descriptions
+  // fuzzy-match reasonHint against S/4 reason code Descriptions (scored word-overlap)
   useEffect(() => {
     if (!initialValues?.reasonHint || reasonOptions.length === 0) return;
     if (initialValues.reasonCode) return; // exact code already set — skip
-    const hint = initialValues.reasonHint.toLowerCase();
-    const match = reasonOptions.find((r) =>
-      (r.Description || "").toLowerCase().includes(hint)
-    );
-    if (match) {
-      setReasonCode(match.EvtReasonCode);
-      setReasonDescription(match.Description || "");
+
+    // reasonHint may be pipe-separated list of keywords ordered by confidence
+    const hints = initialValues.reasonHint.toLowerCase().split("|").map((h) => h.trim()).filter(Boolean);
+    // Also pull significant words from the original transcript (notes)
+    const transcriptWords = (initialValues.notes || "")
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
+
+    const scored = reasonOptions.map((r) => {
+      const desc = (r.Description || "").toLowerCase();
+      let score = 0;
+      // Primary: each hint keyword found in description (earlier hints weighted more)
+      hints.forEach((hint, idx) => {
+        if (desc.includes(hint)) score += 10 - idx * 2; // 10, 8, 6...
+      });
+      // Secondary: significant words from transcript found in description
+      transcriptWords.forEach((word) => {
+        if (desc.includes(word)) score += 1;
+      });
+      return { r, score };
+    });
+
+    const best = scored.sort((a, b) => b.score - a.score)[0];
+    if (best && best.score > 0) {
+      setReasonCode(best.r.EvtReasonCode);
+      setReasonDescription(best.r.Description || "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reasonOptions, initialValues?.reasonHint]);
+  }, [reasonOptions, initialValues?.reasonHint, initialValues?.notes]);
 
   // load reasons when dialog opens
   useEffect(() => {

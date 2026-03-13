@@ -97,6 +97,9 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
         return;
       }
 
+      // Clear any stale listeners (e.g. from WakeWordListener)
+      await SpeechRecognition.removeAllListeners();
+
       // Listen to partial results to update live transcript
       await SpeechRecognition.addListener("partialResults", (data) => {
         const partial = Array.isArray(data.matches) ? data.matches[0] || "" : "";
@@ -107,19 +110,23 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
       nativeListening.current = true;
       setVoiceState("listening");
 
-      await SpeechRecognition.start({
-        language: "en-US",
-        maxResults: 1,
-        partialResults: true,
-        popup: false,
-      });
+      // Loop: Android auto-stops after silence — restart until user taps stop
+      while (nativeListening.current) {
+        await SpeechRecognition.start({
+          language: "en-US",
+          maxResults: 1,
+          partialResults: true,
+          popup: false,
+        });
+        // start() resolved — Android ended the session
+        // If user hasn't tapped stop, wait briefly and restart
+        if (!nativeListening.current) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
 
-      // `start` resolves when recognition ends (user presses stop or OS ends it)
-      const result = await SpeechRecognition.stop();
-      nativeListening.current = false;
       await SpeechRecognition.removeAllListeners();
 
-      const text = liveRef.current || (Array.isArray(result?.matches) ? result.matches[0] : "") || "";
+      const text = liveRef.current;
       if (text.trim()) {
         interpretMessage(text.trim());
       } else {
@@ -134,6 +141,8 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
 
   const stopNativeListening = async () => {
     if (!nativeListening.current) return;
+    // Set flag FIRST so the restart loop exits when start() resolves
+    nativeListening.current = false;
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
       await SpeechRecognition.stop();
