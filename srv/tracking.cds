@@ -151,6 +151,7 @@ service GTT {
     priority     : String;
     notes        : String;
     reasonCode   : String;
+    reasonHint   : String;
     refEvent     : String;
   };
 

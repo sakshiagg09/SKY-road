@@ -47,16 +47,21 @@ export default function VoiceDelaySheet({ open, onClose, onResult, initialTransc
   const [showManual, setShowManual]           = useState(false);
   const [manualText, setManualText]           = useState("");
 
-  const webRecognitionRef = useRef(null);
-  const androidRecording  = useRef(false);
+  const webRecognitionRef  = useRef(null);
+  const androidRecording   = useRef(false);
+  const dismissedRef       = useRef(false);
+  const autoStartTimerRef  = useRef(null);
 
   // ── Reset & handle initialTranscript on open ───────────────────────────────
   useEffect(() => {
     if (!open) {
+      dismissedRef.current = true;
+      if (autoStartTimerRef.current) { clearTimeout(autoStartTimerRef.current); autoStartTimerRef.current = null; }
       stopAndCleanup();
       return;
     }
 
+    dismissedRef.current = false;
     setVoiceState("idle");
     setTranscript("");
     setResult(null);
@@ -69,7 +74,9 @@ export default function VoiceDelaySheet({ open, onClose, onResult, initialTransc
       interpretMessage(initialTranscript.trim());
     } else {
       // Auto-start recording immediately when sheet opens
-      setTimeout(() => {
+      autoStartTimerRef.current = setTimeout(() => {
+        autoStartTimerRef.current = null;
+        if (dismissedRef.current) return; // cancel fired during the 300ms window
         if (Capacitor.getPlatform() === "android") startAndroidRecording();
         else startWebRecording();
       }, 300); // brief delay so the drawer animation completes first
@@ -93,10 +100,12 @@ export default function VoiceDelaySheet({ open, onClose, onResult, initialTransc
     setVoiceState("processing");
     try {
       const data = await apiPost("/odata/v4/GTT/interpretVoice", { transcript: text });
+      if (dismissedRef.current) return; // user closed sheet while processing
       setResult(data);
       setVoiceState("result");
       if (onResult) onResult(data);
     } catch (e) {
+      if (dismissedRef.current) return;
       setErrorMsg(e.message || "Failed to interpret. Please try again.");
       setVoiceState("error");
     }
@@ -104,13 +113,10 @@ export default function VoiceDelaySheet({ open, onClose, onResult, initialTransc
 
   // ── Android: AudioRecord (raw PCM, no beep) → Whisper on stop ──────────────
   const startAndroidRecording = async () => {
-    if (!AudioRecorder) {
-      setErrorMsg("Audio recording not available.");
-      setVoiceState("error");
-      return;
-    }
+    if (!AudioRecorder || dismissedRef.current) return;
     try {
       const perm = await AudioRecorder.requestPermissions();
+      if (dismissedRef.current) return; // sheet closed while awaiting permissions
       if (perm.microphone !== "granted") {
         setErrorMsg("Microphone permission denied.");
         setVoiceState("error");
@@ -147,15 +153,7 @@ export default function VoiceDelaySheet({ open, onClose, onResult, initialTransc
   };
 
   const cancelRecording = () => {
-    if (Capacitor.getPlatform() === "android" && AudioRecorder && androidRecording.current) {
-      androidRecording.current = false;
-      AudioRecorder.stop().catch(() => {});
-    }
-    if (webRecognitionRef.current) {
-      try { webRecognitionRef.current.abort(); } catch (_) {}
-      webRecognitionRef.current = null;
-    }
-    onClose();
+    onClose(); // close instantly — useEffect on open=false handles all cleanup via stopAndCleanup
   };
 
   // ── Web: webkitSpeechRecognition (continuous) ──────────────────────────────
@@ -237,7 +235,7 @@ export default function VoiceDelaySheet({ open, onClose, onResult, initialTransc
     <Drawer
       anchor="bottom"
       open={open}
-      onClose={onClose}
+      onClose={cancelRecording}
       PaperProps={{
         sx: {
           borderTopLeftRadius: 24, borderTopRightRadius: 24,
@@ -269,7 +267,7 @@ export default function VoiceDelaySheet({ open, onClose, onResult, initialTransc
             </Typography>
           </Box>
         </Box>
-        <IconButton onClick={onClose} size="small" sx={{ bgcolor: "#E8EAF0", "&:hover": { bgcolor: "#D9DCE6" } }}>
+        <IconButton onClick={cancelRecording} size="small" sx={{ bgcolor: "#E8EAF0", "&:hover": { bgcolor: "#D9DCE6" } }}>
           <CloseRoundedIcon sx={{ fontSize: 18, color: TEXT_SECONDARY }} />
         </IconButton>
       </Box>

@@ -14,10 +14,11 @@ import { apiPost } from "../auth/api";
 const COOLDOWN_MS = 3000; // ignore further detections for 3s after a wake word fires
 
 export default function WakeWordManager({ enabled, onWakeWord }) {
-  const activeRef    = useRef(false);
-  const inflight     = useRef(false); // prevent overlapping Whisper calls
-  const lastFiredRef = useRef(0);
-  const listenerRef  = useRef(null);
+  const activeRef      = useRef(false);
+  const inflight       = useRef(false);
+  const pendingChunk   = useRef(null);  // latest chunk received while a call is inflight
+  const lastFiredRef   = useRef(0);
+  const listenerRef    = useRef(null);
 
   useEffect(() => {
     if (Capacitor.getPlatform() !== "android" || !AudioRecorder) return;
@@ -37,7 +38,6 @@ export default function WakeWordManager({ enabled, onWakeWord }) {
       const perm = await AudioRecorder.requestPermissions();
       if (perm.microphone !== "granted") return;
 
-      // Remove any stale listener before adding a new one
       if (listenerRef.current) {
         listenerRef.current.remove();
         listenerRef.current = null;
@@ -56,6 +56,7 @@ export default function WakeWordManager({ enabled, onWakeWord }) {
   const stopWakeWord = async () => {
     if (!activeRef.current) return;
     activeRef.current = false;
+    pendingChunk.current = null;
     try {
       if (listenerRef.current) { listenerRef.current.remove(); listenerRef.current = null; }
       await AudioRecorder.stopWakeWord();
@@ -65,11 +66,20 @@ export default function WakeWordManager({ enabled, onWakeWord }) {
     }
   };
 
-  const handleChunk = async ({ audioBase64 }) => {
-    if (!activeRef.current || inflight.current) return;
-    const now = Date.now();
-    if (now - lastFiredRef.current < COOLDOWN_MS) return;
+  const handleChunk = ({ audioBase64 }) => {
+    if (!activeRef.current) return;
+    if (Date.now() - lastFiredRef.current < COOLDOWN_MS) return;
 
+    if (inflight.current) {
+      // A call is already running — save this chunk and process it immediately after
+      pendingChunk.current = audioBase64;
+      return;
+    }
+
+    processChunk(audioBase64);
+  };
+
+  const processChunk = async (audioBase64) => {
     inflight.current = true;
     try {
       const result = await apiPost("/odata/v4/GTT/detectWakeWord", { audioBase64 });
@@ -78,11 +88,19 @@ export default function WakeWordManager({ enabled, onWakeWord }) {
         console.log("[WakeWord] detected! remaining:", result.transcript);
         await stopWakeWord();
         onWakeWord?.(result.transcript || "");
+        return; // don't process pending after a successful detection
       }
     } catch (e) {
       console.warn("[WakeWord] detection error:", e);
     } finally {
       inflight.current = false;
+    }
+
+    // If a newer chunk arrived while we were processing, run it now
+    const queued = pendingChunk.current;
+    if (queued && activeRef.current) {
+      pendingChunk.current = null;
+      processChunk(queued);
     }
   };
 

@@ -337,7 +337,11 @@ export default function RouteTimeline({
         0;
 
       // Planned time (default from matched FinalInfo row for this stop)
-      let plannedDateTime = parseSapDateTimeToDate(info?.dateTime ?? info?.dateTimeString ?? null);
+      // SAP may return DateTime (PascalCase) or dateTime (camelCase)
+      let plannedDateTime = parseSapDateTimeToDate(
+        info?.dateTime ?? info?.DateTime ?? info?.dateTimeString ?? info?.DateTimeString ??
+        info?.plannedDateTime ?? info?.PlannedDateTime ?? info?.PlannedArrivalDateTime ?? null
+      );
 
       // Special-case: if ReturnInfo indicates a return DESTINATION that maps to the first-stop location,
       // derive the planned arrival for that destination using FinalInfo matched by ReturnInfo.destStopId/destLoc.
@@ -625,33 +629,56 @@ export default function RouteTimeline({
   useEffect(() => {
   if (!delayReportedInfo) return;
   const { stopId, ts } = delayReportedInfo;
-  if (!stopId) {
-    console.warn("[RouteTimeline] delayReportedInfo missing stopId");
+
+  // Log all derived stops and their completion status
+  console.log("[RouteTimeline] delay effect fired. delayReportedInfo=", JSON.stringify(delayReportedInfo));
+  console.log("[RouteTimeline] derivedStops count:", derivedStops.length);
+  derivedStops.forEach((s, i) => {
+    const key = getStopKey(s);
+    const complete = isStopComplete(s);
+    console.log(`[RouteTimeline]   stop[${i}] key=${key} stopid=${s.stopid} locid=${s.locid} seqpos=${s.stopseqpos} complete=${complete} reportedMap[key]=`, JSON.stringify(reportedMap[key] || {}));
+  });
+
+  // Try exact stopId match first, then fall back to first incomplete non-origin stop
+  const exactMatch = stopId ? derivedStops.find((s) => String(s.stopid || "") === String(stopId)) : null;
+  const fallbackMatch = derivedStops.slice(1).find((s) => !isStopComplete(s));
+  const matchingStop = exactMatch || fallbackMatch;
+
+  console.log("[RouteTimeline] exactMatch=", exactMatch ? getStopKey(exactMatch) : "none",
+    "fallbackMatch=", fallbackMatch ? getStopKey(fallbackMatch) : "none",
+    "using=", matchingStop ? getStopKey(matchingStop) : "none");
+
+  if (!matchingStop) {
+    console.warn("[RouteTimeline] delayReportedInfo: no matching stop found — badge cannot be set");
     return;
   }
 
-  const matchingStop = derivedStops.find(
-    (s) => String(s.stopid || "") === String(stopId)
-  );
-
   setReportedMap((prev) => {
-    if (!matchingStop) return prev;
-
     const key = getStopKey(matchingStop);
     const delayAt = Number.isFinite(Number(ts)) ? Number(ts) : Date.now();
-
-    const next = {
-      ...prev,
-      [key]: {
-        ...(prev[key] || {}),
-        delay: true,
-        delayAt,
-      },
-    };
-    return next;
+    const newEntry = { ...(prev[key] || {}), delay: true, delayAt };
+    console.log("[RouteTimeline] setReportedMap — key:", key, "new entry:", JSON.stringify(newEntry));
+    return { ...prev, [key]: newEntry };
   });
 }, [delayReportedInfo, derivedStops]);
 
+  // Log reportedMap whenever it changes so we can confirm the delay flag is set
+  useEffect(() => {
+    console.log("[RouteTimeline] reportedMap changed:", JSON.stringify(reportedMap));
+  }, [reportedMap]);
+
+
+  // Index of the stop that has a delay reported — used to shift all downstream ETAs
+  const delayedStopIdx = useMemo(() => {
+    if (!delayReportedInfo) return -1;
+    const { stopId } = delayReportedInfo;
+    if (stopId) {
+      const idx = derivedStops.findIndex((s) => String(s.stopid || "") === String(stopId));
+      if (idx >= 0) return idx;
+    }
+    // fallback: first stop with delay flag in reportedMap
+    return derivedStops.findIndex((s) => reportedMap[getStopKey(s)]?.delay);
+  }, [delayReportedInfo, derivedStops, reportedMap]);
 
   // progress
   const completedCount = useMemo(
@@ -1022,10 +1049,9 @@ export default function RouteTimeline({
   const badgeForStop = (stop) => {
     const key = getStopKey(stop);
     const r = reportedMap[key] || {};
-
     const last = isLastStop(stop);
-     // ✅ show delay prominently (adjust priority if you want)
-   
+
+    if (r.delay) console.log("[RouteTimeline] badgeForStop: delay=true for key=", key, "r=", JSON.stringify(r));
 
     // ✅ For intermediate stops, departure should be the final state shown
     if (!last && r.departure) return "Departed";
@@ -1047,7 +1073,7 @@ export default function RouteTimeline({
     if (last && isStopComplete(stop)) return GREEN;
     if (r.departure) return GREEN;
     if (r.arrival || r.unloading || r.pod || r.return) return ORANGE;
-    if (r.delay) return RED; 
+    if (r.delay) return RED;
     return BLUE;
   };
 
@@ -1231,16 +1257,30 @@ export default function RouteTimeline({
                     {plannedText}
                   </p>
 
-                  {!departed && liveStopEtas.has(stop.stopid) && (
-                    <>
-                      <p className="text-[12px] mt-2" style={{ color: TEXT_SECONDARY }}>
-                        Estimated Arrival
-                      </p>
-                      <p className="text-[12px] mt-0" style={{ color: "#1976D2", fontWeight: 600 }}>
-                        {liveStopEtas.get(stop.stopid).text}
-                      </p>
-                    </>
-                  )}
+                  {!departed && liveStopEtas.has(stop.stopid) && (() => {
+                    const eta = liveStopEtas.get(stop.stopid);
+                    const stopIdx = derivedStops.indexOf(stop);
+                    const delayMins = delayReportedInfo?.delayMinutes > 0 && delayedStopIdx >= 0 && stopIdx >= delayedStopIdx
+                      ? delayReportedInfo.delayMinutes : 0;
+                    let etaText = eta.text;
+                    if (delayMins > 0) {
+                      const adjustedMs = eta.etaMs + delayMins * 60000;
+                      const h = Math.floor(delayMins / 60), m = delayMins % 60;
+                      const delayLabel = h > 0 && m > 0 ? `+${h}h ${m}m` : h > 0 ? `+${h}h` : `+${m}m`;
+                      const timeStr = new Date(adjustedMs).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+                      etaText = `${timeStr} (${delayLabel} delay)`;
+                    }
+                    return (
+                      <>
+                        <p className="text-[12px] mt-2" style={{ color: TEXT_SECONDARY }}>
+                          Estimated Arrival
+                        </p>
+                        <p className="text-[12px] mt-0" style={{ color: delayMins > 0 ? "#D32F2F" : "#1976D2", fontWeight: 600 }}>
+                          {etaText}
+                        </p>
+                      </>
+                    );
+                  })()}
 
                   {/* Materials + Return (always show return when present) */}
                   <div style={{ marginTop: 8, color: TEXT_SECONDARY, fontSize: 13, fontWeight: 700 }}>

@@ -47,8 +47,10 @@ public class AudioRecorderPlugin extends Plugin {
     private static final int MIN_BUF       = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CFG, AUDIO_FMT);
     // 100ms read blocks
     private static final int READ_BLOCK    = SAMPLE_RATE / 10 * 2; // 16-bit = 2 bytes/sample
-    // RMS threshold — below this = silence (no speech)
-    private static final double RMS_THRESHOLD = 600.0;
+    // RMS threshold — below this = silence (no speech).
+    // Checked against the most recent 1-second STRIDE (not the full 2-second window)
+    // so a short ~0.6s utterance like "Hey Sky" isn't diluted by surrounding silence.
+    private static final double RMS_THRESHOLD = 400.0;
     // Sliding window: 2s window emitted every 1s stride
     // "Hey Sky" is ~0.8s; a 2s window with 1s stride guarantees it's always fully captured
     private static final int WINDOW_SAMPLES = SAMPLE_RATE * 2; // 2s window
@@ -208,8 +210,10 @@ public class AudioRecorderPlugin extends Plugin {
                         }
                         strideFilled = 0;
 
-                        // Only emit once we have a full 2s window with speech energy
-                        if (windowFilled >= WINDOW_BYTES && calculateRMS(window) >= RMS_THRESHOLD) {
+                        // Emit when full 2s window is ready AND the most recent 1s stride
+                        // has speech energy. Using stride RMS avoids diluting a short
+                        // "Hey Sky" (~0.6s) with the surrounding silence in the window.
+                        if (windowFilled >= WINDOW_BYTES && calculateRMS(strideBuf) >= RMS_THRESHOLD) {
                             byte[] toEmit = window.clone();
                             byte[] wav    = buildWav(toEmit);
                             String b64    = Base64.encodeToString(wav, Base64.NO_WRAP);
