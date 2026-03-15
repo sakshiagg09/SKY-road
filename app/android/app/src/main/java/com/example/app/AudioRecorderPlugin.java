@@ -49,9 +49,12 @@ public class AudioRecorderPlugin extends Plugin {
     private static final int READ_BLOCK    = SAMPLE_RATE / 10 * 2; // 16-bit = 2 bytes/sample
     // RMS threshold — below this = silence (no speech)
     private static final double RMS_THRESHOLD = 600.0;
-    // 1-second chunk for wake-word detection ("Hey Sky" is ~0.5s)
-    private static final int CHUNK_SAMPLES = SAMPLE_RATE * 1; // 1s * 16000 = 16000 samples
-    private static final int CHUNK_BYTES   = CHUNK_SAMPLES * 2; // 16-bit
+    // Sliding window: 2s window emitted every 1s stride
+    // "Hey Sky" is ~0.8s; a 2s window with 1s stride guarantees it's always fully captured
+    private static final int WINDOW_SAMPLES = SAMPLE_RATE * 2; // 2s window
+    private static final int WINDOW_BYTES   = WINDOW_SAMPLES * 2;
+    private static final int STRIDE_SAMPLES = SAMPLE_RATE * 1; // emit every 1s
+    private static final int STRIDE_BYTES   = STRIDE_SAMPLES * 2;
 
     private AudioRecord audioRecord;
     private volatile boolean recordingActive  = false;
@@ -172,34 +175,50 @@ public class AudioRecorderPlugin extends Plugin {
         call.resolve();
 
         executor.execute(() -> {
-            byte[] chunkBuf = new byte[CHUNK_BYTES];
-            int filled = 0;
-            byte[] readBuf = new byte[READ_BLOCK];
+            // Sliding window: keep last WINDOW_BYTES of audio, advance by STRIDE_BYTES each step
+            byte[] window     = new byte[WINDOW_BYTES];
+            int    windowFilled = 0;           // bytes populated so far (ramps up to WINDOW_BYTES)
+            byte[] strideBuf  = new byte[STRIDE_BYTES];
+            int    strideFilled = 0;
+            byte[] readBuf    = new byte[READ_BLOCK];
 
             while (wakeWordActive) {
                 int read = audioRecord.read(readBuf, 0, readBuf.length);
                 if (read <= 0) continue;
 
-                // Fill chunk buffer
-                int space = CHUNK_BYTES - filled;
-                int toCopy = Math.min(read, space);
-                System.arraycopy(readBuf, 0, chunkBuf, filled, toCopy);
-                filled += toCopy;
+                // Feed raw bytes into stride buffer (may span multiple reads)
+                int srcOff = 0;
+                while (srcOff < read) {
+                    int space   = STRIDE_BYTES - strideFilled;
+                    int toCopy  = Math.min(read - srcOff, space);
+                    System.arraycopy(readBuf, srcOff, strideBuf, strideFilled, toCopy);
+                    strideFilled += toCopy;
+                    srcOff       += toCopy;
 
-                if (filled >= CHUNK_BYTES) {
-                    // We have a full 2-second chunk
-                    byte[] fullChunk = chunkBuf.clone();
-                    filled = 0;
+                    if (strideFilled >= STRIDE_BYTES) {
+                        // Slide window: shift left by one stride, append new stride on the right
+                        if (windowFilled < WINDOW_BYTES) {
+                            // Window not yet full — just append
+                            System.arraycopy(strideBuf, 0, window, windowFilled, STRIDE_BYTES);
+                            windowFilled += STRIDE_BYTES;
+                        } else {
+                            // Shift left and fill right
+                            System.arraycopy(window, STRIDE_BYTES, window, 0, WINDOW_BYTES - STRIDE_BYTES);
+                            System.arraycopy(strideBuf, 0, window, WINDOW_BYTES - STRIDE_BYTES, STRIDE_BYTES);
+                        }
+                        strideFilled = 0;
 
-                    // Only emit if speech energy detected (skip silence)
-                    if (calculateRMS(fullChunk) >= RMS_THRESHOLD) {
-                        byte[] wav = buildWav(fullChunk);
-                        String b64 = Base64.encodeToString(wav, Base64.NO_WRAP);
-                        mainHandler.post(() -> {
-                            JSObject data = new JSObject();
-                            data.put("audioBase64", b64);
-                            notifyListeners("chunk", data);
-                        });
+                        // Only emit once we have a full 2s window with speech energy
+                        if (windowFilled >= WINDOW_BYTES && calculateRMS(window) >= RMS_THRESHOLD) {
+                            byte[] toEmit = window.clone();
+                            byte[] wav    = buildWav(toEmit);
+                            String b64    = Base64.encodeToString(wav, Base64.NO_WRAP);
+                            mainHandler.post(() -> {
+                                JSObject data = new JSObject();
+                                data.put("audioBase64", b64);
+                                notifyListeners("chunk", data);
+                            });
+                        }
                     }
                 }
             }
