@@ -14,9 +14,11 @@ import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import SendIcon from "@mui/icons-material/Send";
 import KeyboardIcon from "@mui/icons-material/Keyboard";
 import { Capacitor } from "@capacitor/core";
+import AudioRecorder from "../audioRecorder";
+import { apiPost } from "../auth/api";
 
-const PRIMARY       = "#1976D2";
-const TEXT_PRIMARY  = "#071E54";
+const PRIMARY        = "#1976D2";
+const TEXT_PRIMARY   = "#071E54";
 const TEXT_SECONDARY = "#6B6C6E";
 const BG   = "#EFF0F3";
 const CARD = "#FFFFFF";
@@ -26,199 +28,188 @@ const PRIORITY_COLORS = {
   Normal: { bg: "#FFF1DA", color: "#EA7600" },
   High:   { bg: "#FDE4E4", color: "#D32F2F" },
 };
-
 const EVENT_ICON = { Delay: "⏱", Accident: "⚠️", "Customs Hold": "🛃", Other: "📋" };
 
-export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = false }) {
-  const [voiceState, setVoiceState]       = useState("idle"); // idle|listening|processing|result|error
-  const [liveTranscript, setLiveTranscript] = useState("");
-  const [finalTranscript, setFinalTranscript] = useState("");
-  const [result, setResult]               = useState(null);
-  const [errorMsg, setErrorMsg]           = useState("");
-  const [showManual, setShowManual]       = useState(false);
-  const [manualText, setManualText]       = useState("");
+/**
+ * VoiceDelaySheet
+ *
+ * Props:
+ *   open              — controls drawer visibility
+ *   onClose           — called when user closes
+ *   onResult(result)  — called when interpretation is ready (auto-submits in App)
+ *   initialTranscript — if provided (from wake word), skip recording and go straight to interpret
+ */
+export default function VoiceDelaySheet({ open, onClose, onResult, initialTranscript = "" }) {
+  const [voiceState, setVoiceState]           = useState("idle"); // idle|listening|processing|result|error
+  const [transcript, setTranscript]           = useState("");
+  const [result, setResult]                   = useState(null);
+  const [errorMsg, setErrorMsg]               = useState("");
+  const [showManual, setShowManual]           = useState(false);
+  const [manualText, setManualText]           = useState("");
 
-  const recognitionRef  = useRef(null);   // Web SpeechRecognition
-  const nativeListening = useRef(false);  // Native plugin active flag
-  const liveRef  = useRef("");
-  const finalRef = useRef("");
+  const webRecognitionRef = useRef(null);
+  const androidRecording  = useRef(false);
 
-  // Reset when sheet opens/closes; auto-start recording if triggered by wake word
+  // ── Reset & handle initialTranscript on open ───────────────────────────────
   useEffect(() => {
-    if (open) {
-      setVoiceState("idle");
-      setLiveTranscript("");
-      setFinalTranscript("");
-      setResult(null);
-      setErrorMsg("");
-      setShowManual(false);
-      setManualText("");
-      liveRef.current  = "";
-      finalRef.current = "";
+    if (!open) {
+      stopAndCleanup();
+      return;
+    }
 
-      if (autoStart) {
-        // Small delay: let drawer animation finish + WakeWordListener mic release
-        const t = setTimeout(() => startListening(), 600);
-        return () => clearTimeout(t);
-      }
+    setVoiceState("idle");
+    setTranscript("");
+    setResult(null);
+    setErrorMsg("");
+    setShowManual(false);
+    setManualText("");
+
+    if (initialTranscript?.trim()) {
+      // Wake word already captured a command — skip recording
+      interpretMessage(initialTranscript.trim());
+    } else {
+      // Auto-start recording immediately when sheet opens
+      setTimeout(() => {
+        if (Capacitor.getPlatform() === "android") startAndroidRecording();
+        else startWebRecording();
+      }, 300); // brief delay so the drawer animation completes first
     }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Interpret transcript via CAP action ────────────────────────────────────
+  const stopAndCleanup = () => {
+    if (Capacitor.getPlatform() === "android" && AudioRecorder && androidRecording.current) {
+      androidRecording.current = false;
+      AudioRecorder.stop().catch(() => {});
+    }
+    if (webRecognitionRef.current) {
+      try { webRecognitionRef.current.abort(); } catch (_) {}
+      webRecognitionRef.current = null;
+    }
+  };
+
+  // ── Interpret transcript via CAP + OpenAI Whisper pipeline ─────────────────
   const interpretMessage = async (text) => {
-    setFinalTranscript(text);
+    setTranscript(text);
     setVoiceState("processing");
     try {
-      const res = await fetch("/odata/v4/GTT/interpretVoice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: text }),
-      });
-      if (!res.ok) throw new Error(`Server error ${res.status}`);
-      const data = await res.json();
+      const data = await apiPost("/odata/v4/GTT/interpretVoice", { transcript: text });
       setResult(data);
       setVoiceState("result");
-      // Auto-submit: open pre-filled delay dialog immediately, no "Report Now" tap needed
       if (onResult) onResult(data);
     } catch (e) {
-      setErrorMsg(e.message || "Failed to interpret message.");
+      setErrorMsg(e.message || "Failed to interpret. Please try again.");
       setVoiceState("error");
     }
   };
 
-  // ── Native path: @capacitor-community/speech-recognition ──────────────────
-  const startNativeListening = async () => {
+  // ── Android: AudioRecord (raw PCM, no beep) → Whisper on stop ──────────────
+  const startAndroidRecording = async () => {
+    if (!AudioRecorder) {
+      setErrorMsg("Audio recording not available.");
+      setVoiceState("error");
+      return;
+    }
     try {
-      const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
-
-      // Request permission
-      const perm = await SpeechRecognition.requestPermissions();
-      if (perm.speechRecognition !== "granted") {
+      const perm = await AudioRecorder.requestPermissions();
+      if (perm.microphone !== "granted") {
         setErrorMsg("Microphone permission denied.");
         setVoiceState("error");
         return;
       }
-
-      // Clear any stale listeners (e.g. from WakeWordListener)
-      await SpeechRecognition.removeAllListeners();
-
-      // Listen to partial results to update live transcript
-      await SpeechRecognition.addListener("partialResults", (data) => {
-        const partial = Array.isArray(data.matches) ? data.matches[0] || "" : "";
-        liveRef.current = partial;
-        setLiveTranscript(partial);
-      });
-
-      nativeListening.current = true;
+      androidRecording.current = true;
       setVoiceState("listening");
-
-      // Loop: Android auto-stops after silence — restart until user taps stop
-      while (nativeListening.current) {
-        await SpeechRecognition.start({
-          language: "en-US",
-          maxResults: 1,
-          partialResults: true,
-          popup: false,
-        });
-        // start() resolved — Android ended the session
-        // If user hasn't tapped stop, wait briefly and restart
-        if (!nativeListening.current) break;
-        await new Promise((r) => setTimeout(r, 200));
-      }
-
-      await SpeechRecognition.removeAllListeners();
-
-      const text = liveRef.current;
-      if (text.trim()) {
-        interpretMessage(text.trim());
-      } else {
-        setVoiceState("idle");
-      }
+      await AudioRecorder.start();
     } catch (e) {
-      nativeListening.current = false;
-      setErrorMsg(`Voice error: ${e.message || e}`);
+      androidRecording.current = false;
+      setErrorMsg(`Could not start recording: ${e.message || e}`);
       setVoiceState("error");
     }
   };
 
-  const stopNativeListening = async () => {
-    if (!nativeListening.current) return;
-    // Set flag FIRST so the restart loop exits when start() resolves
-    nativeListening.current = false;
+  const stopAndroidRecording = async () => {
+    if (!androidRecording.current) return;
+    androidRecording.current = false;
+    setVoiceState("processing");
     try {
-      const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
-      await SpeechRecognition.stop();
-    } catch (_) {}
+      const { audioBase64 } = await AudioRecorder.stop();
+      if (!audioBase64) { setVoiceState("idle"); return; }
+      const { transcript: text } = await apiPost("/odata/v4/GTT/transcribeAudio", { audioBase64 });
+      if (!text?.trim()) {
+        setErrorMsg("Could not detect speech. Please try again.");
+        setVoiceState("error");
+        return;
+      }
+      interpretMessage(text.trim());
+    } catch (e) {
+      setErrorMsg(e.message || "Transcription failed. Please try again.");
+      setVoiceState("error");
+    }
   };
 
-  // ── Web path: webkitSpeechRecognition (continuous) ─────────────────────────
-  const startWebListening = () => {
+  const cancelRecording = () => {
+    if (Capacitor.getPlatform() === "android" && AudioRecorder && androidRecording.current) {
+      androidRecording.current = false;
+      AudioRecorder.stop().catch(() => {});
+    }
+    if (webRecognitionRef.current) {
+      try { webRecognitionRef.current.abort(); } catch (_) {}
+      webRecognitionRef.current = null;
+    }
+    onClose();
+  };
+
+  // ── Web: webkitSpeechRecognition (continuous) ──────────────────────────────
+  const startWebRecording = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      setErrorMsg("Speech recognition not supported in this browser. Use Chrome or tap 'Type instead'.");
+      setErrorMsg("Speech recognition not supported. Use Chrome or tap 'Type instead'.");
       setVoiceState("error");
       return;
     }
-
     const recognition = new SR();
     recognition.lang = "en-US";
     recognition.interimResults = true;
     recognition.continuous = true;
-    recognitionRef.current = recognition;
+    webRecognitionRef.current = recognition;
+    let finalText = "";
 
-    recognition.onstart = () => setVoiceState("listening");
-
-    recognition.onresult = (event) => {
-      let final = "";
-      let interim = "";
-      for (let i = 0; i < event.results.length; i++) {
-        if (event.results[i].isFinal) final  += event.results[i][0].transcript + " ";
-        else                          interim += event.results[i][0].transcript;
+    recognition.onstart  = () => setVoiceState("listening");
+    recognition.onresult = (e) => {
+      let final = "", interim = "";
+      for (let i = 0; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final  += e.results[i][0].transcript + " ";
+        else                      interim += e.results[i][0].transcript;
       }
-      const display = (final + interim).trim();
-      liveRef.current  = display;
-      finalRef.current = final.trim();
-      setLiveTranscript(display);
+      finalText = final.trim();
+      setTranscript((final + interim).trim());
     };
-
-    recognition.onend = () => {
-      recognitionRef.current = null;
-      const text = finalRef.current || liveRef.current;
-      if (text) interpretMessage(text);
-      else      setVoiceState("idle");
+    recognition.onend  = () => {
+      webRecognitionRef.current = null;
+      if (finalText) interpretMessage(finalText);
+      else setVoiceState("idle");
     };
-
     recognition.onerror = (e) => {
-      if (e.error === "no-speech") return; // ignore pauses in continuous mode
-      recognitionRef.current = null;
-      setErrorMsg(`Mic error: ${e.error}. Try typing instead.`);
+      if (e.error === "no-speech") return;
+      webRecognitionRef.current = null;
+      setErrorMsg(`Mic error: ${e.error}`);
       setVoiceState("error");
     };
-
     recognition.start();
   };
 
   // ── Unified start / stop ───────────────────────────────────────────────────
   const startListening = () => {
-    liveRef.current  = "";
-    finalRef.current = "";
-    setLiveTranscript("");
-    if (Capacitor.isNativePlatform()) {
-      startNativeListening();
-    } else {
-      startWebListening();
-    }
+    setTranscript("");
+    if (Capacitor.getPlatform() === "android") startAndroidRecording();
+    else startWebRecording();
   };
 
   const stopListening = () => {
-    if (Capacitor.isNativePlatform()) {
-      stopNativeListening();
-    } else if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
+    if (Capacitor.getPlatform() === "android") stopAndroidRecording();
+    else if (webRecognitionRef.current) webRecognitionRef.current.stop();
   };
 
-  // ── Manual text submit ─────────────────────────────────────────────────────
+  // ── Manual text ────────────────────────────────────────────────────────────
   const handleManualSubmit = () => {
     const text = manualText.trim();
     if (!text) return;
@@ -227,24 +218,16 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
   };
 
   const handleReset = () => {
-    recognitionRef.current = null;
     setVoiceState("idle");
-    setLiveTranscript("");
-    setFinalTranscript("");
+    setTranscript("");
     setResult(null);
     setErrorMsg("");
-    liveRef.current  = "";
-    finalRef.current = "";
-  };
-
-  const handleReport = () => {
-    if (result && onResult) onResult(result);
+    webRecognitionRef.current = null;
   };
 
   const formatDelay = (mins) => {
     if (!mins || mins <= 0) return null;
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
+    const h = Math.floor(mins / 60), m = mins % 60;
     if (h > 0 && m > 0) return `${h}h ${m}m`;
     if (h > 0) return `${h} hour${h > 1 ? "s" : ""}`;
     return `${m} min`;
@@ -257,15 +240,12 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
       onClose={onClose}
       PaperProps={{
         sx: {
-          borderTopLeftRadius: 24,
-          borderTopRightRadius: 24,
-          backgroundColor: BG,
-          maxHeight: "88vh",
-          overflow: "hidden",
+          borderTopLeftRadius: 24, borderTopRightRadius: 24,
+          backgroundColor: BG, maxHeight: "88vh", overflow: "hidden",
         },
       }}
     >
-      {/* Drag handle */}
+      {/* Handle */}
       <Box sx={{ display: "flex", justifyContent: "center", pt: 1.5, pb: 0.5 }}>
         <Box sx={{ width: 40, height: 4, borderRadius: 2, bgcolor: "#CBD2E0" }} />
       </Box>
@@ -285,7 +265,7 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
               Voice Report
             </Typography>
             <Typography sx={{ fontSize: 11, color: TEXT_SECONDARY }}>
-              Speak to report a delay or event
+              Say "Hey Sky" or tap the mic
             </Typography>
           </Box>
         </Box>
@@ -294,14 +274,14 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
         </IconButton>
       </Box>
 
-      {/* Scrollable body */}
+      {/* Body */}
       <Box sx={{ px: 3, pb: 4, overflowY: "auto" }}>
 
         {/* ── IDLE ── */}
         {voiceState === "idle" && !showManual && (
           <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 3, gap: 3 }}>
             <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, textAlign: "center", maxWidth: 280 }}>
-              Tap the mic and describe any delays or issues. Tap stop when done — we won't cut you off during pauses.
+              Tap the mic, describe any delay, then tap stop.
             </Typography>
 
             <Box
@@ -312,8 +292,8 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
                 display: "flex", alignItems: "center", justifyContent: "center",
                 cursor: "pointer",
                 boxShadow: "0 10px 28px rgba(25,118,210,0.42), -4px -4px 12px rgba(255,255,255,0.8)",
-                transition: "transform 0.15s ease",
                 "&:active": { transform: "scale(0.94)" },
+                transition: "transform 0.15s ease",
               }}
             >
               <MicIcon sx={{ fontSize: 42, color: "#fff" }} />
@@ -338,9 +318,7 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
         {/* ── MANUAL INPUT ── */}
         {showManual && voiceState === "idle" && (
           <Box sx={{ py: 2, display: "flex", flexDirection: "column", gap: 2 }}>
-            <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY }}>
-              Describe the delay or issue:
-            </Typography>
+            <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY }}>Describe the delay or issue:</Typography>
             <TextField
               multiline minRows={3} fullWidth autoFocus
               placeholder='e.g. "Stuck in traffic on highway 8, will be 2 hours late"'
@@ -353,9 +331,7 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
                 Cancel
               </Button>
               <Button
-                onClick={handleManualSubmit}
-                variant="contained"
-                disabled={!manualText.trim()}
+                onClick={handleManualSubmit} variant="contained" disabled={!manualText.trim()}
                 endIcon={<SendIcon sx={{ fontSize: 16 }} />}
                 sx={{ textTransform: "none", fontWeight: 600, borderRadius: 2, background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)" }}
               >
@@ -371,25 +347,23 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
             <Box sx={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <Box sx={{
                 position: "absolute", width: 112, height: 112, borderRadius: "50%",
-                bgcolor: "rgba(211,47,47,0.14)",
-                pointerEvents: "none", // don't swallow touches
+                bgcolor: "rgba(211,47,47,0.14)", pointerEvents: "none",
                 animation: "pulse-ring 1.4s ease-out infinite",
                 "@keyframes pulse-ring": {
-                  "0%":   { transform: "scale(0.82)", opacity: 1 },
+                  "0%": { transform: "scale(0.82)", opacity: 1 },
                   "100%": { transform: "scale(1.45)", opacity: 0 },
                 },
               }} />
               <Box
-                onPointerDown={stopListening}  // instant response on mobile, no 300ms delay
+                onPointerDown={stopListening}
                 sx={{
-                  width: 96, height: 96, borderRadius: "50%", // slightly larger hit area
+                  width: 96, height: 96, borderRadius: "50%",
                   background: "linear-gradient(135deg, #D32F2F 0%, #EF5350 100%)",
                   display: "flex", alignItems: "center", justifyContent: "center",
                   cursor: "pointer", zIndex: 1,
                   boxShadow: "0 8px 24px rgba(211,47,47,0.4)",
-                  touchAction: "manipulation",
-                  userSelect: "none",
-                  "&:active": { transform: "scale(0.92)", opacity: 0.9 },
+                  touchAction: "manipulation", userSelect: "none",
+                  "&:active": { transform: "scale(0.92)" },
                 }}
               >
                 <StopIcon sx={{ fontSize: 44, color: "#fff" }} />
@@ -398,17 +372,20 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
 
             <Typography sx={{ fontSize: 14, fontWeight: 600, color: TEXT_PRIMARY }}>Listening…</Typography>
 
-            {liveTranscript && (
+            {transcript && (
               <Box sx={{ bgcolor: CARD, borderRadius: "14px", p: 2, width: "100%", boxShadow: "4px 4px 12px #D9DCE6, -4px -4px 12px #ffffff" }}>
-                <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, fontStyle: "italic" }}>
-                  "{liveTranscript}"
-                </Typography>
+                <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, fontStyle: "italic" }}>"{transcript}"</Typography>
               </Box>
             )}
 
-            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>
-              Tap the red button when done speaking
-            </Typography>
+            <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY }}>Tap the red button when done</Typography>
+
+            <Button
+              onClick={cancelRecording}
+              sx={{ textTransform: "none", fontSize: 13, color: TEXT_SECONDARY, borderRadius: 99, border: "1px solid #CBD2E0", px: 3, py: 0.75, bgcolor: CARD }}
+            >
+              Cancel
+            </Button>
           </Box>
         )}
 
@@ -417,17 +394,13 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
           <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 5, gap: 3 }}>
             <CircularProgress size={52} thickness={4} sx={{ color: PRIMARY }} />
             <Box sx={{ textAlign: "center" }}>
-              <Typography sx={{ fontSize: 15, fontWeight: 600, color: TEXT_PRIMARY }}>Interpreting…</Typography>
-              <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, mt: 0.5 }}>Analysing your message</Typography>
+              <Typography sx={{ fontSize: 15, fontWeight: 600, color: TEXT_PRIMARY }}>Processing…</Typography>
+              <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, mt: 0.5 }}>Transcribing and analysing</Typography>
             </Box>
-            {finalTranscript && (
+            {transcript && (
               <Box sx={{ bgcolor: CARD, borderRadius: "14px", p: 2, width: "100%", boxShadow: "4px 4px 12px #D9DCE6, -4px -4px 12px #ffffff" }}>
-                <Typography sx={{ fontSize: 11, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 0.8, mb: 0.5 }}>
-                  Your message
-                </Typography>
-                <Typography sx={{ fontSize: 13, color: TEXT_PRIMARY, fontStyle: "italic" }}>
-                  "{finalTranscript}"
-                </Typography>
+                <Typography sx={{ fontSize: 11, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 0.8, mb: 0.5 }}>Your message</Typography>
+                <Typography sx={{ fontSize: 13, color: TEXT_PRIMARY, fontStyle: "italic" }}>"{transcript}"</Typography>
               </Box>
             )}
           </Box>
@@ -444,7 +417,6 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
             </Box>
 
             <Box sx={{ bgcolor: CARD, borderRadius: "18px", p: 2.5, boxShadow: "6px 6px 18px #D5D9E2, -6px -6px 18px #ffffff", display: "flex", flexDirection: "column", gap: 2 }}>
-              {/* Event type row */}
               <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
                   <Box sx={{ width: 42, height: 42, borderRadius: "12px", bgcolor: "#FDE4E4", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>
@@ -456,19 +428,14 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
                   </Box>
                 </Box>
                 {result.priority && (
-                  <Chip
-                    label={result.priority}
-                    size="small"
-                    sx={{
-                      bgcolor: PRIORITY_COLORS[result.priority]?.bg ?? "#F0F0F0",
-                      color:   PRIORITY_COLORS[result.priority]?.color ?? TEXT_SECONDARY,
-                      fontWeight: 700, fontSize: 11,
-                    }}
-                  />
+                  <Chip label={result.priority} size="small" sx={{
+                    bgcolor: PRIORITY_COLORS[result.priority]?.bg ?? "#F0F0F0",
+                    color:   PRIORITY_COLORS[result.priority]?.color ?? TEXT_SECONDARY,
+                    fontWeight: 700, fontSize: 11,
+                  }} />
                 )}
               </Box>
 
-              {/* Delay duration */}
               {result.delayMinutes > 0 && (
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, px: 1.5, py: 1.2, bgcolor: "#EAF4FF", borderRadius: "10px", borderLeft: `3px solid ${PRIMARY}` }}>
                   <AccessTimeIcon sx={{ fontSize: 20, color: PRIMARY }} />
@@ -479,7 +446,6 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
                 </Box>
               )}
 
-              {/* Notes */}
               {result.notes && (
                 <Box>
                   <Typography sx={{ fontSize: 10, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 0.8, mb: 0.5 }}>Summary</Typography>
@@ -487,36 +453,25 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
                 </Box>
               )}
 
-              {/* Original transcript */}
               <Box sx={{ borderTop: "1px solid #EAECF4", pt: 1.5 }}>
                 <Typography sx={{ fontSize: 10, color: TEXT_SECONDARY, textTransform: "uppercase", letterSpacing: 0.8, mb: 0.4 }}>Original message</Typography>
-                <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, fontStyle: "italic" }}>"{finalTranscript}"</Typography>
+                <Typography sx={{ fontSize: 12, color: TEXT_SECONDARY, fontStyle: "italic" }}>"{transcript}"</Typography>
               </Box>
             </Box>
 
-            {/* Actions */}
             <Box sx={{ display: "flex", gap: 1.5, mt: 0.5 }}>
               <Button
                 onClick={handleReset}
                 startIcon={<RefreshIcon sx={{ fontSize: 16 }} />}
-                sx={{
-                  flex: 1, textTransform: "none", borderRadius: "12px",
-                  border: "1px solid #CBD2E0", color: TEXT_SECONDARY,
-                  bgcolor: CARD, fontWeight: 500, "&:hover": { bgcolor: "#F0F2F8" },
-                }}
+                sx={{ flex: 1, textTransform: "none", borderRadius: "12px", border: "1px solid #CBD2E0", color: TEXT_SECONDARY, bgcolor: CARD, fontWeight: 500, "&:hover": { bgcolor: "#F0F2F8" } }}
               >
                 Re-record
               </Button>
               <Button
-                onClick={handleReport}
+                onClick={() => { if (result && onResult) onResult(result); }}
                 variant="contained"
                 endIcon={<WarningAmberIcon sx={{ fontSize: 16 }} />}
-                sx={{
-                  flex: 2, textTransform: "none", borderRadius: "12px", fontWeight: 600,
-                  background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)",
-                  boxShadow: "0 6px 18px rgba(25,118,210,0.38)",
-                  "&:hover": { background: "linear-gradient(135deg, #1565C0 0%, #42A5F5 100%)" },
-                }}
+                sx={{ flex: 2, textTransform: "none", borderRadius: "12px", fontWeight: 600, background: "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)", boxShadow: "0 6px 18px rgba(25,118,210,0.38)" }}
               >
                 Report Now
               </Button>
@@ -530,12 +485,8 @@ export default function VoiceDelaySheet({ open, onClose, onResult, autoStart = f
             <Typography sx={{ fontSize: 15, fontWeight: 600, color: "#D32F2F" }}>Something went wrong</Typography>
             <Typography sx={{ fontSize: 13, color: TEXT_SECONDARY, textAlign: "center" }}>{errorMsg}</Typography>
             <Box sx={{ display: "flex", gap: 1.5 }}>
-              <Button onClick={handleReset} variant="outlined" sx={{ textTransform: "none", borderRadius: 2 }}>
-                Try Again
-              </Button>
-              <Button onClick={() => { handleReset(); setShowManual(true); }} variant="contained" sx={{ textTransform: "none", borderRadius: 2, bgcolor: PRIMARY }}>
-                Type Instead
-              </Button>
+              <Button onClick={handleReset} variant="outlined" sx={{ textTransform: "none", borderRadius: 2 }}>Try Again</Button>
+              <Button onClick={() => { handleReset(); setShowManual(true); }} variant="contained" sx={{ textTransform: "none", borderRadius: 2, bgcolor: PRIMARY }}>Type Instead</Button>
             </Box>
           </Box>
         )}

@@ -18,6 +18,11 @@ target/
 *.mtar
 mta_archives/
 
+# Environment / secrets
+.env
+.env.local
+.env.local.bak
+
 # Other
 .DS_Store
 *.orig

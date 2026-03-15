@@ -11,6 +11,8 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(SilentSpeechPlugin.class);
+        registerPlugin(AudioRecorderPlugin.class);
         super.onCreate(savedInstanceState);
 
         // 🔁 Ensure tracking service is running whenever app is opened

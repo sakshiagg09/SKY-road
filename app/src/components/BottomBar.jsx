@@ -8,6 +8,7 @@ import MicIcon from "@mui/icons-material/Mic";
 import { Menu, MenuItem } from "@mui/material";
 
 const BAR_HEIGHT = 64;
+const PRIMARY = "#1976D2";
 
 export default function BottomBar({
   activeTab,
@@ -16,7 +17,6 @@ export default function BottomBar({
   onMapClick,
   onAttachmentsClick,
   onVoiceClick,
-  voiceEnabled = false,
   hasShipment = false,
 }) {
   const [anchorEl, setAnchorEl] = useState(null);
@@ -81,8 +81,8 @@ export default function BottomBar({
             display: "grid",
             gridTemplateColumns: "repeat(5, 1fr)",
             alignItems: "center",
-            paddingLeft: 6,
-            paddingRight: 6,
+            paddingLeft: 10,
+            paddingRight: 10,
           }}
         >
           {/* HOME */}
@@ -117,6 +117,26 @@ export default function BottomBar({
             <span style={{ fontSize: 11, marginTop: 2 }}>Map</span>
           </button>
 
+          {/* VOICE */}
+          <button
+            className="flex flex-col items-center"
+            style={{
+              color: hasShipment ? PRIMARY : "#6b6c6e",
+              opacity: hasShipment ? 1 : 0.45,
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              padding: 0,
+            }}
+            onClick={() => {
+              if (!hasShipment) { alert("Please open a Freight Order first."); return; }
+              onVoiceClick?.();
+            }}
+          >
+            <MicIcon sx={{ fontSize: 20 }} />
+            <span style={{ fontSize: 11, marginTop: 2 }}>Voice</span>
+          </button>
+
           {/* ATTACHMENTS */}
           <button
             className="flex flex-col items-center"
@@ -132,33 +152,6 @@ export default function BottomBar({
           >
             <AttachFileOutlinedIcon sx={{ fontSize: 20 }} />
             <span style={{ fontSize: 11, marginTop: 2 }}>Attachments</span>
-          </button>
-
-          {/* VOICE — enabled only on details page with shipment loaded */}
-          <button
-            className="flex flex-col items-center"
-            style={{
-              background: "transparent",
-              border: "none",
-              outline: "none",
-              padding: 0,
-              opacity: voiceEnabled ? 1 : 0.35,
-              cursor: voiceEnabled ? "pointer" : "default",
-            }}
-            onClick={voiceEnabled && typeof onVoiceClick === "function" ? onVoiceClick : undefined}
-          >
-            <div style={{
-              width: 30, height: 30, borderRadius: "50%",
-              background: voiceEnabled
-                ? "linear-gradient(135deg, #1976D2 0%, #42A5F5 100%)"
-                : "#c0c4cc",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: voiceEnabled ? "0 3px 8px rgba(25,118,210,0.35)" : "none",
-              marginBottom: 2,
-            }}>
-              <MicIcon sx={{ fontSize: 16, color: "#fff" }} />
-            </div>
-            <span style={{ fontSize: 11, color: voiceEnabled ? "#1976D2" : "#6b6c6e", fontWeight: voiceEnabled ? 600 : 400 }}>Voice</span>
           </button>
 
           {/* REPORT */}

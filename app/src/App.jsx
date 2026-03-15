@@ -1,18 +1,18 @@
 // src/App.jsx
 import { useState, useEffect, useCallback } from "react";
-import { Snackbar, Alert, Backdrop, CircularProgress, Typography, Box } from "@mui/material";
 
 import ShipmentSearchPage from "./pages/ShipmentSearchPage";
 import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
 import BottomBar from "./components/BottomBar";
 import ReportEventDialog from "./components/ReportEventDialog";
 import VoiceDelaySheet from "./components/VoiceDelaySheet";
-import WakeWordListener from "./components/WakeWordListener";
+import WakeWordManager from "./components/WakeWordManager";
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
 import { Capacitor } from "@capacitor/core";
 import { loginPKCE, loadToken } from "./auth/auth";
 import { apiGet, apiPost } from "./auth/api";
 import AttachmentsPage from "./pages/AttachmentsPage";
+import { Snackbar, Alert, Backdrop, CircularProgress, Typography, Box } from "@mui/material";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
@@ -23,16 +23,15 @@ export default function App() {
 
   const [reportOpen, setReportOpen] = useState(false);
   const [reportMode, setReportMode] = useState("unplanned");
-  const [voiceOpen, setVoiceOpen] = useState(false);
-  const [voiceAutoStart, setVoiceAutoStart] = useState(false);
-  const [reportInitialValues, setReportInitialValues] = useState(null);
 
   const BAR_HEIGHT = 64;
   const contentPaddingBottom = BAR_HEIGHT + 70;
 
   const [delayReportedInfo, setDelayReportedInfo] = useState(null);
-  const [snack, setSnack] = useState({ open: false, message: "", severity: "success" });
-  const [submitting, setSubmitting] = useState(false);
+  const [voiceOpen, setVoiceOpen]           = useState(false);
+  const [initialTranscript, setInitialTranscript] = useState("");
+  const [submitting, setSubmitting]         = useState(false);
+  const [snack, setSnack]                   = useState({ open: false, message: "", severity: "success" });
 
   useEffect(() => {
     console.log("AUTH: App mounted");
@@ -56,30 +55,18 @@ export default function App() {
     })().catch((e) => console.log("AUTH init error", e));
   }, []);
 
-  const parseSapDt = (dt) => {
-    if (!dt || String(dt).length < 14) return null;
-    const s = String(dt);
-    return new Date(`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}T${s.slice(8,10)}:${s.slice(10,12)}:${s.slice(12,14)}Z`);
+  const handleOpenReport = (mode = "unplanned") => {
+    setReportMode(mode);
+    setReportOpen(true);
   };
 
-  const formatSapDt = (date) => {
-    if (!(date instanceof Date) || isNaN(date.getTime())) return "";
-    const pad = (n) => String(n).padStart(2, "0");
-    return date.getUTCFullYear() + pad(date.getUTCMonth() + 1) + pad(date.getUTCDate()) +
-      pad(date.getUTCHours()) + pad(date.getUTCMinutes()) + pad(date.getUTCSeconds());
-  };
+  const handleCloseReport = () => setReportOpen(false);
 
   const toS4TimestampUTC = (d) => {
     if (!(d instanceof Date) || isNaN(d.getTime())) return null;
     const pad = (n) => String(n).padStart(2, "0");
-    return (
-      d.getUTCFullYear() +
-      pad(d.getUTCMonth() + 1) +
-      pad(d.getUTCDate()) +
-      pad(d.getUTCHours()) +
-      pad(d.getUTCMinutes()) +
-      pad(d.getUTCSeconds())
-    );
+    return d.getUTCFullYear() + pad(d.getUTCMonth()+1) + pad(d.getUTCDate()) +
+           pad(d.getUTCHours()) + pad(d.getUTCMinutes()) + pad(d.getUTCSeconds());
   };
 
   const autoSubmitVoiceDelay = async (result) => {
@@ -87,41 +74,30 @@ export default function App() {
     const raw = selectedShipment?.raw ?? selectedShipment ?? {};
     const FoId = raw?.FoId ?? selectedShipment?.FoId ?? "";
 
-    const safeJsonArray = (v) => {
+    const safeArr = (v) => {
       if (!v) return [];
       if (Array.isArray(v)) return v;
-      if (typeof v === "string") {
-        const s = v.trim();
-        if (!s || s === "0") return [];
-        try { const arr = JSON.parse(s); return Array.isArray(arr) ? arr : []; } catch { return []; }
-      }
-      return [];
+      try { const a = JSON.parse(v); return Array.isArray(a) ? a : []; } catch { return []; }
     };
 
-    const finalInfoArr = safeJsonArray(raw?.FinalInfo);
-    const stopsArr = safeJsonArray(raw?.Stops);
-
-    const isStopDeparted = (stop) => {
-      const locid = String(stop?.locid ?? stop?.locId ?? "").trim();
-      const seq = String(stop?.stopseqpos ?? stop?.stopSeqPos ?? "").trim().toUpperCase();
-      const fi = finalInfoArr.find((x) => {
-        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
-        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
-        return fLoc === locid && fSeq === seq;
-      });
-      return String(fi?.event ?? fi?.Event ?? "").toUpperCase().includes("DEPART");
-    };
+    const finalInfoArr = safeArr(raw?.FinalInfo);
+    const stopsArr = safeArr(raw?.Stops);
 
     const upcomingStops = stopsArr.filter((s, idx) => {
       if (idx === 0) return false;
       const seq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
       if (seq === "F") return false;
-      return !isStopDeparted(s);
+      const locid = String(s?.locid ?? s?.locId ?? "").trim();
+      const fi = finalInfoArr.find((x) =>
+        String(x?.locid ?? x?.locId ?? "").trim() === locid &&
+        String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase() === seq
+      );
+      return !String(fi?.event ?? fi?.Event ?? "").toUpperCase().includes("DEPART");
     });
 
     if (upcomingStops.length === 0 || !FoId) {
       setSubmitting(false);
-      setSnack({ open: true, message: "Could not auto-submit: no upcoming stops or missing shipment.", severity: "warning" });
+      setSnack({ open: true, message: "Could not auto-submit: no upcoming stops.", severity: "warning" });
       return;
     }
 
@@ -129,96 +105,47 @@ export default function App() {
     const locid = String(firstStop?.locid ?? firstStop?.locId ?? "").trim();
     const seq = String(firstStop?.stopseqpos ?? firstStop?.stopSeqPos ?? "").trim().toUpperCase();
 
-    // Resolve StopId from FinalInfo (same logic as ReportEventDialog)
-    let fi = null;
-    if (seq === "I") {
-      fi = finalInfoArr.find((x) => {
-        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
-        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
-        const itemCat = String(x?.itemcat ?? x?.item_cat ?? x?.itemCat ?? "").trim().toUpperCase();
-        return fLoc === locid && fSeq === "I" && itemCat === "PKG";
-      });
-      if (!fi) {
-        fi = finalInfoArr.find((x) => {
-          const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
-          const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
-          return fLoc === locid && fSeq === "I";
-        });
-      }
-    } else {
-      fi = finalInfoArr.find((x) => {
-        const fLoc = String(x?.locid ?? x?.locId ?? "").trim();
-        const fSeq = String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase();
-        return fLoc === locid && fSeq === seq;
-      });
-    }
-
+    const fi = finalInfoArr.find((x) =>
+      String(x?.locid ?? x?.locId ?? "").trim() === locid &&
+      String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase() === seq
+    );
     const StopId = String(fi?.stopid ?? fi?.stopId ?? "").trim();
 
-    // Coords from Stops
-    const st = stopsArr.find((s) => {
-      const sLoc = String(s?.locid ?? s?.locId ?? "").trim();
-      const sSeq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
-      return sLoc === locid && sSeq === seq;
-    });
-    const stopLat = Number(st?.latitude ?? st?.Latitude ?? null);
-    const stopLng = Number(st?.longitude ?? st?.Longitude ?? null);
-
-    // GPS from localStorage
-    let useLat = null;
-    let useLng = null;
+    let useLat = null, useLng = null;
     try {
-      const rawLoc = localStorage.getItem("sky_last_loc");
-      if (rawLoc) {
-        const p = JSON.parse(rawLoc);
-        const lat = Number(p?.Latitude);
-        const lng = Number(p?.Longitude);
-        if (Number.isFinite(lat) && Number.isFinite(lng)) { useLat = lat; useLng = lng; }
-      }
+      const p = JSON.parse(localStorage.getItem("sky_last_loc") || "null");
+      const lat = Number(p?.Latitude), lng = Number(p?.Longitude);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) { useLat = lat; useLng = lng; }
     } catch {}
-    useLat = useLat ?? (Number.isFinite(stopLat) ? stopLat : null);
-    useLng = useLng ?? (Number.isFinite(stopLng) ? stopLng : null);
 
-    // Fetch reason codes + fuzzy-match reasonHint
     let eventCode = "DELAYED";
     try {
       const data = await apiGet("/odata/v4/GTT/delayEvents");
       const rows = Array.isArray(data.value) ? data.value : [];
-      if (rows.length > 0) {
-        let matched = null;
-        if (result.reasonHint) {
-          const hint = result.reasonHint.toLowerCase();
-          matched = rows.find((r) => (r.Description || "").toLowerCase().includes(hint));
-        }
+      if (rows.length > 0 && result.reasonHint) {
+        const hints = result.reasonHint.toLowerCase().split("|").map((h) => h.trim()).filter(Boolean);
+        const matched = rows.find((r) => {
+          const desc = (r.Description || "").toLowerCase();
+          const code = (r.EvtReasonCode || "").toLowerCase();
+          return hints.some((h) => desc.includes(h) || code.includes(h));
+        });
         eventCode = ((matched ?? rows[0]).EvtReasonCode) || "DELAYED";
       }
-    } catch (e) {
-      console.log("autoSubmit: failed to fetch reason codes, using DELAYED", e);
-    }
-
-    const etaDate = new Date(Date.now() + (result.delayMinutes || 0) * 60000);
-    const payload = {
-      FoId,
-      StopId: StopId || "",
-      ETA: toS4TimestampUTC(etaDate),
-      RefEvent: "Arrival",
-      EventCode: eventCode,
-      Latitude: useLat == null ? "" : String(useLat),
-      Longitude: useLng == null ? "" : String(useLng),
-      Timestamp: toS4TimestampUTC(new Date()),
-    };
-
-    if (!payload.StopId) {
-      console.warn("[autoSubmit] Could not resolve StopId, submitting anyway without it");
-    }
+    } catch {}
 
     try {
-      await apiPost("/odata/v4/GTT/delayEvents", payload);
-      const delayLabel = result.delayMinutes > 0 ? ` (${result.delayMinutes} min)` : "";
+      await apiPost("/odata/v4/GTT/delayEvents", {
+        FoId, StopId: StopId || "",
+        ETA: toS4TimestampUTC(new Date(Date.now() + (result.delayMinutes || 0) * 60000)),
+        RefEvent: "Arrival", EventCode: eventCode,
+        Latitude: useLat == null ? "" : String(useLat),
+        Longitude: useLng == null ? "" : String(useLng),
+        Timestamp: toS4TimestampUTC(new Date()),
+      });
       setDelayReportedInfo({ event: "Delay", stopId: StopId, foId: FoId, ts: Date.now() });
+      const delayLabel = result.delayMinutes > 0 ? ` (${result.delayMinutes} min)` : "";
       setSnack({ open: true, message: `Delay reported successfully${delayLabel}.`, severity: "success" });
     } catch (err) {
-      console.error("autoSubmit delay failed:", err);
       setSnack({ open: true, message: "Failed to report delay. Please try again.", severity: "error" });
     } finally {
       setSubmitting(false);
@@ -227,16 +154,9 @@ export default function App() {
 
   const handleVoiceResult = (result) => {
     setVoiceOpen(false);
-    setVoiceAutoStart(false);
+    setInitialTranscript("");
     autoSubmitVoiceDelay(result);
   };
-
-  const handleOpenReport = (mode = "unplanned") => {
-    setReportMode(mode);
-    setReportOpen(true);
-  };
-
-  const handleCloseReport = () => setReportOpen(false);
 
   // Minimal lat/long extractor (numeric only)
   const stopLatLng = (s) => {
@@ -484,9 +404,10 @@ const openFullRouteInMaps = useCallback(() => {
       }}
     >
       <DriverTrackingManager authenticated={authenticated} selectedShipment={selectedShipment} />
-      <WakeWordListener
+
+      <WakeWordManager
         enabled={hasShipment && !voiceOpen}
-        onWakeWord={() => { setVoiceAutoStart(true); setVoiceOpen(true); }}
+        onWakeWord={(transcript) => { setInitialTranscript(transcript); setVoiceOpen(true); }}
       />
 
       <div style={{ flex: 1, overflowY: "auto", paddingBottom: contentPaddingBottom }}>
@@ -500,14 +421,13 @@ const openFullRouteInMaps = useCallback(() => {
         onMapClick={openFullRouteInMaps}
         hasShipment={hasShipment}
         onAttachmentsClick={() => setActiveTab("attachments")}
-        onVoiceClick={() => { setVoiceAutoStart(false); setVoiceOpen(true); }}
-        voiceEnabled={hasShipment && activeTab === "track"}
+        onVoiceClick={() => { setInitialTranscript(""); setVoiceOpen(true); }}
       />
 
       <VoiceDelaySheet
         open={voiceOpen}
-        autoStart={voiceAutoStart}
-        onClose={() => { setVoiceOpen(false); setVoiceAutoStart(false); }}
+        initialTranscript={initialTranscript}
+        onClose={() => { setVoiceOpen(false); setInitialTranscript(""); }}
         onResult={handleVoiceResult}
       />
 
@@ -515,20 +435,15 @@ const openFullRouteInMaps = useCallback(() => {
         selectedShipment={selectedShipment}
         open={reportOpen}
         mode={reportMode}
-        initialValues={reportInitialValues}
-        onClose={() => { handleCloseReport(); setReportInitialValues(null); }}
+        onClose={handleCloseReport}
         onReported={(info) => setDelayReportedInfo(info)}
       />
 
       <Backdrop open={submitting} sx={{ zIndex: 2000, flexDirection: "column", gap: 2 }}>
         <CircularProgress size={52} thickness={4} sx={{ color: "#fff" }} />
         <Box sx={{ textAlign: "center" }}>
-          <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>
-            Reporting delay…
-          </Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: 13, mt: 0.5 }}>
-            Please wait
-          </Typography>
+          <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>Reporting delay…</Typography>
+          <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: 13, mt: 0.5 }}>Please wait</Typography>
         </Box>
       </Backdrop>
 

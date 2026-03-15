@@ -2,6 +2,7 @@
 const cds = require("@sap/cds");
 const { executeHttpRequest } = require("@sap-cloud-sdk/http-client");
 const licenseOcr = require("./licenseOcrService");
+const { OpenAI, toFile } = require("openai");
 const application = process.env.EVENT_API_BASE
 
 const { UPSERT, SELECT } = cds.ql;
@@ -458,6 +459,7 @@ module.exports = cds.service.impl(async function () {
   });
 
   this.on("CREATE", delayEvents, async (req) => {
+    console.log("[delayEvents] POST payload:", JSON.stringify(req.data, null, 2));
     if (getTarget() === "SKY_PLUS") {
       return await postSkyPlus("/api/delay", req.data); // change path if needed
     }
@@ -647,9 +649,57 @@ module.exports = cds.service.impl(async function () {
   // ---------------------------------------------------------------------------
   this.on("interpretVoice", async (req) => {
     const { transcript = "" } = req.data || {};
+
+    // Try GPT-4o-mini first; fall back to regex if offline / API unavailable
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const response = await client.chat.completions.create({
+          model: "gpt-4o-mini",
+          response_format: { type: "json_object" },
+          temperature: 0,
+          messages: [
+            {
+              role: "system",
+              content:
+                `You are a logistics assistant. Extract structured delay information from a truck driver's voice message.
+Return ONLY a JSON object with exactly these fields:
+- eventType: "Delay" | "Accident" | "Customs Hold" | "Other"
+- delayMinutes: integer minutes of delay (0 if unknown or not mentioned)
+- priority: "Low" (under 30 min) | "Normal" (30–60 min) | "High" (over 60 min, or accident)
+- reasonHint: pipe-separated keywords describing the cause, e.g. "traffic|congestion|road". Empty string if unknown.
+- notes: the original message trimmed to 200 characters
+- refEvent: "ARR" if eventType is Delay or Accident, otherwise ""
+Rules:
+- If the driver says they will arrive at a specific time and gives their scheduled time, calculate delayMinutes from the difference.
+- "an hour and a half" = 90 minutes. "half an hour" = 30 minutes.
+- reasonCode must always be an empty string "".`,
+            },
+            { role: "user", content: String(transcript).trim() },
+          ],
+        });
+
+        const parsed = JSON.parse(response.choices[0].message.content);
+        // Sanitise — ensure all expected fields are present with correct types
+        return {
+          eventType:    ["Delay","Accident","Customs Hold","Other"].includes(parsed.eventType) ? parsed.eventType : "Other",
+          delayMinutes: Number.isInteger(parsed.delayMinutes) ? Math.max(0, parsed.delayMinutes) : 0,
+          priority:     ["Low","Normal","High"].includes(parsed.priority) ? parsed.priority : "Low",
+          reasonHint:   typeof parsed.reasonHint === "string" ? parsed.reasonHint : "",
+          reasonCode:   "",
+          notes:        String(parsed.notes || transcript).trim().slice(0, 200),
+          refEvent:     typeof parsed.refEvent === "string" ? parsed.refEvent : "",
+        };
+      } catch (e) {
+        console.warn("[interpretVoice] GPT failed, falling back to regex:", e.message || e);
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Regex fallback — used when offline or OPENAI_API_KEY is not set
+    // ---------------------------------------------------------------------------
     const t = String(transcript).toLowerCase().trim();
 
-    // --- Classify event type ---
     let eventType = "Other";
     if (/delay|late|behind|stuck|traffic|slow|held up|running late/.test(t)) {
       eventType = "Delay";
@@ -659,7 +709,6 @@ module.exports = cds.service.impl(async function () {
       eventType = "Customs Hold";
     }
 
-    // --- Normalise number words → digits (speech recognition returns words) ---
     const wordNums = {
       "zero":0,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,
       "eight":8,"nine":9,"ten":10,"eleven":11,"twelve":12,"thirteen":13,
@@ -672,17 +721,11 @@ module.exports = cds.service.impl(async function () {
       (w) => String(wordNums[w] ?? w)
     );
 
-    // --- Extract delay minutes ---
     let delayMinutes = 0;
-
-    // "an hour" / "a hour" = 1 hour
-    const anHourMatch = /\ban?\s+hours?/.test(tn);
-    // "a half hour" / "half an hour" = 30 min
+    const anHourMatch   = /\ban?\s+hours?/.test(tn);
     const halfHourMatch = /half\s+(?:an?\s+)?hours?/.test(tn);
-    // "X hours" (digit)
-    const hoursMatch = tn.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)/);
-    // "X minutes" (digit)
-    const minsMatch  = tn.match(/(\d+)\s*(?:minutes?|mins?)/);
+    const hoursMatch    = tn.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)/);
+    const minsMatch     = tn.match(/(\d+)\s*(?:minutes?|mins?)/);
 
     if (halfHourMatch) {
       delayMinutes = 30;
@@ -691,28 +734,19 @@ module.exports = cds.service.impl(async function () {
       const m = minsMatch ? parseInt(minsMatch[1], 10) : 0;
       delayMinutes = Math.round(h * 60) + m;
     } else if (anHourMatch) {
-      const m = minsMatch ? parseInt(minsMatch[1], 10) : 0;
-      delayMinutes = 60 + m;
+      delayMinutes = 60 + (minsMatch ? parseInt(minsMatch[1], 10) : 0);
     } else if (minsMatch) {
       delayMinutes = parseInt(minsMatch[1], 10);
     }
-
-    // Fallback: bare "X late/delay/behind"
     if (delayMinutes === 0) {
       const bareMatch = tn.match(/(\d+)\s*(?:late|delay|behind)/);
       if (bareMatch) delayMinutes = parseInt(bareMatch[1], 10);
     }
 
-    // --- Priority: <30 → Low, 30–60 → Normal, >60 → High ---
     let priority = "Low";
-    if (delayMinutes > 60)      priority = "High";
+    if (delayMinutes > 60)       priority = "High";
     else if (delayMinutes >= 30) priority = "Normal";
 
-    // --- reasonCode: leave empty — dialog fuzzy-matches reasonHint against S/4 descriptions ---
-    const reasonCode = "";
-
-    // reasonHint: keyword(s) used to fuzzy-match against S/4 reason code Descriptions.
-    // Use pipe-separated list ordered by confidence so dialog can try each in turn.
     let reasonHint = "";
     if (/traffic|congestion|jam|gridlock|bumper|motorway|highway|freeway/.test(t))
       reasonHint = "traffic|congestion|road";
@@ -730,16 +764,21 @@ module.exports = cds.service.impl(async function () {
       reasonHint = "road|construction|closure";
     else if (/strike|protest|demonstration/.test(t))
       reasonHint = "strike|labour";
-    else if (/police|checkpoint|inspection/.test(t))
+    else if (/police|checkpoint/.test(t))
       reasonHint = "police|checkpoint";
     else if (eventType === "Delay")        reasonHint = "delay|late";
     else if (eventType === "Accident")     reasonHint = "accident";
     else if (eventType === "Customs Hold") reasonHint = "customs";
 
-    const refEvent = eventType !== "Other" ? "ARR" : "";
-    const notes    = String(transcript).trim().slice(0, 200);
-
-    return { eventType, delayMinutes, priority, notes, reasonCode, reasonHint, refEvent };
+    return {
+      eventType,
+      delayMinutes,
+      priority,
+      reasonHint,
+      reasonCode: "",
+      notes: String(transcript).trim().slice(0, 200),
+      refEvent: eventType !== "Other" ? "ARR" : "",
+    };
   });
 
   // ---------------------------------------------------------------------------
@@ -762,6 +801,82 @@ module.exports = cds.service.impl(async function () {
     } catch (e) {
       console.error("extractLicenseNumber failed:", e);
       return req.reject(500, e.message || "OCR failed");
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // WHISPER STT helper — shared by transcribeAudio + detectWakeWord
+  // ---------------------------------------------------------------------------
+  async function whisperTranscribe(audioBase64) {
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const buffer = Buffer.from(audioBase64, "base64");
+    const file = await toFile(buffer, "audio.wav", { type: "audio/wav" });
+    const res = await client.audio.transcriptions.create({
+      file,
+      model: "whisper-1",
+      language: "en",
+    });
+    return (res.text || "").trim();
+  }
+
+  // ---------------------------------------------------------------------------
+  // transcribeAudio — base64 WAV → transcript string
+  // ---------------------------------------------------------------------------
+  this.on("transcribeAudio", async (req) => {
+    const { audioBase64 } = req.data || {};
+    if (!audioBase64) return req.reject(400, "audioBase64 is required");
+    try {
+      const transcript = await whisperTranscribe(audioBase64);
+      return { transcript };
+    } catch (e) {
+      console.error("transcribeAudio failed:", e);
+      return req.reject(500, e.message || "Transcription failed");
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // detectWakeWord — transcribe a 2-second chunk and check for "Hey Sky"
+  // ---------------------------------------------------------------------------
+  this.on("detectWakeWord", async (req) => {
+    const { audioBase64 } = req.data || {};
+    if (!audioBase64) return req.reject(400, "audioBase64 is required");
+    try {
+      const fullTranscript = await whisperTranscribe(audioBase64);
+
+      // Filter known Whisper silence hallucinations before spending a GPT call
+      const HALLUCINATIONS = /^(thank you( for watching)?\.?|thanks( for watching)?\.?|please subscribe\.?|like and subscribe\.?|\.+|,+|\s*)$/i;
+      if (!fullTranscript || HALLUCINATIONS.test(fullTranscript.trim())) {
+        console.log(`[detectWakeWord] hallucination filtered: "${fullTranscript}"`);
+        return { detected: false, transcript: "", fullTranscript };
+      }
+
+      // Use GPT to robustly detect wake word — handles any mishearing or accent
+      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const response = await client.chat.completions.create({
+        model: "gpt-4o-mini",
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: `You are a wake word detector. The wake word is "Hey Sky".
+Determine if the transcript contains an attempt to say "Hey Sky".
+Be forgiving: accept "Hi Sky", "Hay Sky", "A Sky", "Hey Ski", "Hey Skai", "Hi, Sky", "Hey, Sky", etc.
+Return JSON with exactly: { "detected": true or false, "remainder": "any text spoken after the wake word, or empty string" }`,
+          },
+          { role: "user", content: fullTranscript },
+        ],
+      });
+
+      const parsed = JSON.parse(response.choices[0].message.content);
+      const detected = Boolean(parsed.detected);
+      const transcript = detected ? String(parsed.remainder || "").trim() : "";
+
+      console.log(`[detectWakeWord] whisper="${fullTranscript}" detected=${detected} remainder="${transcript}"`);
+      return { detected, transcript, fullTranscript };
+    } catch (e) {
+      console.error("detectWakeWord failed:", e);
+      return req.reject(500, e.message || "Wake word detection failed");
     }
   });
 
