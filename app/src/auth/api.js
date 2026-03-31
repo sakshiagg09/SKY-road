@@ -48,6 +48,8 @@ export async function apiGet(path) {
     let res = await CapacitorHttp.get({
       url,
       headers: await buildHeaders({}, token),
+      connectTimeout: 15000,
+      readTimeout: 20000,
     });
 
     console.log("[API GET] First response status:", res.status);
@@ -63,6 +65,8 @@ export async function apiGet(path) {
       res = await CapacitorHttp.get({
         url,
         headers: await buildHeaders({}, token),
+        connectTimeout: 15000,
+        readTimeout: 20000,
       });
 
       console.log("[API GET] Retry response status:", res.status);
@@ -107,6 +111,8 @@ export async function apiPost(path, body) {
       url,
       headers: await buildHeaders({ "Content-Type": "application/json" }, token),
       data: body,
+      connectTimeout: 15000,
+      readTimeout: 20000,
     });
 
     console.log("[apiPost] first status:", res.status);
@@ -121,6 +127,8 @@ export async function apiPost(path, body) {
         url,
         headers: await buildHeaders({ "Content-Type": "application/json" }, token),
         data: body,
+        connectTimeout: 15000,
+        readTimeout: 20000,
       });
 
       console.log("[apiPost] retry status:", res.status);

@@ -5,10 +5,15 @@ import ShipmentSearchPage from "./pages/ShipmentSearchPage";
 import ShipmentDetailsPage from "./pages/ShipmentDetailsPage";
 import BottomBar from "./components/BottomBar";
 import ReportEventDialog from "./components/ReportEventDialog";
+import VoiceDelaySheet from "./components/VoiceDelaySheet";
+import WakeWordManager from "./components/WakeWordManager";
 import DriverTrackingManager from "./tracking/DriverTrackingManager";
 import { Capacitor } from "@capacitor/core";
+import { App as CapApp } from "@capacitor/app";
 import { loginPKCE, loadToken } from "./auth/auth";
-import AttachmentsPage from "./pages/AttachmentsPage"; // ✅ NEW
+import { apiGet, apiPost } from "./auth/api";
+import AttachmentsPage from "./pages/AttachmentsPage";
+import { Snackbar, Alert, Backdrop, CircularProgress, Typography, Box } from "@mui/material";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
@@ -24,6 +29,23 @@ export default function App() {
   const contentPaddingBottom = BAR_HEIGHT + 70;
 
   const [delayReportedInfo, setDelayReportedInfo] = useState(null);
+  const [voiceOpen, setVoiceOpen]           = useState(false);
+  const [initialTranscript, setInitialTranscript] = useState("");
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+
+  // Intercept Android hardware back button when voice sheet is open — prevents app exit
+  useEffect(() => {
+    if (!voiceOpen || Capacitor.getPlatform() !== "android") return;
+    let handle;
+    CapApp.addListener("backButton", () => {
+      setVoiceOpen(false);
+      setInitialTranscript("");
+    }).then((h) => { handle = h; });
+    return () => { handle?.remove(); };
+  }, [voiceOpen]);
+
+  const [submitting, setSubmitting]         = useState(false);
+  const [snack, setSnack]                   = useState({ open: false, message: "", severity: "success" });
 
   useEffect(() => {
     console.log("AUTH: App mounted");
@@ -53,6 +75,131 @@ export default function App() {
   };
 
   const handleCloseReport = () => setReportOpen(false);
+
+  const toS4TimestampUTC = (d) => {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+    const pad = (n) => String(n).padStart(2, "0");
+    return d.getUTCFullYear() + pad(d.getUTCMonth()+1) + pad(d.getUTCDate()) +
+           pad(d.getUTCHours()) + pad(d.getUTCMinutes()) + pad(d.getUTCSeconds());
+  };
+
+  const autoSubmitVoiceDelay = async (result) => {
+    setSubmitting(true);
+    const raw = selectedShipment?.raw ?? selectedShipment ?? {};
+    const FoId = raw?.FoId ?? selectedShipment?.FoId ?? "";
+
+    const safeArr = (v) => {
+      if (!v) return [];
+      if (Array.isArray(v)) return v;
+      try { const a = JSON.parse(v); return Array.isArray(a) ? a : []; } catch { return []; }
+    };
+
+    const finalInfoArr = safeArr(raw?.FinalInfo);
+    const stopsArr = safeArr(raw?.Stops);
+
+    const upcomingStops = stopsArr.filter((s, idx) => {
+      if (idx === 0) return false;
+      const seq = String(s?.stopseqpos ?? s?.stopSeqPos ?? "").trim().toUpperCase();
+      if (seq === "F") return false;
+      const locid = String(s?.locid ?? s?.locId ?? "").trim();
+      const fi = finalInfoArr.find((x) =>
+        String(x?.locid ?? x?.locId ?? "").trim() === locid &&
+        String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase() === seq
+      );
+      return !String(fi?.event ?? fi?.Event ?? "").toUpperCase().includes("DEPART");
+    });
+
+    if (upcomingStops.length === 0 || !FoId) {
+      setSubmitting(false);
+      setSnack({ open: true, message: "Could not auto-submit: no upcoming stops.", severity: "warning" });
+      return;
+    }
+
+    const firstStop = upcomingStops[0];
+    const locid = String(firstStop?.locid ?? firstStop?.locId ?? "").trim();
+    const seq = String(firstStop?.stopseqpos ?? firstStop?.stopSeqPos ?? "").trim().toUpperCase();
+
+    const fi = finalInfoArr.find((x) =>
+      String(x?.locid ?? x?.locId ?? "").trim() === locid &&
+      String(x?.stopseqpos ?? x?.stopSeqPos ?? "").trim().toUpperCase() === seq
+    );
+    const StopId = String(fi?.stopid ?? fi?.stopId ?? firstStop?.stopid ?? firstStop?.stopId ?? "").trim();
+
+    let useLat = null, useLng = null;
+    try {
+      const p = JSON.parse(localStorage.getItem("sky_last_loc") || "null");
+      const lat = Number(p?.Latitude), lng = Number(p?.Longitude);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) { useLat = lat; useLng = lng; }
+    } catch {}
+
+    // Resolve reason code + description against real S4 reason codes
+    // Same fuzzy word-overlap scoring used by ReportEventDialog
+    let eventCode = "";
+    let eventDescription = "";
+    try {
+      const data = await apiGet("/odata/v4/GTT/delayEvents");
+      const rows = Array.isArray(data.value) ? data.value : [];
+
+      if (rows.length > 0) {
+        const hints = (result.reasonHint || "").toLowerCase().split("|").map((h) => h.trim()).filter(Boolean);
+        const transcriptWords = (result.notes || "")
+          .toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length > 3);
+
+        const scored = rows.map((r) => {
+          const desc = (r.Description || "").toLowerCase();
+          let score = 0;
+          hints.forEach((hint, idx) => { if (desc.includes(hint)) score += 10 - idx * 2; });
+          transcriptWords.forEach((word) => { if (desc.includes(word)) score += 1; });
+          return { r, score };
+        });
+
+        const best = scored.sort((a, b) => b.score - a.score)[0];
+        if (best && best.score > 0) {
+          eventCode = best.r.EvtReasonCode;
+          eventDescription = best.r.Description || best.r.EvtReasonCode;
+        } else {
+          // No match — fall back to first code in the S4 list
+          eventCode = rows[0].EvtReasonCode;
+          eventDescription = rows[0].Description || rows[0].EvtReasonCode;
+        }
+      }
+    } catch {}
+
+    // If S4 fetch failed entirely, use a safe hardcoded fallback
+    if (!eventCode) {
+      eventCode = "BAD_TYRE";
+      eventDescription = "Bad Tyre";
+    }
+
+    // Update UI badge immediately (optimistic) — stop shows red even if API call fails
+    console.log("[App] autoSubmitVoiceDelay: FoId=", FoId, "StopId=", StopId, "eventCode=", eventCode, "description=", eventDescription, "result.reasonCode=", result.reasonCode, "upcomingStops=", upcomingStops.length, "firstStop=", JSON.stringify(firstStop), "fi=", JSON.stringify(fi));
+    setDelayReportedInfo({ event: "Delay", stopId: StopId, foId: FoId, ts: Date.now(), delayMinutes: result.delayMinutes || 0 });
+    console.log("[App] setDelayReportedInfo called with stopId=", StopId);
+
+    try {
+      await apiPost("/odata/v4/GTT/delayEvents", {
+        FoId, StopId: StopId || "",
+        ETA: toS4TimestampUTC(new Date(Date.now() + (result.delayMinutes || 0) * 60000)),
+        RefEvent: "Arrival", EventCode: "DELAYED", EvtReasonCode: eventCode,
+        Description: eventDescription,
+        Latitude: useLat == null ? "" : String(useLat),
+        Longitude: useLng == null ? "" : String(useLng),
+        Timestamp: toS4TimestampUTC(new Date()),
+      });
+      const delayLabel = result.delayMinutes > 0 ? ` (${result.delayMinutes} min)` : "";
+      setSnack({ open: true, message: `Delay reported successfully${delayLabel}.`, severity: "success" });
+    } catch (err) {
+      setSnack({ open: true, message: "Delay shown locally but failed to sync. Please retry.", severity: "warning" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleVoiceResult = (result) => {
+    setVoiceOpen(false);
+    setInitialTranscript("");
+    autoSubmitVoiceDelay(result);
+  };
 
   // Minimal lat/long extractor (numeric only)
   const stopLatLng = (s) => {
@@ -232,6 +379,13 @@ const openFullRouteInMaps = useCallback(() => {
     selectedShipment?.FoId || selectedShipment?.FoID || selectedShipment?.foId || "";
   const hasShipment = Boolean(String(effectiveFoId || "").trim());
 
+  // Delay WakeWordManager restart after voice sheet closes to let AudioRecord fully release
+  useEffect(() => {
+    if (!hasShipment || voiceOpen) { setWakeWordEnabled(false); return; }
+    const t = setTimeout(() => setWakeWordEnabled(true), 800);
+    return () => clearTimeout(t);
+  }, [voiceOpen, hasShipment]);
+
   const renderPage = () => {
     switch (activeTab) {
       case "home":
@@ -301,6 +455,11 @@ const openFullRouteInMaps = useCallback(() => {
     >
       <DriverTrackingManager authenticated={authenticated} selectedShipment={selectedShipment} />
 
+      <WakeWordManager
+        enabled={wakeWordEnabled}
+        onWakeWord={(transcript) => { setInitialTranscript(transcript); setVoiceOpen(true); }}
+      />
+
       <div style={{ flex: 1, overflowY: "auto", paddingBottom: contentPaddingBottom }}>
         {renderPage()}
       </div>
@@ -309,10 +468,17 @@ const openFullRouteInMaps = useCallback(() => {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onReportClick={() => handleOpenReport("unplanned")}
-        onMapClick={openFullRouteInMaps}   // ✅ now opens full route
-        // ✅ NEW: attachments wiring
+        onMapClick={openFullRouteInMaps}
         hasShipment={hasShipment}
         onAttachmentsClick={() => setActiveTab("attachments")}
+        onVoiceClick={() => { setInitialTranscript(""); setVoiceOpen(true); }}
+      />
+
+      <VoiceDelaySheet
+        open={voiceOpen}
+        initialTranscript={initialTranscript}
+        onClose={() => { setVoiceOpen(false); setInitialTranscript(""); }}
+        onResult={handleVoiceResult}
       />
 
       <ReportEventDialog
@@ -322,6 +488,30 @@ const openFullRouteInMaps = useCallback(() => {
         onClose={handleCloseReport}
         onReported={(info) => setDelayReportedInfo(info)}
       />
+
+      <Backdrop open={submitting} sx={{ zIndex: 2000, flexDirection: "column", gap: 2 }}>
+        <CircularProgress size={52} thickness={4} sx={{ color: "#fff" }} />
+        <Box sx={{ textAlign: "center" }}>
+          <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>Reporting delay…</Typography>
+          <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: 13, mt: 0.5 }}>Please wait</Typography>
+        </Box>
+      </Backdrop>
+
+      <Snackbar
+        open={snack.open}
+        autoHideDuration={4000}
+        onClose={() => setSnack((s) => ({ ...s, open: false }))}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+      >
+        <Alert
+          onClose={() => setSnack((s) => ({ ...s, open: false }))}
+          severity={snack.severity}
+          variant="filled"
+          sx={{ width: "100%", borderRadius: "12px", fontWeight: 600 }}
+        >
+          {snack.message}
+        </Alert>
+      </Snackbar>
     </div>
   );
 }

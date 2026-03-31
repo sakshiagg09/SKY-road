@@ -57,7 +57,18 @@ public class TrackingService extends Service {
         dbHelper = new LocationDatabase(this);
 
         createNotificationChannel();
-        startForeground(1, buildNotification("Tracking active"));
+
+        // Android 14+ (API 34+) enforces that location permission must be granted
+        // before startForeground() can be called on a service with type="location".
+        // If permission hasn't been granted yet, stop gracefully — MainActivity will
+        // restart the service once the user grants location permission.
+        try {
+            startForeground(1, buildNotification("Tracking active"));
+        } catch (SecurityException e) {
+            Log.w(TAG, "Location permission not yet granted — TrackingService stopping until permission is granted");
+            stopSelf();
+            return;
+        }
 
         fusedClient = LocationServices.getFusedLocationProviderClient(this);
         setupLocationUpdates();

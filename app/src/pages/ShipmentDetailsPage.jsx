@@ -39,6 +39,10 @@ export default function ShipmentDetailsPage({ selectedShipment, onAction,delayRe
 
   // ✅ ETA target: next pending stop coords (from RouteTimeline)
   const [nextStopCoords, setNextStopCoords] = useState(null);
+  const [nextStopId, setNextStopId] = useState(null);
+
+  // Live per-stop ETAs: Map<stopid, { etaMs, text }>
+  const [liveStopEtas, setLiveStopEtas] = useState(new Map());
 
   // ---------- helpers ----------
   const toNum = (v) => {
@@ -182,7 +186,7 @@ const resolveStopName = (st) => {
     return null;
   }, [lastStop, raw]);
 
-  // ✅ Live ETA via backend Routes API
+  // ✅ Live ETA via backend Routes API (multi-stop)
   useEffect(() => {
     let alive = true;
 
@@ -192,72 +196,99 @@ const resolveStopName = (st) => {
         if (!rawLoc) return;
 
         const p = JSON.parse(rawLoc);
-
-        // IMPORTANT: use actual stored GPS (remove hardcoded origin)
         const curLat = toNum(p?.Latitude);
         const curLng = toNum(p?.Longitude);
         if (curLat == null || curLng == null) return;
 
         const originPoint = { lat: curLat, lng: curLng };
-        const destPoint = nextStopCoords || destinationCoords;
-        const targetLabel = nextStopCoords ? "next stop" : "destination";
-
-        // base time for ETA calculation: GPS timestamp if available
         const updatedAt = p?.Timestamp ? Number(p.Timestamp) : Date.now();
         const baseMs = Number.isFinite(updatedAt) ? updatedAt : Date.now();
 
-        // ---- debug logs (safe to keep or remove) ----
-        console.log("ETA ORIGIN:", originPoint);
-        console.log("ETA DEST:", destPoint);
-        console.log("ETA USING NEXT STOP?", !!nextStopCoords);
-        console.log("ETA URL:", "/api/routes/eta");
-        console.log("ETA BASE TS:", baseMs, "=>", new Date(baseMs).toISOString());
-        // --------------------------------------------
+        // Build ordered stop list from stopsMaster (raw.Stops), starting from next pending stop
+        const sortedStops = [...stopsMaster].sort((a, b) => {
+          const sa = Number(a?.stopseqpos ?? a?.stopSeqPos ?? Infinity);
+          const sb = Number(b?.stopseqpos ?? b?.stopSeqPos ?? Infinity);
+          return sa - sb;
+        });
 
-        if (!destPoint) {
+        // Find index of next stop and slice from there
+        let startIdx = 0;
+        if (nextStopId) {
+          const idx = sortedStops.findIndex(
+            (s) => String(s?.stopid ?? s?.stopId ?? "").trim() === nextStopId
+          );
+          if (idx >= 0) startIdx = idx;
+        }
+        const pendingStops = sortedStops.slice(startIdx);
+
+        // Build stops array for API (filter to valid coords)
+        const stopsForApi = pendingStops.map((s) => ({
+          id: String(s?.stopid ?? s?.stopId ?? s?.locid ?? s?.locId ?? "").trim(),
+          lat: toNum(s?.latitude ?? s?.Latitude ?? s?.lat),
+          lng: toNum(s?.longitude ?? s?.Longitude ?? s?.lng ?? s?.long),
+        }));
+
+        const validForApi = stopsForApi.filter(
+          (s) => s.lat != null && s.lng != null && s.lat !== 0 && s.lng !== 0
+        );
+
+        if (validForApi.length < 1) {
           if (!alive) return;
           setLiveEtaText(null);
-          setLiveMeta({ distanceKm: null, updatedAt: baseMs, mins: null, target: targetLabel });
+          setLiveMeta({ distanceKm: null, updatedAt: baseMs, mins: null, target: "destination" });
           return;
         }
 
-        const j = await apiPost("/api/routes/eta", {
+        const j = await apiPost("/api/routes/multi-eta", {
           origin: originPoint,
-          destination: destPoint,
-          travelMode: "DRIVE",
-          routingPreference: "TRAFFIC_AWARE",
+          stops: validForApi,
+          baseMs,
         });
-        const distanceMeters = toNum(j?.distanceMeters);
-        const durationSeconds = toNum(j?.durationSeconds);
-
-        if (distanceMeters == null || durationSeconds == null) return;
-
-        const compact = formatEtaCompact(baseMs, durationSeconds);
-        if (!compact) return;
-
-        console.log("ETA DURATION(s):", durationSeconds, "ETA TIME:", new Date(compact.etaMs).toString());
 
         if (!alive) return;
 
-        setLiveEtaText(compact.text);
-        setLiveMeta({
-          distanceKm: distanceMeters / 1000,
-          updatedAt: baseMs,
-          mins: compact.mins,
-          target: targetLabel,
-        });
+        const etas = Array.isArray(j?.etas) ? j.etas : [];
+        if (etas.length === 0) return;
+
+        // Build liveStopEtas map: stopid → { etaMs, text }
+        const etaMap = new Map();
+        for (const e of etas) {
+          if (!e.id) continue;
+          const mins = Math.max(1, Math.round(e.durationSeconds / 60));
+          const timeStr = new Date(e.etaMs).toLocaleTimeString("en-GB", {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          etaMap.set(e.id, { etaMs: e.etaMs, text: `${mins} min (${timeStr})` });
+        }
+        setLiveStopEtas(etaMap);
+
+        // Progress-bar ETA: use next stop if known, else last stop
+        const barEntry = nextStopId && etaMap.has(nextStopId)
+          ? etaMap.get(nextStopId)
+          : etaMap.get(etas[etas.length - 1]?.id);
+
+        if (barEntry) {
+          setLiveEtaText(barEntry.text);
+          setLiveMeta({
+            distanceKm: null, // multi-eta doesn't return per-leg distance for bar
+            updatedAt: baseMs,
+            mins: Math.max(1, Math.round((barEntry.etaMs - baseMs) / 60000)),
+            target: nextStopId ? "next stop" : "destination",
+          });
+        }
       } catch {
         // ignore
       }
     };
 
     tick();
-    const id = setInterval(tick, 15000); // ✅ 15s (cost control)
+    const id = setInterval(tick, 15000); // 15s (cost control)
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [destinationCoords, nextStopCoords]);
+  }, [destinationCoords, nextStopCoords, nextStopId, stopsMaster]);
 
   // Status badge text + styling based on progress
   const statusLabel = progress >= 100 ? "Completed" : "In Transit";
@@ -281,12 +312,13 @@ const resolveStopName = (st) => {
         setPodOpen(true);
       }
 
-      // ✅ capture next stop coords from RouteTimeline
+      // ✅ capture next stop coords + id from RouteTimeline
       if (action === "nextStop") {
         const ns = payload?.stop || null;
         console.log("NEXT STOP RAW:", ns);
         console.log("NEXT STOP COORDS:", pickStopCoords(ns));
         setNextStopCoords(pickStopCoords(ns));
+        setNextStopId(String(ns?.stopid ?? ns?.stopId ?? "").trim() || null);
         if (typeof onAction === "function") onAction("nextStop", payload);
         return;
       }
@@ -443,6 +475,7 @@ const resolveStopName = (st) => {
           onAction={handleChildAction}
           podCompletedInfo={podCompletedInfo}
           delayReportedInfo={delayReportedInfo}
+          liveStopEtas={liveStopEtas}
         />
       </div>
 

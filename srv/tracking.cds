@@ -142,4 +142,33 @@ service GTT {
     confidence    : Decimal(5,4);
   };
 
+  // ----- VOICE AI ACTION (rule-based transcript interpretation)
+  action interpretVoice(
+    transcript : LargeString
+  ) returns {
+    eventType    : String;
+    delayMinutes : Integer;
+    priority     : String;
+    notes        : String;
+    reasonCode   : String;
+    reasonHint   : String;
+    refEvent     : String;
+  };
+
+  // ----- WHISPER STT: base64 WAV → transcript
+  action transcribeAudio(
+    audioBase64 : LargeString
+  ) returns {
+    transcript : String;
+  };
+
+  // ----- WAKE WORD: transcribe 2-second chunk and check for "Hey Sky"
+  action detectWakeWord(
+    audioBase64 : LargeString
+  ) returns {
+    detected       : Boolean;
+    transcript     : String;   // command portion after wake word (may be empty)
+    fullTranscript : String;   // full Whisper output
+  };
+
 }

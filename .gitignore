@@ -18,6 +18,11 @@ target/
 *.mtar
 mta_archives/
 
+# Environment / secrets
+.env
+.env.local
+.env.local.bak
+
 # Other
 .DS_Store
 *.orig
@@ -34,6 +39,7 @@ mta_archives/
 @cds-models
 
 approuter/default-env.json
+approuter/resources/
 
 index-*.js
 index-*.css

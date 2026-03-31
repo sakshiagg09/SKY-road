@@ -4,9 +4,11 @@ import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
 import MapOutlinedIcon from "@mui/icons-material/MapOutlined";
 import AttachFileOutlinedIcon from "@mui/icons-material/AttachFileOutlined";
+import MicIcon from "@mui/icons-material/Mic";
 import { Menu, MenuItem } from "@mui/material";
 
 const BAR_HEIGHT = 64;
+const PRIMARY = "#1976D2";
 
 export default function BottomBar({
   activeTab,
@@ -14,6 +16,7 @@ export default function BottomBar({
   onReportClick,
   onMapClick,
   onAttachmentsClick,
+  onVoiceClick,
   hasShipment = false,
 }) {
   const [anchorEl, setAnchorEl] = useState(null);
@@ -71,12 +74,12 @@ export default function BottomBar({
           overflow: "hidden",
         }}
       >
-        {/* ✅ 4 tabs grid (stable equal columns) */}
+        {/* 5 tabs grid */}
         <div
           style={{
             height: "100%",
             display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
+            gridTemplateColumns: "repeat(5, 1fr)",
             alignItems: "center",
             paddingLeft: 10,
             paddingRight: 10,
@@ -112,6 +115,26 @@ export default function BottomBar({
           >
             <MapOutlinedIcon sx={{ fontSize: 20 }} />
             <span style={{ fontSize: 11, marginTop: 2 }}>Map</span>
+          </button>
+
+          {/* VOICE */}
+          <button
+            className="flex flex-col items-center"
+            style={{
+              color: hasShipment ? PRIMARY : "#6b6c6e",
+              opacity: hasShipment ? 1 : 0.45,
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              padding: 0,
+            }}
+            onClick={() => {
+              if (!hasShipment) { alert("Please open a Freight Order first."); return; }
+              onVoiceClick?.();
+            }}
+          >
+            <MicIcon sx={{ fontSize: 20 }} />
+            <span style={{ fontSize: 11, marginTop: 2 }}>Voice</span>
           </button>
 
           {/* ATTACHMENTS */}

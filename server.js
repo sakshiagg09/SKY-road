@@ -263,6 +263,93 @@ console.log("GOOGLE RAW TEXT:", text);
       return res.status(500).json({ error: String(e?.message || e) });
     }
   });
+
+  // ----------------------------
+  // ROUTES: Multi-stop ETA (Google Routes API with waypoints)
+  // ----------------------------
+  app.post("/api/routes/multi-eta", async (req, res) => {
+    try {
+      const apiKey = process.env.GOOGLE_ROUTES_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: "GOOGLE_ROUTES_API_KEY missing" });
+
+      const { origin, stops, baseMs: baseMsIn } = req.body || {};
+      if (!Array.isArray(stops) || stops.length < 1)
+        return res.status(400).json({ error: "stops array required" });
+
+      const oLat = Number(origin?.lat);
+      const oLng = Number(origin?.lng);
+      if (!Number.isFinite(oLat) || !Number.isFinite(oLng))
+        return res.status(400).json({ error: "origin lat/lng required" });
+
+      const baseMs = Number.isFinite(Number(baseMsIn)) ? Number(baseMsIn) : Date.now();
+
+      // Filter to stops with valid coords, preserve original index/id
+      const validStops = stops.filter((s) => {
+        const lat = Number(s?.lat);
+        const lng = Number(s?.lng);
+        return Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0;
+      });
+
+      if (validStops.length < 1)
+        return res.status(400).json({ error: "no valid stop coordinates" });
+
+      const destination = validStops[validStops.length - 1];
+      const intermediates = validStops.slice(0, -1);
+
+      const url = "https://routes.googleapis.com/directions/v2:computeRoutes";
+      const payload = {
+        origin: { location: { latLng: { latitude: oLat, longitude: oLng } } },
+        destination: {
+          location: {
+            latLng: { latitude: Number(destination.lat), longitude: Number(destination.lng) },
+          },
+        },
+        intermediates: intermediates.map((s) => ({
+          location: { latLng: { latitude: Number(s.lat), longitude: Number(s.lng) } },
+        })),
+        travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_AWARE",
+        computeAlternativeRoutes: false,
+      };
+
+      const r = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": "routes.legs.duration,routes.legs.distanceMeters",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!r.ok) {
+        const text = await r.text();
+        return res.status(r.status).json({ error: "Routes API error", details: text });
+      }
+
+      const json = await r.json();
+      const legs = json.routes?.[0]?.legs ?? [];
+
+      // Cumulative ETAs: leg[i] = travel time from prev point to validStops[i]
+      let cumulativeMs = baseMs;
+      const etas = validStops.map((s, i) => {
+        const leg = legs[i];
+        const durStr = leg?.duration;
+        let legSeconds = 0;
+        if (typeof durStr === "string" && durStr.endsWith("s")) {
+          legSeconds = Number(durStr.slice(0, -1)) || 0;
+        }
+        cumulativeMs += legSeconds * 1000;
+        const totalSeconds = Math.round((cumulativeMs - baseMs) / 1000);
+        return { id: s.id, etaMs: cumulativeMs, durationSeconds: totalSeconds };
+      });
+
+      return res.json({ etas });
+    } catch (e) {
+      console.error("ROUTES: /api/routes/multi-eta failed:", e);
+      return res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
 });
 
 module.exports = cds.server;
